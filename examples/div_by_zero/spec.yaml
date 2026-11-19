@@ -31,7 +31,7 @@ contract:
   preconditions:
     - {id: PRE1, text: "none: num and den may be any int, out may be NULL"}
   postconditions:
-    - {id: POST1, text: "out != NULL, den != 0 and !(num == INT_MIN && den == -1) => returns 0 and *out == num / den, i.e. num == q*den + r with |r| < |den| and r == 0 or sign(r) == sign(num)"}
+    - {id: POST1, text: "out != NULL, den != 0 and !(num == INT_MIN && den == -1) => returns 0 and *out == num / den (truncated toward zero)"}
     - {id: POST2, text: "out != NULL and den == 0 => returns -2 and *out is unchanged"}
     - {id: POST3, text: "out != NULL and num == INT_MIN and den == -1 => returns -3 and *out is unchanged"}
     - {id: POST4, text: "out == NULL => returns -1 (checked first)"}
@@ -67,6 +67,7 @@ verification:
     - {name: num, note: "unconstrained (full int range)"}
     - {name: den, note: "unconstrained (full int range, including 0 and -1)"}
     - {name: out, note: "NULL or a valid int"}
+    - {name: quotient_value, note: "POST1 value: sign/magnitude characterisation over the full int range; exact q == num / den for den == +-1 (any num) and for |num| <= 256, |den| <= 16 (full-range divider equivalence is intractable for SAT)"}
   timeout_s: 120
 gates: [compile, static_analysis, sanitizer, cbmc]
 repair:
