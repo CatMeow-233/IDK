@@ -1,0 +1,57 @@
+# Lean C specification: overflow-free midpoint -- the (mock) repair agent never finds the fix.
+leanc_spec: 1
+spec_id: repair-exhausted
+version: 1
+title: Overflow-free integer midpoint
+requirement: |
+  實作一個函式，回傳兩個 int 的中點 (a + b) / 2（向零取整），對所有 int 輸入都必須正確，
+  且計算過程中不得發生有號整數溢位。
+  (Implement a function returning the midpoint (a + b) / 2 of two ints, rounded toward zero,
+  correct for ALL int inputs and without signed integer overflow during the computation.)
+language: {name: c, standard: c17}
+target:
+  function: midpoint
+  signature: "int midpoint(int a, int b)"
+  params:
+    - {name: a, type: int, description: "any int"}
+    - {name: b, type: int, description: "any int"}
+  returns:
+    type: int
+    description: "mathematically exact (a + b) / 2, rounded toward zero"
+    values:
+      - {value: "(int)(((long long)a + b) / 2)", meaning: "always (no error cases)"}
+contract:
+  preconditions: []
+  postconditions:
+    - {id: POST1, text: "result == ((long long)a + (long long)b) / 2 (rounded toward zero)"}
+    - {id: POST2, text: "min(a, b) <= result <= max(a, b)"}
+  safety:
+    - {id: SAFE1, text: "no signed integer overflow (e.g. in a + b)", checks: [signed-overflow]}
+    - {id: SAFE2, text: "no other undefined behaviour", checks: [undefined-shift, div-by-zero]}
+  frame: []
+sources:
+  editable: [src/midpoint.c]
+  headers: [include/midpoint.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_midpoint.c
+  cases:
+    - {name: small, args: [small]}
+    - {name: odd, args: [odd]}
+    - {name: extremes, args: [extremes]}
+verification:
+  harness: harness/midpoint_harness.c
+  checks: [conversion]
+  unwind: 1
+  input_bounds:
+    - {name: a, note: "unconstrained int"}
+    - {name: b, note: "unconstrained int"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

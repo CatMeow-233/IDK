@@ -1,0 +1,7 @@
+{
+  "root_cause": "a + b overflows for large operands of the same sign (CBMC: arithmetic overflow on signed + in a + b, src/midpoint.c:5; UBSan: signed integer overflow 2147483647 + 2147483647 in test 'extremes').",
+  "rationale": "Divide each operand by two before adding: |a/2 + b/2| <= INT_MAX, so the addition can no longer overflow.",
+  "files": {
+    "src/midpoint.c": "#include \"midpoint.h\"\n\nint midpoint(int a, int b)\n{\n    /* Halve first so that the addition cannot overflow. */\n    return a / 2 + b / 2;\n}\n"
+  }
+}

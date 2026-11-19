@@ -549,8 +549,36 @@ def test_out_of_memory_is_error(tmp_path):
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.ERROR, res.summary
     assert "ran out of memory" in res.summary and "memory_mb=4096" in res.summary
+    assert "could not decide 2 property(ies)" in res.summary
     assert res.diagnostics and res.diagnostics[0].rule_id == "out-of-memory"
     assert res.failures == []
+
+
+def test_out_of_memory_without_results_is_error(tmp_path):
+    data = json.loads((FIX / "json" / "mul_div_oom.verify.json").read_text())
+    data = [m for m in data if "result" not in m]
+    ctx = make_cbmc_project(tmp_path, src="mul_div", harness="mul_div_harness", function="mul_div")
+    _fake_tools(ctx, cbmc=_fake_cbmc(tmp_path, "cat @PAYLOAD@\nexit 6", json.dumps(data)))
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.ERROR
+    assert res.summary.startswith("CBMC (verify run) ran out of memory (verification.memory_mb=4096)")
+    assert "SAT checker ran out of memory" in res.summary
+
+
+def test_counterexample_found_before_running_out_of_memory_is_fail(tmp_path):
+    data = json.loads((FIX / "json" / "mul_div_oom.verify.json").read_text())
+    avg = json.loads((FIX / "json" / "avg.verify.json").read_text())
+    prop_result = next(m["result"] for m in avg if "result" in m)[0]
+    assert prop_result["status"] == "FAILURE"
+    for m in data:
+        if "result" in m:
+            m["result"].append(prop_result)
+    ctx = make_cbmc_project(tmp_path, src="mul_div", harness="mul_div_harness", function="mul_div")
+    _fake_tools(ctx, cbmc=_fake_cbmc(tmp_path, "cat @PAYLOAD@\nexit 6", json.dumps(data)))
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.FAIL
+    assert [f.property_id for f in res.failures] == [prop_result["property"]]
+    assert "2 property(ies) could not be decided (CBMC ran out of memory" in res.summary
 
 
 def test_undecided_properties_are_error(tmp_path):
@@ -577,6 +605,66 @@ def test_garbage_output_is_error(tmp_path):
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.ERROR
     assert "unparsable JSON" in res.summary and "boom" in res.summary
+
+
+def _fake_cbmc_by_mode(tmp_path: Path, verify_payload: str, vacuity_action: str, vacuity_payload: str = "") -> str:
+    """A fake cbmc that replays ``verify_payload`` for the verify run and runs
+    ``vacuity_action`` (shell) for the -DLEANC_VACUITY_CHECK run."""
+    d = tmp_path / "fakecbmc"
+    d.mkdir(exist_ok=True)
+    (d / "verify.json").write_text(verify_payload)
+    (d / "vacuity.json").write_text(vacuity_payload)
+    exe = d / "cbmc"
+    exe.write_text(
+        "#!/bin/sh\n"
+        "VAC=\n"
+        'for a in "$@"; do [ "$a" = "-DLEANC_VACUITY_CHECK" ] && VAC=1; done\n'
+        f'if [ -n "$VAC" ]; then {vacuity_action.replace("@VACUITY@", str(d / "vacuity.json"))}; '
+        f'else cat {d / "verify.json"}; fi\n'
+    )
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return str(exe)
+
+
+def test_replayed_vacuity_outputs(tmp_path):
+    ok = (FIX / "json" / "arr_get_ok.verify.json").read_text()
+    for vac_file, outcome in (
+        ("arr_get_ok.vacuity.json", Outcome.PASS),
+        ("arr_get_contradictory.vacuity.json", Outcome.INCONCLUSIVE),
+    ):
+        sub = tmp_path / vac_file
+        sub.mkdir()
+        ctx = make_cbmc_project(sub, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
+        vac = (FIX / "json" / vac_file).read_text()
+        _fake_tools(ctx, cbmc=_fake_cbmc_by_mode(sub, ok, "cat @VACUITY@", vac))
+        res = run_cbmc(ctx)
+        assert res.outcome is outcome, (vac_file, res.summary)
+    # contradictory replay against a harness declaring three probes: the two
+    # probes CBMC never reported are unreachable too
+    assert res.details["vacuity"]["probes"] == {"after_call": False, "in_range": False, "out_of_range": False}
+    reported = {f.id: f.description for f in res.failures}
+    assert "not reported by CBMC" in reported["cbmc:vacuity:in_range"]
+    assert "not reported by CBMC" not in reported["cbmc:vacuity:after_call"]
+
+
+def test_vacuity_run_timeout_is_timeout(tmp_path):
+    ok = (FIX / "json" / "arr_get_ok.verify.json").read_text()
+    ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get", timeout_s=1)
+    _fake_tools(ctx, cbmc=_fake_cbmc_by_mode(tmp_path, ok, "exec sleep 30"))
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.TIMEOUT and res.status is Status.TIMEOUT
+    assert "vacuity run" in res.summary and "timed out" in res.summary
+    assert [i.timed_out for i in res.invocations] == [False, True]
+    assert res.details["vacuity"]["status"] == "skipped"
+
+
+def test_vacuity_run_garbage_is_error(tmp_path):
+    ok = (FIX / "json" / "arr_get_ok.verify.json").read_text()
+    ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
+    _fake_tools(ctx, cbmc=_fake_cbmc_by_mode(tmp_path, ok, "echo nope"))
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.ERROR
+    assert "vacuity run" in res.summary and "unparsable JSON" in res.summary
 
 
 def test_replayed_failure_output_is_fail(tmp_path):

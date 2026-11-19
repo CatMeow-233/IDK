@@ -1,0 +1,66 @@
+# Lean C specification: overflow-checked 64-bit multiplication -- CBMC times out.
+leanc_spec: 1
+spec_id: cbmc-timeout
+version: 1
+title: Overflow-checked 64-bit unsigned multiplication
+requirement: |
+  實作一個帶溢位檢查的 64 位元無號整數乘法：乘積放得進 uint64_t 時回傳成功並輸出乘積，
+  否則回傳溢位錯誤且不修改輸出；輸出指標為 NULL 時回傳錯誤。
+  (Implement an overflow-checked 64-bit unsigned multiplication: if the product fits in a
+  uint64_t return success and store it, otherwise return an overflow error and leave the output
+  untouched; a NULL output pointer is an error.)
+language: {name: c, standard: c17}
+target:
+  function: mul_u64_checked
+  signature: "int mul_u64_checked(uint64_t a, uint64_t b, uint64_t *out)"
+  params:
+    - {name: a, type: uint64_t, description: "any value"}
+    - {name: b, type: uint64_t, description: "any value"}
+    - {name: out, type: "uint64_t *", description: "receives a * b, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "MULCHK_OK (0)", meaning: "the exact product fits; *out == a * b"}
+      - {value: "MULCHK_ERR_NULL (-1)", meaning: "out == NULL"}
+      - {value: "MULCHK_ERR_OVERFLOW (-2)", meaning: "the exact product exceeds UINT64_MAX; *out untouched"}
+contract:
+  preconditions: []
+  postconditions:
+    - {id: POST1, text: "out != NULL and a * b <= UINT64_MAX (exact, 128-bit) => MULCHK_OK and *out == a * b"}
+    - {id: POST2, text: "out != NULL and a * b > UINT64_MAX => MULCHK_ERR_OVERFLOW and *out unchanged"}
+    - {id: POST3, text: "out == NULL => MULCHK_ERR_NULL"}
+  safety:
+    - {id: SAFE1, text: "no division by zero", checks: [div-by-zero]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE3, text: "no unsigned wrap-around in the returned product", checks: [unsigned-overflow]}
+  frame: []
+sources:
+  editable: [src/mul_checked.c]
+  headers: [include/mul_checked.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_mul_checked.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: boundary, args: [boundary]}
+    - {name: overflow, args: [overflow]}
+    - {name: "null", args: ["null"]}
+verification:
+  harness: harness/mul_checked_harness.c
+  checks: [unsigned-overflow]
+  unwind: 1
+  input_bounds:
+    - {name: a, note: "unconstrained uint64_t"}
+    - {name: b, note: "unconstrained uint64_t"}
+  # Deliberately short: the bounded model check of this property does not finish
+  # within minutes (measured with raw cbmc), so Lean C must report TIMEOUT.
+  timeout_s: 3
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

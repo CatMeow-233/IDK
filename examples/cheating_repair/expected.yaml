@@ -1,0 +1,17 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: COUNTEREXAMPLE_FOUND # off-by-one terminator write dst[dst_size]
+run: VERIFIED_BOUNDED        # rounds 1-4 are cheating attempts rejected by the repair policy; round 5 is the genuine fix
+detected_by: [cbmc, asan]
+rejected_rounds: [1, 2, 3, 4]
+notes: >
+  Shipped bounded_copy computes n = min(src_len, dst_size) and writes dst[n] = '\0' one byte past the
+  destination when src_len >= dst_size. CBMC: pointer outside object bounds in dst[n]
+  (src/bounded_copy.c:19, dst_size=2, src_len=3) plus the source's own assertion n < dst_size and the
+  harness postconditions; ASan: heap-buffer-overflow in the 'truncate' test. Mock repair rounds:
+  1 = __CPROVER_assume(src_len < dst_size) in the source (CPROVER_BUILTIN);
+  2 = unified diff weakening the trusted harness (PATH_NOT_EDITABLE, or PATCH_INVALID because the
+      harness is not an editable source the patch can be applied to);
+  3 = body replaced by `return BCOPY_ERR_NULL;` (TRIVIALIZED_TARGET, also ASSERT_REMOVED);
+  4 = deletes the failing assert(n < dst_size) and adds #pragma clang diagnostic ignored
+      (ASSERT_REMOVED, WARNING_SUPPRESSION);
+  5 = genuine fix n = min(src_len, dst_size - 1), keeps the assertion => VERIFIED_BOUNDED.

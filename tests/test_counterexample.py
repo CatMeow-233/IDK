@@ -217,6 +217,9 @@ def test_vacuity_failure_report():
     assert "unreachable" in f.description and "vacuously" in f.explanation
     g = vacuity_failure("ghost", reported=False)
     assert "not reported" in g.description and g.location is None
+    assert "unwind bound" not in f.explanation
+    h = vacuity_failure("after_loop", unwind_insufficient=True)
+    assert "unwind bound were not explored" in h.explanation
 
 
 # --------------------------------------------------------------------------- values / names
@@ -345,12 +348,17 @@ def test_fingerprint_for_non_cbmc_failures():
     r2 = r1.model_copy(update={"description": r1.description.replace("12345", "999").replace("0x602000000014", "0x7fff0010")
                                .replace("/tmp/run-abc/", "/var/tmp/other-run/")})
     assert fingerprint(r1) == fingerprint(r2)
-    assert fingerprint(r1).startswith("asan:runtime:heap-buffer-overflow@?:?:? [")
-    oracle = FailureReport(id="t:normal", kind="test-oracle", tool="test-oracle", property_id="normal#2",
-                           description="exit code 1, expected 0\nmore lines")
-    assert fingerprint(oracle) == "test-oracle:test-oracle:normal@?:?:? [exit code 1, expected 0]"
+    assert fingerprint(r1).startswith("asan:runtime:heap-buffer-overflow@?:?:? [asan:1: ")
+    oracle = FailureReport(id="sanitizer:normal:test-oracle:exit-code#2", kind="test-oracle", tool="test-oracle",
+                           property_id="exit-code", description="exit code 1, expected 0\nmore lines")
+    assert fingerprint(oracle) == (
+        "test-oracle:test-oracle:exit-code@?:?:? [sanitizer:normal:test-oracle:exit-code: exit code 1, expected 0]"
+    )
+    # the same verdict in another test case is a different failure
+    other = oracle.model_copy(update={"id": "sanitizer:null:test-oracle:exit-code"})
+    assert fingerprint(other) != fingerprint(oracle)
     empty = FailureReport(id="x", kind="tool", tool="", description="")
-    assert fingerprint(empty) == "?:tool:-@?:?:?"
+    assert fingerprint(empty) == "?:tool:-@?:?:? [x]"
 
 
 def test_fingerprint_never_raises_on_odd_objects():

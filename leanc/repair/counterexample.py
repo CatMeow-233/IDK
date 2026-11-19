@@ -640,9 +640,14 @@ def vacuity_failure(
     result: dict | None = None,
     raw_ref: str | None = None,
     reported: bool = True,
+    unwind_insufficient: bool = False,
 ) -> FailureReport:
     """FailureReport(kind="vacuity") for a LEANC_REACH probe that CBMC proved
-    unreachable (or did not report at all, ``reported=False``)."""
+    unreachable (or did not report at all, ``reported=False``).
+
+    With ``unwind_insufficient`` (unwinding assertions failed in the same
+    verification) the explanation notes that the probe may be unreachable
+    only because executions beyond the unwind bound were cut off."""
     r = _d(result)
     prop = r.get("property") if isinstance(r.get("property"), str) else None
     if reported:
@@ -662,6 +667,11 @@ def vacuity_failure(
         raw_ref=raw_ref,
     )
     f.explanation = explain_counterexample(f)
+    if unwind_insufficient:
+        f.explanation += (
+            " Unwinding assertions also failed in this verification: the probe may be unreachable only "
+            "because executions needing more loop iterations than the unwind bound were not explored."
+        )
     return f
 
 
@@ -800,7 +810,8 @@ def fingerprint(f: FailureReport) -> str:
     part of the description - never the numeric property suffix, which
     shifts after edits.  For every other kind (compile / static / runtime /
     test-oracle / ...) the class is the rule / property id without trailing
-    counters and the qualifier the normalised message.  Never raises.
+    counters and the qualifier the normalised message (prefixed with the
+    report id when there is no location).  Never raises.
     """
     tool = str(getattr(f, "tool", None) or "?").strip() or "?"
     kind = str(getattr(f, "kind", None) or "?")
@@ -829,6 +840,13 @@ def fingerprint(f: FailureReport) -> str:
     else:
         cls = _SUFFIX_RE.sub("", pid) if pid else "-"
         qual = _normalize_message(desc)
+        if file == "?":
+            # Without a location (e.g. a test-oracle verdict) the report id -
+            # built from the test case and rule, minus de-duplication
+            # counters - is what tells two such failures apart.
+            fid = _SUFFIX_RE.sub("", str(getattr(f, "id", "") or ""))
+            if fid:
+                qual = f"{fid}: {qual}" if qual else fid
     fp = f"{tool}:{kind}:{cls or '-'}@{file}:{line}:{func}"
     if qual:
         fp += f" [{qual}]"

@@ -337,6 +337,11 @@ def _messages_excerpt(out: CbmcOutput, stderr: str, limit: int = _MAX_LISTED) ->
     return "; ".join(items[:limit]) + more
 
 
+def _is_oom(run: _Run) -> bool:
+    texts = " ".join([*run.out.error_texts(), run.proc.stderr]).lower()
+    return any(k in texts for k in _OOM_MARKERS)
+
+
 def _check_run(run: _Run, limits: Limits, ctx: BackendContext, *, expect: str) -> _Problem | None:
     """Tool-level problems of one run (``expect`` = "result" or "goals")."""
     proc, out, mode = run.proc, run.out, run.mode
@@ -356,8 +361,7 @@ def _check_run(run: _Run, limits: Limits, ctx: BackendContext, *, expect: str) -
             f"{what} output exceeded {limits.max_output_bytes} bytes and was truncated; "
             "the result cannot be interpreted",
         )
-    texts = " ".join(out.error_texts() + [proc.stderr]).lower()
-    oom = any(k in texts for k in _OOM_MARKERS)
+    oom = _is_oom(run)
     sig = proc.signal
     if sig is None and proc.exit_code is not None and 128 < proc.exit_code <= 128 + 64:
         # bwrap (and shells) report a child killed by signal N as exit status 128+N.
@@ -371,7 +375,11 @@ def _check_run(run: _Run, limits: Limits, ctx: BackendContext, *, expect: str) -
             f"{what} was killed by {_signal_name(sig)}{hint}",
             _error_diagnostics(out, "cbmc-error"),
         )
-    if oom:
+    data = out.results if expect == "result" else out.goals
+    if oom and (out.parse_error or data is None):
+        # With results present, properties CBMC could not decide are reported
+        # as such by the caller (counterexamples found before running out of
+        # memory are still genuine).
         return _Problem(
             Outcome.ERROR,
             f"{what} ran out of memory (verification.memory_mb={v.memory_mb}): {_messages_excerpt(out, proc.stderr)}",
@@ -385,7 +393,6 @@ def _check_run(run: _Run, limits: Limits, ctx: BackendContext, *, expect: str) -
             + (f": {excerpt}" if excerpt else ""),
             _error_diagnostics(out, "cbmc-error"),
         )
-    data = out.results if expect == "result" else out.goals
     if data is None:
         texts_upper = " ".join(out.error_texts())
         if "PARSING ERROR" in texts_upper:
@@ -787,15 +794,20 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
             summary += f". In addition, {unwind_text}"
         if unresolved:
             summary += f". {len(unresolved)} property(ies) could not be decided"
+            if _is_oom(vrun):
+                summary += f" (CBMC ran out of memory: verification.memory_mb={v.memory_mb})"
         return result(Outcome.FAIL, summary)
 
     if unresolved:
         details["vacuity"] = {"status": "skipped", "probes": {}, "note": "not run: undecided properties"}
         names = ", ".join(f"{r.get('property')} ({r.get('status')})" for r in unresolved[:_MAX_LISTED])
         excerpt = _messages_excerpt(vrun.out, vrun.proc.stderr)
+        oom = _is_oom(vrun)
+        diagnostics.extend(_error_diagnostics(vrun.out, "out-of-memory" if oom else "cbmc-error"))
+        head = f"CBMC ran out of memory (verification.memory_mb={v.memory_mb}) and " if oom else "CBMC "
         return result(
             Outcome.ERROR,
-            f"CBMC could not decide {len(unresolved)} property(ies): {names}" + (f"; {excerpt}" if excerpt else ""),
+            f"{head}could not decide {len(unresolved)} property(ies): {names}" + (f"; {excerpt}" if excerpt else ""),
         )
 
     # ------------------------------------------------------------ vacuity
@@ -856,7 +868,11 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
                     details["vacuity"] = {"status": "vacuous" if vacuous else "ok", "probes": probes}
                     for lb in vacuous:
                         vf = vacuity_failure(
-                            lb, result=probe_results.get(lb), raw_ref=arun.raw_ref, reported=lb not in not_reported
+                            lb,
+                            result=probe_results.get(lb),
+                            raw_ref=arun.raw_ref,
+                            reported=lb not in not_reported,
+                            unwind_insufficient=bool(unwind_reports),
                         )
                         failures.append(vf)
                         diagnostics.append(
@@ -866,6 +882,11 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
                         inconclusive.append(
                             f"vacuous harness: probe(s) {', '.join(vacuous)} unreachable - the assumptions/code make "
                             "that point unreachable, so the checks there are vacuous"
+                            + (
+                                " (possibly only because executions beyond the unwind bound were cut off)"
+                                if unwind_reports
+                                else ""
+                            )
                         )
 
     if vac_problem is not None:
