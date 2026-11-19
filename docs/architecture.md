@@ -11,7 +11,7 @@
    │  leanc generate（B. Code Generation Engine，只寫 sources.editable）
    ▼
 C 原始碼 ──► I. Verification Controller ───────────────────────────────────────┐
-              │ spec 檢查 → C. 編譯 → D. 靜態分析 → E. Sanitizer 測試 → F. CBMC │
+              │ spec → C. 編譯 → 完整性 → D. 靜態分析 → E. Sanitizer → F. CBMC │
               ▼                                                                 │
            VerificationResult（狀態 + 每個關卡 + 診斷 + 反例）                    │
               │ 若為可修復的確定性失敗                                            │
@@ -30,6 +30,7 @@ C 原始碼 ──► I. Verification Controller ──────────�
 | A. Specification Engine | `leanc/specs/model.py`、`loader.py`、`approval.py`、`leanc/core/generation.py:draft_spec` | 規格 schema（pydantic，`extra="forbid"`）、YAML 重複鍵拒絕、語意雜湊、HMAC 簽章批准、版本規則、AI 草案 |
 | B. Code Generation Engine | `leanc/core/generation.py:generate_sources` | 只對已批准規格生成；輸出經 `check_generated` 政策檢查；只寫 editable 檔 |
 | C. Compilation Engine | `leanc/backends/clang.py` | `clang -std=c17 -Wall -Wextra -Wpedantic -c`；診斷解析（檔案/行/欄/旗標）；warning 政策 |
+| C'. Source Integrity（強制） | `leanc/backends/integrity.py` | 物件檔符號/匯入/section 檢查、前處理層級規則；確保所有工具看到同一份程式、程式不能覆寫 harness/CBMC/libc 符號或終止行程 |
 | D. Static Analysis Engine | `leanc/backends/analyzer.py` | `clang --analyze --analyzer-output sarif`；SARIF 解析（含 code flow）；不支援時退回文字格式並記錄 |
 | E. Runtime Verification Engine | `leanc/backends/sanitizer.py` | ASan/UBSan/LSan 建置可信測試；在 bubblewrap 沙箱中逐案例執行；逾時/輸出/記憶體限制 |
 | F. Formal Verification Engine | `leanc/backends/cbmc.py` | CBMC 有界模型檢查；強制檢查類別；unwinding assertions；vacuity 探針；可選覆蓋率 |
@@ -41,7 +42,8 @@ C 原始碼 ──► I. Verification Controller ──────────�
 
 ## 資料流與快照
 
-每次驗證都在 `.leanc/runs/<run_id>/` 下建立：
+每個指令在 `.leanc/runs/<run_id>/` 下寫 `run.json`、`report.md`、`leanc.log`；每次驗證（初次驗證在
+`verify/`，修復回合在 `repair/round-N/verify/`）建立：
 
 ```
 snapshot/   ← 規格列出的檔案（editable + 受保護檔）的複本；工具只讀這裡
@@ -57,9 +59,12 @@ verification.json / verification.md
 
 ## 關卡規則
 
-1. `spec`：未批准 / 規格或受保護檔被改 / 簽章無效 → `SPEC_UNAPPROVED`，其餘關卡不執行
-   （`--check-unapproved` 可僅供參考地執行，但狀態仍為 `SPEC_UNAPPROVED`）。
-2. `compile` 失敗 → 其餘關卡 `SKIPPED`。
+1. `spec`：未批准 / 規格或受保護檔被改 / 簽章無效 / 回滾到被取代的版本 → `SPEC_UNAPPROVED`，其餘關卡不執行
+   （`--check-unapproved` 可僅供參考地執行，但狀態仍為 `SPEC_UNAPPROVED`）。批准在 CBMC 之前與所有關卡之後
+   會在快照上**再檢查一次**；驗證過程中受保護檔被改動 → `SPEC_UNAPPROVED`。
+2. `compile` 失敗 → 其餘關卡 `SKIPPED`。`compile` 通過後**一定**執行 `integrity` 關卡（不在 `gates` 清單中、
+   不能移除）；它失敗時 sanitizer 關卡 `SKIPPED`（含禁止構造的程式不會被執行），整體為
+   `STATIC_ANALYSIS_WARNING`（工具名 `leanc-integrity`）。
 3. 其餘關卡互不阻擋（盡量蒐集資訊給修復代理），`--fail-fast` 可改變。
 4. 彙總狀態取「最差」者；確定性缺陷優先於不確定結果（見 [status-semantics.md](status-semantics.md)）。
 5. `VERIFIED_BOUNDED` 需要所有必要關卡通過 **且** 包含 `cbmc` 關卡。

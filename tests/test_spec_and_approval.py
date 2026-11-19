@@ -221,3 +221,56 @@ def test_approver_name_required(project):
     spec = load_spec(project / "spec.yaml")
     with pytest.raises(ApprovalError):
         approve_spec(spec, "spec.yaml", Workspace(project), approved_by="  ")
+
+
+def test_rollback_to_superseded_version_is_rejected(project):
+    ws = Workspace(project)
+    v1_text = (project / "spec.yaml").read_text()
+    v1 = parse_spec_text(v1_text)
+    approve_spec(v1, "spec.yaml", ws, approved_by="alice")
+    v1_store = (approvals_dir(project) / "safe-array-get.json").read_text()
+    v2 = parse_spec_text(v1_text.replace("unwind: 9", "unwind: 12").replace("version: 1", "version: 2"))
+    approve_spec(v2, "spec.yaml", ws, approved_by="alice")
+    # Restore the old (signed, genuine) v1 record and the v1 spec.
+    (approvals_dir(project) / "safe-array-get.json").write_text(v1_store)
+    chk = check_approval(v1, ws)
+    assert not chk.approved
+    assert any("rollback" in r for r in chk.reasons)
+
+
+def test_concurrent_key_creation_yields_one_valid_key(tmp_path, monkeypatch):
+    import multiprocessing as mp
+
+    monkeypatch.setenv("LEANC_HOME", str(tmp_path / "home"))
+    ctx = mp.get_context("fork")
+    with ctx.Pool(8) as pool:
+        keys = pool.map(_create_key, range(8))
+    assert len(set(keys)) == 1 and len(bytes.fromhex(keys[0])) == 32
+
+
+def _create_key(_):
+    from leanc.specs.approval import load_key
+
+    return load_key(create=True).hex()
+
+
+def test_duplicate_editable_paths_rejected(project):
+    text = (project / "spec.yaml").read_text().replace(
+        "editable: [src/safe_array.c]", "editable: [src/safe_array.c, ./src/safe_array.c]"
+    )
+    with pytest.raises(SpecError, match="duplicate"):
+        parse_spec_text(text)
+
+
+def test_non_utf8_source_is_a_readable_error(tmp_path):
+    (tmp_path / "a.c").write_bytes(b"/* J\xfcrgen */\n")
+    with pytest.raises(WorkspaceError, match="UTF-8"):
+        Workspace(tmp_path).read_text("a.c")
+
+
+def test_write_preserves_mode(tmp_path):
+    p = tmp_path / "a.c"
+    p.write_text("x")
+    os.chmod(p, 0o600)
+    Workspace(tmp_path).write_text("a.c", "y")
+    assert p.read_text() == "y" and (p.stat().st_mode & 0o777) == 0o600

@@ -24,10 +24,12 @@ from leanc.backends import cbmc as cbmc_mod
 from leanc.backends.cbmc import (
     CHECK_FLAGS,
     build_cbmc_argv,
+    count_harness_assertions,
     coverage_by_file,
     find_probes,
     interpret_output,
     parse_cbmc_json,
+    probe_occurrences,
     run_cbmc,
     strip_c_comments,
 )
@@ -187,7 +189,12 @@ def test_correct_code_passes_with_vacuity_ok(tmp_path, needs_cbmc):
     assert res.status is None
     assert res.failures == []
     d = res.details
-    assert d["vacuity"] == {"status": "ok", "probes": {"after_call": True, "in_range": True, "out_of_range": True}}
+    assert d["vacuity"]["status"] == "ok"
+    assert d["vacuity"]["probes"] == {"after_call": True, "in_range": True, "out_of_range": True}
+    assert d["vacuity"]["occurrences"] == 3 and len(d["vacuity"]["properties"]) == 3
+    assert all(p["reachable"] for p in d["vacuity"]["properties"].values())
+    assert "duplicate_labels" not in d["vacuity"]
+    assert d["harness_assertions"] == {"in_source": 4, "cbmc_properties": 4}
     assert d["properties_total"] > 0 and d["properties_passed"] == d["properties_total"]
     assert d["properties_failed"] == 0 and d["unwind_failures"] == []
     assert d["cbmc_version"] and "5." in d["cbmc_version"]
@@ -327,7 +334,8 @@ def test_contradictory_assumptions_are_vacuous(tmp_path, needs_cbmc):
     assert res.outcome is Outcome.INCONCLUSIVE, res.summary
     assert res.status is Status.UNKNOWN
     assert res.details["properties_failed"] == 0  # plain CBMC would say "VERIFICATION SUCCESSFUL"
-    assert res.details["vacuity"] == {"status": "vacuous", "probes": {"after_call": False}}
+    assert res.details["vacuity"]["status"] == "vacuous"
+    assert res.details["vacuity"]["probes"] == {"after_call": False}
     (f,) = res.failures
     assert f.kind == "vacuity" and f.id == "cbmc:vacuity:after_call"
     assert f.location.file == "harness/h.c"
@@ -526,6 +534,166 @@ def test_example_with_off_by_one_finds_idx_equal_len(example_copy, tmp_path, nee
         assert ins["param idx"] == ins["param len"], (f.id, ins)
     fps = {fingerprint(f) for f in res.failures}
     assert len(fps) == len(res.failures)
+
+
+# --------------------------------------------------------------------------- probe identity / harness integrity
+
+
+def _patch_harness(ctx: BackendContext, old: str, new: str, count: int = 1) -> None:
+    h = ctx.snapshot_dir / ctx.spec.verification.harness
+    text = h.read_text()
+    assert text.count(old) >= count, old
+    h.write_text(text.replace(old, new, count))
+
+
+def _example_with_harness_edits(example_copy, tmp_path, edits: list[tuple[str, str]]):
+    from leanc.specs.loader import load_spec
+
+    root = example_copy("safe_array_get")
+    h = root / "harness" / "safe_array_get_harness.c"
+    text = h.read_text()
+    for old, new in edits:
+        assert old in text, old
+        text = text.replace(old, new)
+    h.write_text(text)
+    spec = load_spec(root / "spec.yaml")
+    return run_cbmc(make_context(spec, root, tmp_path / "dup-run"))
+
+
+_RELABEL = [
+    ('LEANC_REACH("null_input")', 'LEANC_REACH("branch")'),
+    ('LEANC_REACH("out_of_range")', 'LEANC_REACH("branch")'),
+    ('LEANC_REACH("in_range")', 'LEANC_REACH("branch")'),
+]
+_OVERCONSTRAIN = [("LEANC_ASSUME(len <= MAX_LEN);", "LEANC_ASSUME(len <= MAX_LEN);\n    LEANC_ASSUME(idx >= len);")]
+
+
+def test_duplicate_labels_cannot_hide_an_unreachable_probe(example_copy, tmp_path, needs_cbmc):
+    # Regression: probes used to be keyed by label, so one reachable "branch"
+    # probe masked the unreachable in-range "branch" probe -> VERIFIED_BOUNDED.
+    res = _example_with_harness_edits(example_copy, tmp_path, _OVERCONSTRAIN + _RELABEL)
+    assert res.outcome is Outcome.INCONCLUSIVE, res.summary
+    vac = res.details["vacuity"]
+    assert vac["status"] == "vacuous"
+    assert vac["duplicate_labels"] == {"branch": 3}
+    assert vac["probes"] == {"after_call": True, "branch": False}
+    reach = sorted(p["reachable"] for p in vac["properties"].values() if p["label"] == "branch")
+    assert reach == [False, True, True]
+    (f,) = res.failures
+    assert f.kind == "vacuity" and f.id.startswith("cbmc:vacuity:branch@harness/safe_array_get_harness.c:")
+    assert f.location.line == 43  # the in-range branch (one line lower than before the added assumption)
+    assert "branch (harness/safe_array_get_harness.c:43)" in res.summary
+    assert any("duplicate LEANC_REACH label" in n for n in res.details["notes"])
+
+
+def test_unique_labels_flag_the_same_unreachable_branch(example_copy, tmp_path, needs_cbmc):
+    res = _example_with_harness_edits(example_copy, tmp_path, _OVERCONSTRAIN)
+    assert res.outcome is Outcome.INCONCLUSIVE
+    assert [f.id for f in res.failures] == ["cbmc:vacuity:in_range"]
+
+
+def test_duplicate_labels_all_reachable_pass_with_note(example_copy, tmp_path, needs_cbmc):
+    res = _example_with_harness_edits(example_copy, tmp_path, _RELABEL)
+    assert res.outcome is Outcome.PASS, res.summary
+    vac = res.details["vacuity"]
+    assert vac["status"] == "ok" and vac["duplicate_labels"] == {"branch": 3}
+    assert len(vac["properties"]) == 4 and "all 4 vacuity probe(s) reachable" in res.summary
+    assert any("duplicate LEANC_REACH label" in n for n in res.details["notes"])
+
+
+def test_compiled_out_probe_counts_as_unreachable(tmp_path, needs_cbmc):
+    ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
+    _patch_harness(ctx, '    LEANC_REACH("after_call");\n', '    LEANC_REACH("after_call");\n#if 0\n    LEANC_REACH("ghost");\n#endif\n')
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.INCONCLUSIVE, res.summary
+    vac = res.details["vacuity"]
+    assert vac["occurrences"] == 4 and len(vac["properties"]) == 3 and vac["unreported_occurrences"] == 1
+    assert vac["probes"]["ghost"] is False
+    (f,) = res.failures
+    assert f.id == "cbmc:vacuity:ghost" and "not reported" in f.description
+    assert "not reported by CBMC (ghost)" in res.summary
+
+
+def test_partially_reported_duplicate_label_is_vacuous(tmp_path, needs_cbmc):
+    ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
+    _patch_harness(ctx, "    free(arr);\n", '#ifdef NEVER_DEFINED\n    LEANC_REACH("after_call");\n#endif\n    free(arr);\n')
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.INCONCLUSIVE
+    (f,) = res.failures
+    assert f.id == "cbmc:vacuity:after_call@unreported"
+    assert f.description.startswith('1 of 2 occurrence(s) of LEANC_REACH("after_call")')
+
+
+def test_unreported_probe_with_non_literal_label(tmp_path, needs_cbmc):
+    ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
+    _patch_harness(ctx, "    free(arr);\n", '#define GHOST_LABEL "ghost"\n#if 0\n    LEANC_REACH(GHOST_LABEL);\n#endif\n    free(arr);\n')
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.INCONCLUSIVE
+    assert [f.id for f in res.failures] == ["cbmc:vacuity:unreported-probes"]
+    assert "non-literal labels" in res.summary
+
+
+def test_overridden_assert_machinery_is_error(tmp_path, needs_cbmc):
+    # Without the override the wrong status code is a counterexample ...
+    honest = make_cbmc_project(tmp_path / "honest", src="arr_get_wrong_code", harness="arr_get_harness", function="arr_get")
+    res = run_cbmc(honest)
+    assert res.outcome is Outcome.FAIL
+    assert any(f.property_id.startswith("main.assertion.") for f in res.failures)
+    # ... with __assert_fail overridden CBMC silently drops the harness assertions.
+    cheat = make_cbmc_project(
+        tmp_path / "cheat", src="arr_get_assert_override", harness="arr_get_harness", function="arr_get"
+    )
+    res = run_cbmc(cheat)
+    assert res.outcome is Outcome.ERROR and res.status is Status.TOOL_ERROR, res.summary
+    assert res.summary.startswith(
+        "harness assertions missing from CBMC's property list (assert machinery overridden?)"
+    )
+    assert res.details["harness_assertions"] == {"in_source": 4, "cbmc_properties": 0}
+    assert res.diagnostics[-1].rule_id == "missing-assertions"
+    assert res.failures == [] and len(res.invocations) == 1
+
+
+def test_count_harness_assertions_is_conservative():
+    assert count_harness_assertions((FIX / "harness" / "arr_get_harness.c").read_text()) == 4
+    code = """
+#include <assert.h>
+#define CHECK(x) assert(x)
+#define LONG_CHECK(x) do { \\
+    assert(x); \\
+} while (0)
+static void helper(int v) { assert(v > 0); }   /* never called: CBMC drops it */
+int main(void)
+{
+    int a = nondet_int();
+    assert(a != 1);              // counted
+    __CPROVER_assert(a != 2, "x"); /* counted */
+    /* assert(commented); */
+    const char *s = "assert(in a string)";
+    char c = '{';
+    _Static_assert(sizeof(int) == 4, "int");
+    static_assert(1, "c23");
+    CHECK(a != 3);               /* macro: adds a property, not counted */
+#if 0
+    assert(compiled_out);
+#else
+    assert(maybe);
+#endif
+    if (a) { assert(a != 4); }   // counted
+    (void)s; (void)c;
+    return 0;
+}
+int after_main(void) { assert(0); return 0; }
+"""
+    assert count_harness_assertions(code) == 3
+    assert count_harness_assertions("int f(void) { assert(1); return 0; }") == 0
+    assert count_harness_assertions("int main(void);\nint main(void) { assert(1); }") == 1
+
+
+def test_probe_occurrences():
+    text = (FIX / "harness" / "arr_get_harness.c").read_text()
+    assert probe_occurrences(text) == (3, {"after_call": 1, "in_range": 1, "out_of_range": 1})
+    code = '/* LEANC_REACH("c") */ LEANC_REACH("a"); LEANC_REACH("a"); LEANC_REACH(L);'
+    assert probe_occurrences(code) == (3, {"a": 2})
 
 
 # --------------------------------------------------------------------------- fake CBMC: tool failures

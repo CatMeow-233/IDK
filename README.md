@@ -7,7 +7,7 @@
 
 ```
 自然語言需求 → 形式化規格草案（不受信任）→ 人工確認（雜湊鎖定 + 簽章）
-  → 程式碼生成 → Clang 編譯 → Clang Static Analyzer → ASan/UBSan/LSan 可信測試
+  → 程式碼生成 → Clang 編譯 → 原始碼完整性關卡 → Clang Static Analyzer → ASan/UBSan/LSan 可信測試
   → CBMC 有界模型檢查 → 反例分析 → AI 自動修復（政策檢查）→ 重新驗證
   → 程式碼 + JSON / Markdown 驗證報告
 ```
@@ -54,13 +54,22 @@ leanc report latest --project-root demo             # Markdown 報告；--format
 cp -r examples/div_by_zero /tmp/dz
 leanc spec approve /tmp/dz/spec.yaml --by alice --yes
 leanc run /tmp/dz/spec.yaml --provider mock --regenerate
-#   initial: COUNTEREXAMPLE_FOUND (division by zero, INT_MIN / -1 overflow)
-#   repair round 1: 1 of 2 counterexamples fixed -> accepted as improvement
-#   repair round 2: VERIFIED_BOUNDED -> written back to src/
+#   initial   COUNTEREXAMPLE_FOUND          (division by zero; INT_MIN / -1 overflow)
+#   repair round 1: COUNTEREXAMPLE_FOUND  accepted (improvement; continuing)   <- 只修了一半
+#   repair round 2: VERIFIED_BOUNDED  accepted (verified)
+#   note: wrote verified sources back to the workspace: src/safe_ratio.c
+#   STATUS    VERIFIED_BOUNDED
 ```
 
 `--provider mock` 使用範例目錄中 `mock/` 的固定輸出（離線、可重現），**它不是 LLM 的表現**，
-報告中會明確標示。使用真實模型：
+報告中會明確標示。自然語言需求 → 規格草案也可以離線示範：
+
+```bash
+cd demo && leanc spec draft --id my-get --requirement "實作一個安全的整數陣列讀取函式……" --provider mock
+#   => drafts/my-get/{spec.yaml,harness_draft.c,tests_draft.c,NOTES.md}，標記為 UNTRUSTED / ai-draft，exit 40
+```
+
+使用真實模型：
 
 ```bash
 export LEANC_API_KEY=...            # 或 OPENAI_API_KEY；永遠不會寫入日誌或報告
@@ -81,13 +90,18 @@ leanc run path/to/spec.yaml --provider openai
 | `leanc spec draft` | 自然語言需求 → `drafts/<id>/` 下的**不受信任**規格/harness/測試草案 |
 | `leanc spec approve` / `status` / `show` | 批准（雜湊鎖定 + HMAC 簽章）、查看批准狀態與變更、顯示正規化規格與有效檢查 |
 | `leanc generate` | 依**已批准**規格生成 `sources.editable`（經生成政策檢查） |
-| `leanc verify` | spec 檢查 → 編譯 → 靜態分析 → Sanitizer 測試 → CBMC |
+| `leanc verify` | spec 檢查 → 編譯 → 完整性關卡（強制）→ 靜態分析 → Sanitizer 測試 → CBMC |
 | `leanc repair` | 驗證後執行反例驅動修復迴圈 |
 | `leanc run` | 規格檢查 → 生成 → 驗證 → 修復 → 再驗證 → 報告 |
 | `leanc report [RUN]` | 顯示某次執行（預設最新）的 Markdown / JSON 報告 |
 
-每個指令都有 `--help`、`--json`、明確的結束代碼，並在 `.leanc/runs/<run_id>/` 寫入
-`run.json`、`report.md`、`leanc.log`、原始工具輸出（`raw/`）與每次工具呼叫的日誌（`logs/`）。
+每個指令都有 `--help` 與明確的結束代碼；除 `report`（用 `--format json`）外都有 `--json`。
+`generate` / `verify` / `repair` / `run` 會建立 `.leanc/runs/<run_id>/`，內含 `run.json`、`report.md`、
+`leanc.log`；每次驗證的快照、原始工具輸出與工具呼叫日誌在其中的 `verify/`（或 `repair/round-N/verify/`）
+子目錄：`snapshot/`、`raw/`（`cbmc-verify.json`、SARIF…）、`logs/`、`verification.json`、`verification.md`。
+`doctor`、`init`、`spec approve/status/show` 是即時指令，不建立執行紀錄。
+`generate` 成功時 exit 0（但程式碼**尚未驗證**，紀錄中的狀態是 `UNKNOWN`）；`report` 以該次執行的狀態為
+exit code，若成功的執行之後檔案已被修改則顯示 STALE 並回傳 20。
 驗證相關指令有 `--timeout-scale`、`--gates`、`--fail-fast`、`--no-sandbox`、`--allow-unsandboxed`、
 `--check-unapproved`；LLM 相關有 `--provider`、`--mock-dir`、`--llm-timeout`、`--max-rounds`。
 
@@ -113,7 +127,7 @@ leanc run path/to/spec.yaml --provider openai
 | [`div_by_zero`](examples/div_by_zero) | Test 3 除以零 | 未檢查 `den` | `COUNTEREXAMPLE_FOUND`（`den=0`；`INT_MIN/-1`） | cbmc, ubsan | 2 回合（第 1 回合只修一半）→ `VERIFIED_BOUNDED` |
 | [`int_overflow`](examples/int_overflow) | Test 4 整數溢位 | 先加再檢查 | `COUNTEREXAMPLE_FOUND`（強制 `signed-overflow`） | cbmc, ubsan | 1 回合 → `VERIFIED_BOUNDED` |
 | [`null_deref`](examples/null_deref) | Test 5 指標安全 | 檢查 NULL 但未返回 | `COUNTEREXAMPLE_FOUND` | clang-static-analyzer, cbmc, ubsan | 1 回合 → `VERIFIED_BOUNDED` |
-| [`loop_unwind`](examples/loop_unwind) | Test 6 迴圈展開不足 | 正確，但 unwind 5 < 16 | `UNKNOWN`（unwinding assertion 失敗） | cbmc | `UNKNOWN`（不嘗試「修復」）；變體 unwind 17 → `VERIFIED_BOUNDED` |
+| [`loop_unwind`](examples/loop_unwind) | Test 6 迴圈展開不足 | 正確，但 unwind 5（n ≤ 16 需要 17） | `UNKNOWN`（unwinding assertion 失敗） | cbmc | `UNKNOWN`（不嘗試「修復」）；變體 unwind 17 → `VERIFIED_BOUNDED` |
 | [`vacuous_harness`](examples/vacuous_harness) | vacuity | 有 off-by-one，harness assume 互相矛盾 | `UNKNOWN`（純 CBMC 會說 SUCCESSFUL） | cbmc（探針） | `UNKNOWN`；修正 harness 的變體 → `COUNTEREXAMPLE_FOUND` |
 | [`runtime_memory`](examples/runtime_memory) | 執行期記憶體 | 錯誤路徑洩漏 | `RUNTIME_TEST_FAILED` | lsan | 1 回合 → `VERIFIED_BOUNDED` |
 | [`ring_buffer`](examples/ring_buffer) | 多檔案專案 | 正確（2 個 .c） | `VERIFIED_BOUNDED` | — | `VERIFIED_BOUNDED` |
@@ -143,12 +157,19 @@ python scripts/run_experiments.py        # 結果寫入 experiments/results/resu
 
 * **規格與 harness 是可信任的，AI 產物不是。** 批准紀錄綁定規格語意雜湊、harness/測試/標頭的 SHA-256，
   並以存放於工作區外的金鑰做 HMAC 簽章；任何修改都使結果變成 `SPEC_UNAPPROVED`。
+* **強制的原始碼完整性關卡**（每次 verify 都執行，不能從規格移除）：以 `llvm-nm`/`llvm-readelf` 檢查編譯後
+  的物件檔——只能定義介面標頭宣告的外部符號（不能覆寫 `__assert_fail`、`nondet_*`、`main`、libc 名稱）、
+  只能匯入 CBMC 能忠實建模的 libc 函式（禁止 `exit`/`abort`/`atexit`/`fork`/`exec`/弱引用…）、不能有
+  constructor/destructor；並在前處理層級拒絕依工具而異的條件編譯（`#ifdef __clang__`、`__OPTIMIZE__`、
+  `__CPROVER__`…）、`#pragma`/`_Pragma`、`#line`/linemarker、`__VERIFIER_*`。未通過時不執行任何測試。
 * **修復代理只能修改 `sources.editable`**，且不能加入 `__CPROVER_*`/`LEANC_*`/`__builtin_assume`、
   不能刪除 `assert`、不能抑制警告或 sanitizer、不能 `#include` 工作區外檔案、不能新增
   `system`/`exec`/`fork`/`socket` 等呼叫、不能把目標函式改成固定回傳值；重複補丁被偵測為循環；
   讓結果變成 `UNKNOWN`/`TIMEOUT` 不算改善。
 * **不可信程式只在 bubblewrap 沙箱中執行**（無網路、丟棄 capabilities、uid nobody、唯讀系統目錄、
-  私有 `/tmp`、CPU/記憶體/時間/輸出限制）；沒有可用沙箱時拒絕執行並回報 `UNKNOWN`，不會假裝已隔離。
+  容量受限的私有 `/tmp`、CPU/記憶體/時間/輸出/檔案大小限制）；沒有可用沙箱時拒絕執行並回報 `UNKNOWN`，
+  不會假裝已隔離。只有 CLI 旗標 `--allow-unsandboxed` 能放寬（專案設定檔不能）。
+* **批准在驗證過程中被重新檢查**（CBMC 之前與所有關卡之後），且以工作區外的簽章帳本防止回滾到舊版本。
 * 不使用 `shell=True`；子行程使用最小環境；日誌、報告與 LLM transcript 都經過憑證遮蔽。
 
 詳見 [docs/trust-model.md](docs/trust-model.md) 與 [docs/security.md](docs/security.md)。

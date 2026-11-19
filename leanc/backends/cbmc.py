@@ -44,7 +44,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from leanc.core.context import BackendContext
-from leanc.core.models import Diagnostic, FailureReport, StageResult, ToolInvocation
+from leanc.core.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    StageResult,
+    ToolInvocation,
+)
 from leanc.core.runner import Limits, ProcResult
 from leanc.core.status import Outcome, outcome_to_status
 from leanc.repair.counterexample import (
@@ -248,6 +254,12 @@ def interpret_output(text: str) -> CbmcOutput:
                 if mm:
                     out.platform = mm.group("plat")
     return out
+
+
+def _same_path(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return False
+    return os.path.normpath(a).removeprefix("./") == os.path.normpath(b).removeprefix("./")
 
 
 def _program_version(program: str | None) -> str | None:
@@ -458,6 +470,110 @@ def find_probes(harness_text: str) -> tuple[bool, list[str]]:
     return True, labels
 
 
+def probe_occurrences(harness_text: str) -> tuple[int, dict[str, int]]:
+    """``(occurrences, per_label_counts)``: how many ``LEANC_REACH(`` uses the
+    comment-stripped harness contains, and how often each literal label is
+    used.  Every occurrence must show up as (at least) one probe property in
+    the vacuity run; a missing one is treated as unreachable."""
+    code = strip_c_comments(harness_text)
+    counts: dict[str, int] = {}
+    for m in _REACH_LABEL_RE.finditer(code):
+        counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    return len(_REACH_USE_RE.findall(code)), counts
+
+
+def _blank_string_literals(code: str) -> str:
+    """Replace the contents of string / char literals with spaces (comments
+    must already be stripped) so text inside literals is never matched."""
+    out: list[str] = []
+    i, n = 0, len(code)
+    while i < n:
+        c = code[i]
+        if c in "\"'":
+            j = i + 1
+            while j < n and code[j] != c and code[j] != "\n":
+                j += 2 if code[j] == "\\" else 1
+            j = min(j + 1, n)
+            out.append(c + " " * max(0, j - i - 2) + (code[j - 1] if j - i >= 2 else ""))
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+_CONDITIONAL_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b")
+_DIRECTIVE_RE = re.compile(r"^\s*#")
+
+
+def _blank_preprocessor_regions(code: str) -> str:
+    """Blank preprocessor directive lines (including ``#define`` bodies with
+    line continuations) and everything inside conditional blocks: whether an
+    ``#if`` branch is compiled cannot be decided without preprocessing, so
+    those lines are conservatively ignored when counting assertions."""
+    out: list[str] = []
+    depth = 0
+    continued = False
+    for line in code.split("\n"):
+        if continued:
+            continued = line.rstrip().endswith("\\")
+            out.append("")
+            continue
+        m = _CONDITIONAL_RE.match(line)
+        if m:
+            kind = m.group(1)
+            if kind in ("if", "ifdef", "ifndef"):
+                depth += 1
+            elif kind == "endif":
+                depth = max(0, depth - 1)
+            continued = line.rstrip().endswith("\\")
+            out.append("")
+            continue
+        if _DIRECTIVE_RE.match(line):
+            continued = line.rstrip().endswith("\\")
+            out.append("")
+            continue
+        out.append("" if depth > 0 else line)
+    return "\n".join(out)
+
+
+_MAIN_DEF_RE = re.compile(r"\bmain\s*\([^;{})]*\)\s*\{")
+_ASSERT_USE_RE = re.compile(r"\b(?:__CPROVER_assert|assert)\s*\(")
+
+
+def _function_body(code: str, start: int) -> str:
+    """Text from the ``{`` at ``start`` to its matching ``}`` (literals must
+    already be blanked)."""
+    depth = 0
+    for i in range(start, len(code)):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[start : i + 1]
+    return code[start:]
+
+
+def count_harness_assertions(harness_text: str) -> int:
+    """Number of ``assert(...)`` / ``__CPROVER_assert(...)`` calls written
+    directly in the harness's ``main`` body.
+
+    CBMC lists every such call as an ``assertion`` property of ``main`` (even
+    in dead code or with a constant condition).  Deliberately conservative,
+    so a legitimate harness never trips the check: assertions in comments,
+    string literals, ``#define`` bodies, preprocessor conditional blocks and
+    helper functions (which CBMC drops when they are never called) are not
+    counted; macro-expanded assertions only add properties.
+    """
+    code = _blank_preprocessor_regions(_blank_string_literals(strip_c_comments(harness_text)))
+    m = _MAIN_DEF_RE.search(code)
+    if not m:
+        return 0
+    body = _function_body(code, m.end() - 1)
+    return len(_ASSERT_USE_RE.findall(body))
+
+
 # --------------------------------------------------------------------------- coverage
 
 
@@ -568,8 +684,8 @@ def scope_assumptions(
     if platform:
         out.append(f"C semantics as modelled by CBMC for {platform}")
     if vacuity is not None and vacuity.get("status") == "ok":
-        probes = vacuity.get("probes", {})
-        out.append(f"non-vacuity: all {len(probes)} LEANC_REACH probe(s) of the harness are reachable")
+        n = len(vacuity.get("properties") or vacuity.get("probes") or {})
+        out.append(f"non-vacuity: all {n} LEANC_REACH probe(s) of the harness are reachable")
     if no_body:
         out.append(
             "functions without a body are treated by CBMC as returning arbitrary values: " + ", ".join(sorted(no_body))
@@ -578,6 +694,153 @@ def scope_assumptions(
         out.append(
             "compile define(s) not passed to CBMC because they would disable harness assertions: "
             + ", ".join(dropped_defines)
+        )
+    return out
+
+
+# --------------------------------------------------------------------------- vacuity probes
+
+
+@dataclass
+class _ProbeOutcome:
+    details: dict
+    failures: list[FailureReport] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    inconclusive: str = ""
+    problem: _Problem | None = None
+
+
+def _evaluate_probes(run: _Run, harness_text: str, *, harness: str, unwind_insufficient: bool) -> _ProbeOutcome:
+    """Judge the vacuity run.
+
+    Probes are keyed by CBMC *property id*, not by label: two probes may
+    share a label, and each must be reachable on its own (one reachable
+    ``"branch"`` must not hide an unreachable one).  The harness must also
+    yield at least as many probe properties as it contains ``LEANC_REACH(``
+    occurrences; occurrences CBMC did not report (code compiled out, in a
+    never-called function, ...) count as unreachable.
+    """
+    occurrences, source_counts = probe_occurrences(harness_text)
+    props: list[tuple[str, str, str, dict]] = []  # (property id, label, status, result)
+    for k, r in enumerate(run.out.results or []):
+        if not is_reach_probe(r):
+            continue
+        pid = str(r.get("property") or f"<probe {k}>")
+        props.append((pid, str(r.get("description"))[len(REACH_PREFIX) :], str(r.get("status", "")).upper(), r))
+
+    reported: dict[str, int] = {}
+    for _, label, _, _ in props:
+        reported[label] = reported.get(label, 0) + 1
+    duplicates = {lb: n for lb, n in reported.items() if n > 1}
+
+    def where(r: dict) -> str:
+        loc = location_from_cbmc(r.get("sourceLocation"))
+        return f"{loc.file}:{loc.line}" if loc and loc.file and loc.line is not None else "?"
+
+    def display(label: str, r: dict) -> str:
+        return f"{label} ({where(r)})" if label in duplicates else label
+
+    properties = {
+        pid: {"label": label, "reachable": status == "FAILURE", "status": status, "location": where(r)}
+        for pid, label, status, r in props
+    }
+    probes: dict[str, bool] = {}
+    for _, label, status, _ in props:
+        probes[label] = probes.get(label, True) and status == "FAILURE"
+    for label in source_counts:
+        probes.setdefault(label, False)  # in the source, never reported
+    det: dict[str, Any] = {"status": "ok", "probes": probes, "properties": properties, "occurrences": occurrences}
+    out = _ProbeOutcome(details=det)
+    if duplicates:
+        det["duplicate_labels"] = duplicates
+        out.notes.append(
+            "duplicate LEANC_REACH label(s): "
+            + ", ".join(f"{lb!r} x{n}" for lb, n in sorted(duplicates.items()))
+            + "; every probe occurrence is checked separately"
+        )
+
+    undecided = [display(label, r) for _, label, status, r in props if status not in ("FAILURE", "SUCCESS")]
+    if undecided:
+        det["status"] = "skipped"
+        det["note"] = "undecided probes"
+        out.problem = _Problem(
+            Outcome.ERROR,
+            f"CBMC (vacuity run) could not decide the reachability of probe(s) {', '.join(undecided)}"
+            + (f": {_messages_excerpt(run.out, run.proc.stderr)}" if run.out.errors else ""),
+        )
+        return out
+
+    seen_ids: set[str] = set()
+
+    def add(f: FailureReport) -> None:
+        base, n = f.id, 2
+        while f.id in seen_ids:
+            f.id = f"{base}#{n}"
+            n += 1
+        seen_ids.add(f.id)
+        out.failures.append(f)
+
+    unreachable: list[str] = []
+    for pid, label, status, r in props:
+        if status != "SUCCESS":
+            continue
+        vf = vacuity_failure(label, result=r, raw_ref=run.raw_ref, unwind_insufficient=unwind_insufficient)
+        if label in duplicates:
+            vf.id = f"cbmc:vacuity:{label}@{where(r)}"
+        add(vf)
+        unreachable.append(display(label, r))
+
+    missing_by_label = {lb: n - reported.get(lb, 0) for lb, n in source_counts.items() if n > reported.get(lb, 0)}
+    for label, missing in missing_by_label.items():
+        vf = vacuity_failure(label, raw_ref=run.raw_ref, reported=False, unwind_insufficient=unwind_insufficient)
+        if reported.get(label, 0):
+            vf.id = f"cbmc:vacuity:{label}@unreported"
+            vf.description = (
+                f'{missing} of {source_counts[label]} occurrence(s) of LEANC_REACH("{label}") were not reported '
+                "by CBMC (the code containing them is not reachable from the harness entry point)"
+            )
+        add(vf)
+    missing_total = max(0, occurrences - len(props))
+    unattributed = missing_total - sum(missing_by_label.values())
+    if unattributed > 0:
+        add(
+            FailureReport(
+                id="cbmc:vacuity:unreported-probes",
+                kind="vacuity",
+                tool=TOOL,
+                description=(
+                    f"{unattributed} LEANC_REACH occurrence(s) of the harness {harness} were not reported by CBMC "
+                    "(compiled out, or in code not reachable from the harness entry point)"
+                ),
+                location=Location(file=harness),
+                explanation=(
+                    "Each LEANC_REACH occurrence must appear as a probe in CBMC's vacuity run; missing probes are "
+                    "treated as unreachable, so the verification cannot be shown to be non-vacuous."
+                ),
+                raw_ref=run.raw_ref,
+            )
+        )
+    det["unreported_occurrences"] = max(missing_total, sum(missing_by_label.values()))
+
+    if not props and not out.failures:
+        det["status"] = "unchecked"
+        out.inconclusive = (
+            "the harness mentions LEANC_REACH but CBMC reported no probe in the vacuity run; vacuity cannot be checked"
+        )
+        return out
+    if out.failures:
+        det["status"] = "vacuous"
+        parts = []
+        if unreachable:
+            parts.append(f"probe(s) {', '.join(unreachable)} unreachable")
+        n_missing = det["unreported_occurrences"]
+        if n_missing:
+            names = ", ".join(missing_by_label) if missing_by_label else "with non-literal labels"
+            parts.append(f"{n_missing} LEANC_REACH occurrence(s) not reported by CBMC ({names})")
+        out.inconclusive = (
+            "vacuous harness: "
+            + "; ".join(parts)
+            + " - the assumptions/code make that point unreachable, so the checks there are vacuous"
         )
     return out
 
@@ -703,6 +966,43 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
             )
 
     results = vrun.out.results or []
+
+    # Second line of defence against neutralised harness assertions (e.g.
+    # editable code defining __assert_fail, which makes CBMC drop every
+    # assert() of the harness from its property list): each assertion written
+    # in the harness's main() must appear as an "assertion" property of main.
+    expected_asserts = count_harness_assertions(harness_text)
+    listed_asserts = 0
+    for r in results:
+        loc = location_from_cbmc(r.get("sourceLocation"))
+        if (
+            loc is not None
+            and loc.function == "main"
+            and _same_path(loc.file, v.harness)
+            and property_class(r.get("property"), r.get("description")) == "assertion"
+        ):
+            listed_asserts += 1
+    details["harness_assertions"] = {"in_source": expected_asserts, "cbmc_properties": listed_asserts}
+    if listed_asserts < expected_asserts:
+        diagnostics.append(
+            Diagnostic(
+                tool=TOOL,
+                rule_id="missing-assertions",
+                severity="error",
+                message=(
+                    f"the harness main() contains {expected_asserts} assertion(s) but CBMC lists only "
+                    f"{listed_asserts} assertion property(ies) for it"
+                ),
+                location=Location(file=v.harness, function="main"),
+            )
+        )
+        return result(
+            Outcome.ERROR,
+            "harness assertions missing from CBMC's property list (assert machinery overridden?): "
+            f"{v.harness} main() contains {expected_asserts} assertion(s), CBMC checked {listed_asserts}; "
+            "no verdict is possible",
+        )
+
     real_fail: list[dict] = []
     unwind_fail: list[dict] = []
     unresolved: list[dict] = []
@@ -817,7 +1117,7 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
         details["vacuity"] = {"status": "disabled", "probes": {}}
         inconclusive.append("vacuity check disabled in spec; cannot exclude vacuous verification")
     else:
-        has_probes, labels = find_probes(harness_text)
+        has_probes, _ = find_probes(harness_text)
         if not has_probes:
             details["vacuity"] = {"status": "unchecked", "probes": {}}
             inconclusive.append(
@@ -831,63 +1131,30 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
                 details["vacuity"] = {"status": "skipped", "probes": {}, "note": f"vacuity run failed: {vac_problem.summary}"}
                 diagnostics.extend(vac_problem.diagnostics)
             else:
-                probes: dict[str, bool] = {}
-                probe_results: dict[str, dict] = {}
-                undecided: list[str] = []
-                for r in arun.out.results or []:
-                    if not is_reach_probe(r):
-                        continue
-                    label = str(r.get("description"))[len(REACH_PREFIX) :]
-                    status = str(r.get("status", "")).upper()
-                    probe_results.setdefault(label, r)
-                    if status == "FAILURE":
-                        probes[label] = True
-                        probe_results[label] = r
-                    elif status == "SUCCESS":
-                        probes.setdefault(label, False)
-                    else:
-                        undecided.append(label)
-                not_reported = [lb for lb in labels if lb not in probes and lb not in undecided]
-                for lb in not_reported:
-                    probes[lb] = False
-                if undecided:
-                    details["vacuity"] = {"status": "skipped", "probes": probes, "note": "undecided probes"}
-                    vac_problem = _Problem(
-                        Outcome.ERROR,
-                        f"CBMC (vacuity run) could not decide the reachability of probe(s) {', '.join(sorted(set(undecided)))}"
-                        + (f": {_messages_excerpt(arun.out, arun.proc.stderr)}" if arun.out.errors else ""),
+                outcome_v = _evaluate_probes(
+                    arun,
+                    harness_text,
+                    harness=v.harness,
+                    unwind_insufficient=bool(unwind_reports),
+                )
+                details["vacuity"] = outcome_v.details
+                details["notes"].extend(outcome_v.notes)
+                failures.extend(outcome_v.failures)
+                for vf in outcome_v.failures:
+                    diagnostics.append(
+                        Diagnostic(tool=TOOL, rule_id="vacuity", severity="warning", message=vf.description, location=vf.location)
                     )
-                elif not probes:
-                    details["vacuity"] = {"status": "unchecked", "probes": {}}
+                if outcome_v.problem is not None:
+                    vac_problem = outcome_v.problem
+                elif outcome_v.inconclusive:
                     inconclusive.append(
-                        "the harness mentions LEANC_REACH but CBMC reported no probe in the vacuity run; "
-                        "vacuity cannot be checked"
+                        outcome_v.inconclusive
+                        + (
+                            " (possibly only because executions beyond the unwind bound were cut off)"
+                            if unwind_reports
+                            else ""
+                        )
                     )
-                else:
-                    vacuous = [lb for lb, reach in probes.items() if not reach]
-                    details["vacuity"] = {"status": "vacuous" if vacuous else "ok", "probes": probes}
-                    for lb in vacuous:
-                        vf = vacuity_failure(
-                            lb,
-                            result=probe_results.get(lb),
-                            raw_ref=arun.raw_ref,
-                            reported=lb not in not_reported,
-                            unwind_insufficient=bool(unwind_reports),
-                        )
-                        failures.append(vf)
-                        diagnostics.append(
-                            Diagnostic(tool=TOOL, rule_id="vacuity", severity="warning", message=vf.description, location=vf.location)
-                        )
-                    if vacuous:
-                        inconclusive.append(
-                            f"vacuous harness: probe(s) {', '.join(vacuous)} unreachable - the assumptions/code make "
-                            "that point unreachable, so the checks there are vacuous"
-                            + (
-                                " (possibly only because executions beyond the unwind bound were cut off)"
-                                if unwind_reports
-                                else ""
-                            )
-                        )
 
     if vac_problem is not None:
         summary = vac_problem.summary
@@ -916,9 +1183,9 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
                     + (f"; never reached: lines {', '.join(map(str, unc))}" if unc else "")
                 )
 
-    probes = details["vacuity"].get("probes", {})
+    n_probes = len(details["vacuity"].get("properties", {}))
     return result(
         Outcome.PASS,
         f"CBMC: all {real_total} properties hold for the approved harness within unwind {v.unwind} "
-        f"(all loops fully unwound; {len(probes)} vacuity probe(s) reachable; checks: {', '.join(v.effective_checks())})",
+        f"(all loops fully unwound; all {n_probes} vacuity probe(s) reachable; checks: {', '.join(v.effective_checks())})",
     )

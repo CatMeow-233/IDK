@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from leanc.core.context import VerifyOptions
-from leanc.core.errors import PatchError, ProviderError
+from leanc.core.errors import LeanCError, PatchError, ProviderError
 from leanc.core.models import (
     FailureReport,
     PolicyDecision,
@@ -40,7 +42,7 @@ from leanc.core.models import (
     VerificationResult,
 )
 from leanc.core.redact import redact
-from leanc.core.status import DEFINITE_FAILURES, REPAIRABLE, Status, is_success, rank
+from leanc.core.status import DEFINITE_FAILURES, REPAIRABLE, Outcome, Status, is_success, rank
 from leanc.core.workspace import Workspace
 from leanc.specs.loader import spec_to_yaml
 from leanc.specs.model import Spec
@@ -57,34 +59,79 @@ class RepairOutcome:
     message: str = ""
 
 
-def _fingerprints(vr: VerificationResult) -> dict[str, FailureReport]:
+_LINE_RE = re.compile(r"@(.*?):(?:\d+|\?):")
+
+
+def _display_fp(f: FailureReport) -> str:
     from leanc.repair.counterexample import fingerprint
 
-    out: dict[str, FailureReport] = {}
-    for f in vr.all_failures():
-        try:
-            fp = fingerprint(f)
-        except Exception:  # fingerprint is best-effort for non-CBMC failures
-            fp = f"{f.kind}:{f.tool}:{f.property_id}:{(f.location.short() if f.location else '')}"
-        out[fp] = f
+    try:
+        return fingerprint(f)
+    except Exception:  # fingerprint is best-effort for unusual reports
+        return f"{f.kind}:{f.tool}:{f.property_id}:{(f.location.short() if f.location else '')}"
+
+
+def _compare_key(f: FailureReport) -> str:
+    """Line-insensitive identity used to decide fixed / introduced failures:
+    a genuine fix that merely shifts the remaining defects to other line
+    numbers must not look like it introduced new ones."""
+    return _LINE_RE.sub(lambda m: f"@{m.group(1)}:", _display_fp(f), count=1)
+
+
+def _failure_counter(vr: VerificationResult) -> Counter:
+    return Counter(_compare_key(f) for f in vr.all_failures())
+
+
+def _diff_failures(before: VerificationResult, after: VerificationResult) -> tuple[list[str], list[str]]:
+    """(fixed, introduced) as multisets of line-insensitive failure keys."""
+    cb, ca = _failure_counter(before), _failure_counter(after)
+    fixed = sorted((cb - ca).elements())
+    introduced = sorted((ca - cb).elements())
+    return fixed, introduced
+
+
+_DEFINITE_OUTCOMES = (Outcome.PASS, Outcome.FAIL)
+
+
+def stage_regressions(before: VerificationResult, after: VerificationResult) -> list[str]:
+    """Required gates that reached a definite verdict (PASS / FAIL) before but
+    not after (INCONCLUSIVE / TIMEOUT / ERROR / SKIPPED / missing), plus newly
+    introduced unwind / vacuity failures.  Any regression disqualifies a
+    candidate: hiding a counterexample by making a gate inconclusive is not
+    a repair."""
+    out: list[str] = []
+    for sb in before.stages:
+        if sb.stage == "spec" or not sb.required or sb.outcome not in _DEFINITE_OUTCOMES:
+            continue
+        sa = after.stage(sb.stage)
+        if sa is None or sa.outcome not in _DEFINITE_OUTCOMES:
+            out.append(f"{sb.stage}: {sb.outcome.value} -> {sa.outcome.value if sa else 'missing'}")
+    kinds_before = Counter(_compare_key(f) for f in before.all_failures() if f.kind in ("unwind", "vacuity"))
+    kinds_after = Counter(_compare_key(f) for f in after.all_failures() if f.kind in ("unwind", "vacuity"))
+    for k in (kinds_after - kinds_before).elements():
+        out.append(f"introduced inconclusive result {k}")
     return out
 
 
 def is_improvement(before: VerificationResult, after: VerificationResult) -> bool:
     """A candidate is kept only if it verifies, or if it is still a *definite*
     failure that is strictly better (better-ranked definite status, or the
-    same status with strictly fewer failures and no newly introduced ones)."""
+    same status with strictly fewer failures and no newly introduced ones),
+    and no required gate lost its definite verdict."""
     if is_success(after.status):
         return True
     if after.status not in DEFINITE_FAILURES:
         return False  # UNKNOWN / TIMEOUT / TOOL_ERROR / SPEC_UNAPPROVED are never improvements
+    if stage_regressions(before, after):
+        return False
     if rank(after.status) > rank(before.status):
         return True
     if rank(after.status) < rank(before.status):
         return False
-    fb, fa = _fingerprints(before), _fingerprints(after)
-    introduced = set(fa) - set(fb)
-    return len(fa) < len(fb) and not introduced
+    fixed, introduced = _diff_failures(before, after)
+    return bool(fixed) and not introduced and sum(_failure_counter(after).values()) < sum(
+        _failure_counter(before).values()
+    )
 
 
 def _history_entry(r: RepairRound) -> dict:
@@ -141,14 +188,20 @@ def repair_loop(
             ),
         )
     if max_rounds <= 0:
-        return RepairOutcome(status=Status.REPAIR_EXHAUSTED, final=initial, message="max_rounds is 0")
+        return RepairOutcome(
+            status=initial.status, final=initial, message="repair disabled (max_rounds 0): status unchanged"
+        )
 
-    best_sources = {rel: ws.read_text(rel) for rel in spec.sources.editable if ws.exists(rel)}
+    try:
+        best_sources = {rel: ws.read_text(rel) for rel in spec.sources.editable if ws.exists(rel)}
+        headers = {h: ws.read_text(h) for h in spec.sources.headers if ws.exists(h)}
+        harness = ws.read_text(spec.verification.harness) if ws.exists(spec.verification.harness) else None
+        tests = ws.read_text(spec.tests.driver) if spec.tests.driver and ws.exists(spec.tests.driver) else None
+    except LeanCError as exc:
+        return RepairOutcome(status=initial.status, final=initial, message=f"cannot start repair: {exc}")
     best_vr = initial
+    base_run_id = initial.run_id
     seen = {candidate_hash(best_sources)}
-    headers = {h: ws.read_text(h) for h in spec.sources.headers if ws.exists(h)}
-    harness = ws.read_text(spec.verification.harness) if ws.exists(spec.verification.harness) else None
-    tests = ws.read_text(spec.tests.driver) if spec.tests.driver and ws.exists(spec.tests.driver) else None
     spec_yaml = spec_to_yaml(spec)
     rounds: list[RepairRound] = []
     repair_dir = run_dir / "repair"
@@ -202,6 +255,13 @@ def repair_loop(
             continue
         try:
             candidate = proposal_to_contents(proposal.files, proposal.patch, best_sources)
+            for rel, content in list(candidate.items()):
+                # Preserve CRLF line endings of existing sources: models (and
+                # the response parser) normalise to LF, which would otherwise
+                # rewrite every line and trip the patch-size limit.
+                old = best_sources.get(rel)
+                if old is not None and "\r\n" in old and "\r\n" not in content:
+                    candidate[rel] = content.replace("\n", "\r\n")
         except PatchError as exc:
             rr.note = f"patch could not be applied: {exc}"
             rr.policy = PolicyDecision(
@@ -234,15 +294,14 @@ def repair_loop(
             project_root=project_root,
             options=options,
             run_dir=rdir / "verify",
-            run_id=f"{best_vr.run_id}-r{n}",
+            run_id=f"{base_run_id}-r{n}",
             candidate={k: v for k, v in candidate.items() if k in spec.sources.editable},
             spec=spec,
         )
         rr.verification_path = str((rdir / "verify" / "verification.json").relative_to(run_dir))
         rr.status_after = vr.status
-        fb, fa = _fingerprints(best_vr), _fingerprints(vr)
-        rr.fixed_failures = sorted(set(fb) - set(fa))
-        rr.introduced_failures = sorted(set(fa) - set(fb))
+        rr.fixed_failures, rr.introduced_failures = _diff_failures(best_vr, vr)
+        regressions = stage_regressions(best_vr, vr) if not is_success(vr.status) else []
         if is_improvement(best_vr, vr):
             best_vr, best_sources = vr, {k: v for k, v in candidate.items() if k in spec.sources.editable}
             rr.note = "accepted" + (" (verified)" if is_success(vr.status) else " (improvement; continuing)")
@@ -253,6 +312,8 @@ def repair_loop(
                 if rr.status_before
                 else "reverted"
             )
+            if regressions:
+                rr.note += " (gate regression: " + "; ".join(regressions) + ")"
         rounds.append(rr)
         log.info("round %d: %s -> %s (%s)", n, rr.status_before, vr.status, rr.note)
         if is_success(vr.status):
@@ -261,6 +322,11 @@ def repair_loop(
     written: list[str] = []
     if is_success(best_vr.status):
         final_status = best_vr.status
+        vdir = run_dir / "verified-candidate"
+        for rel, content in best_sources.items():
+            d = vdir / rel
+            d.parent.mkdir(parents=True, exist_ok=True)
+            d.write_text(content, encoding="utf-8")
         if write_back:
             backup = run_dir / "backup"
             for rel, content in best_sources.items():
@@ -271,7 +337,7 @@ def repair_loop(
                 if not ws.exists(rel) or ws.read_text(rel) != content:
                     ws.write_text(rel, content)
                     written.append(rel)
-        message = f"verified after {len(rounds)} repair round(s)"
+        message = f"verified after {len(rounds)} repair round(s); verified sources saved in {vdir}"
     else:
         final_status = Status.REPAIR_EXHAUSTED
         best_dir = run_dir / "best-candidate"

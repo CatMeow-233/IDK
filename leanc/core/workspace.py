@@ -86,18 +86,26 @@ class Workspace:
                 os.close(fd)
 
     def read_text(self, rel: str, max_bytes: int = 16 * 1024 * 1024) -> str:
-        return self.read_bytes(rel, max_bytes).decode("utf-8")
+        data = self.read_bytes(rel, max_bytes)
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise WorkspaceError(f"{rel} is not valid UTF-8 (byte offset {exc.start}); convert it to UTF-8") from None
 
-    def write_text(self, rel: str, content: str, *, mode: int = 0o644) -> Path:
+    def write_text(self, rel: str, content: str, *, mode: int | None = None) -> Path:
         return self.write_bytes(rel, content.encode("utf-8"), mode=mode)
 
-    def write_bytes(self, rel: str, data: bytes, *, mode: int = 0o644) -> Path:
+    def write_bytes(self, rel: str, data: bytes, *, mode: int | None = None) -> Path:
+        """Atomically replace ``rel``.  ``mode=None`` keeps the permission bits
+        of an existing file (0644 for new files)."""
         target = self.resolve(rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         # re-check after mkdir (a racing symlink would be caught here)
         target = self.resolve(rel)
         if target.exists() and (target.is_symlink() or not target.is_file()):
             raise WorkspaceError(f"refusing to overwrite non-regular file: {rel}")
+        if mode is None:
+            mode = (target.stat().st_mode & 0o7777) if target.exists() else 0o644
         fd, tmp = tempfile.mkstemp(prefix=".leanc-tmp-", dir=target.parent)
         try:
             with os.fdopen(fd, "wb") as fh:

@@ -40,7 +40,13 @@ Lean C 把所有產物分成三類：
 | 刪除失敗的 assert | harness 受保護；原始碼中 `assert(` 數量減少 → `ASSERT_REMOVED` |
 | 在原始碼加 `__CPROVER_assume` / `LEANC_ASSUME` / `__builtin_assume` / `__builtin_unreachable` | `CPROVER_BUILTIN` / `ASSUMPTION_INJECTION` |
 | 降低驗證強度（關閉 `--signed-overflow-check`、縮小 unwind、縮小輸入範圍） | 檢查類別、unwind、輸入限制都在已批准規格/harness 中；`MANDATORY_CHECKS` 不能被規格關閉；修復代理只能改原始碼 |
-| 讓 harness 變成 vacuous（例如讓函式 `exit(0)` 或無窮迴圈） | `LEANC_REACH` 探針不可達 → `UNKNOWN`；無窮迴圈 → unwinding assertion 失敗 → `UNKNOWN`；兩者都不算改善 |
+| 讓 harness 變成 vacuous（例如讓函式 `exit(0)` / `abort()` 或無窮迴圈） | 完整性關卡拒絕 `exit`/`_exit`/`abort`/`atexit`… 匯入（CBMC 把它們建模為 `assume(false)`，會悄悄刪掉輸入）；探針以 CBMC property 為單位計算，任何一個不可達 → `UNKNOWN`；無窮迴圈 → unwinding assertion 失敗 → `UNKNOWN`；都不算改善 |
+| 覆寫 harness 依賴的符號（`__assert_fail` 讓所有 assert 消失、`nondet_*` 縮小輸入空間、`main`、libc 函式） | 完整性關卡：物件檔的外部符號必須是介面標頭宣告的名稱；保留名稱、`nondet_*`、弱符號一律拒絕 |
+| 讓不同工具看到不同程式（`#ifdef __clang__`、`__OPTIMIZE__`、`__CPROVER__`、`LEANC_VACUITY_CHECK`、`NDEBUG`） | 完整性關卡拒絕在前處理指令中使用保留識別字/工具巨集 |
+| 以巨集組出 `_Pragma(CPROVER check disable ...)` 關閉檢查、`#line`/linemarker 偽裝成系統標頭以隱藏分析器警告、`__VERIFIER_assume` | 完整性關卡（前處理後掃描 + 指令規則） |
+| 在建構子中 `atexit(_exit(0))` 偽造測試結果 / 躲過 LSan | 拒絕 `.init_array`/`.ctors` 與 `atexit`/`_exit` 匯入；未通過則不執行測試 |
+| 測試程式在執行中竄改快照中的 harness | 沙箱只給測試程式自己的目錄（唯讀）與空白案例目錄；批准在 CBMC 前與結束時於快照上再檢查 |
+| 把批准紀錄回滾到被取代的舊版本 | `$LEANC_HOME` 中的簽章帳本記錄每個專案+規格已批准的最高版本 |
 | 吞掉錯誤 / 固定回傳值 | harness 的後置條件 assert（例如 `*out == arr[idx]`）+ `TRIVIALIZED_TARGET` 啟發式 |
 | 關閉警告 / sanitizer | `WARNING_SUPPRESSION`（`#pragma clang diagnostic`）、`SANITIZER_SUPPRESSION`（`no_sanitize`） |
 | 嘗試存取主機 / 網路 | `DANGEROUS_CALL`（system/popen/exec/fork/socket/...）+ 沙箱（無網路、唯讀系統目錄、uid nobody） |

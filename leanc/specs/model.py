@@ -252,6 +252,10 @@ class Spec(_M):
         self.sources.editable = [_n(p) for p in self.sources.editable]
         self.sources.headers = [_n(p) for p in self.sources.headers]
         self.sources.include_dirs = [_n(p) for p in self.sources.include_dirs]
+        for what, items in (("sources.editable", self.sources.editable), ("sources.headers", self.sources.headers)):
+            dup = sorted({p for p in items if items.count(p) > 1})
+            if dup:
+                raise ValueError(f"duplicate paths in {what} (after normalisation): {dup}")
         self.verification.harness = _n(self.verification.harness)
         if self.tests.driver:
             self.tests.driver = _n(self.tests.driver)

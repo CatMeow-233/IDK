@@ -148,3 +148,91 @@ def test_spec_draft_with_mock_is_untrusted(capsys, tmp_path):
     text = (proj / "drafts/my-get/spec.yaml").read_text()
     assert "UNTRUSTED" in text and "origin: ai-draft" in text and "spec_id: my-get" in text
     assert (proj / "drafts/my-get/harness_draft.c").read_text().startswith("/* UNTRUSTED")
+
+
+def test_generate_backs_up_and_exits_zero(capsys, example_copy, needs_toolchain):
+    proj = example_copy("safe_array_get")
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    capsys.readouterr()
+    src = proj / "src/safe_array.c"
+    src.write_text(src.read_text() + "/* MY PRECIOUS EDIT */\n")
+    rc, data = run(capsys, "generate", spec, "--force", "--provider", "mock", "--json")
+    assert rc == 0 and data["exit_code"] == 0
+    assert "PRECIOUS" not in src.read_text()
+    backup = Path(data["run_dir"]) / "backup/src/safe_array.c"
+    assert "PRECIOUS" in backup.read_text()
+
+
+def test_provider_failure_is_a_recorded_tool_error(capsys, example_copy, needs_toolchain):
+    proj = example_copy("ring_buffer")
+    (proj / "src/ring_stats.c").unlink()
+    (proj / "mock/generate/src/ring_stats.c").unlink()
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    capsys.readouterr()
+    rc, data = run(capsys, "run", spec, "--provider", "mock", "--json")
+    assert rc == 30 and data["status"] == "TOOL_ERROR"
+    assert (Path(data["run_dir"]) / "run.json").exists()
+    assert any("provider error" in m for m in data["messages"])
+
+
+def test_report_flags_stale_workspace(capsys, example_copy, needs_toolchain):
+    proj = example_copy("safe_array_get")
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    capsys.readouterr()
+    rc, data = run(capsys, "verify", spec, "--json")
+    assert rc == 0
+    (proj / "src/safe_array.c").write_text("int broken(void) { return 0 }\n")
+    rc = main(["report", data["run_dir"], "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 20 and out["stale_files"] == ["src/safe_array.c"]
+
+
+def test_project_config_cannot_disable_isolation(capsys, example_copy, needs_toolchain):
+    proj = example_copy("safe_array_get")
+    (proj / "leanc.yaml").write_text("sandbox: none\nallow_unsandboxed: true\n")
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    capsys.readouterr()
+    rc = main(["verify", spec, "--json"])
+    cap = capsys.readouterr()
+    data = json.loads(cap.out)
+    stages = {s["stage"]: s["outcome"] for s in data["verification"]["stages"]}
+    assert stages["sanitizer"] == "SKIPPED" and data["status"] == "UNKNOWN" and rc == 20
+    assert "ignored" in cap.err
+
+
+def test_init_is_atomic_and_keeps_gitignore_lines(capsys, tmp_path):
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "spec.yaml").write_text("mine\n")
+    (proj / ".gitignore").write_text("build")
+    rc = main(["init", str(proj)])
+    assert rc == 2 and not (proj / "README.md").exists()  # nothing copied on conflict
+    assert main(["init", str(proj), "--force"]) == 0
+    assert (proj / ".gitignore").read_text().splitlines() == ["build", ".leanc/runs/"]
+    assert main(["init", str(tmp_path / "q"), "--template", ""]) == 2
+
+
+def test_symlinked_runs_dir_is_refused(capsys, example_copy, tmp_path, needs_toolchain):
+    proj = example_copy("safe_array_get")
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (proj / ".leanc/runs").symlink_to(outside)
+    capsys.readouterr()
+    rc = main(["verify", spec])
+    assert rc == 2 and "symbolic link" in capsys.readouterr().err
+    assert not any(outside.iterdir())
+
+
+def test_bad_project_root_and_requirement_file(capsys, tmp_path, example_copy):
+    proj = example_copy("safe_array_get")
+    assert main(["verify", str(proj / "spec.yaml"), "--project-root", str(tmp_path / "typo")]) == 2
+    assert main(["spec", "draft", "--id", "x", "--requirement-file", str(tmp_path / "nope.txt"),
+                 "--project-root", str(tmp_path)]) == 2
+    assert "cannot read --requirement-file" in capsys.readouterr().err
+    assert main(["spec"]) == 2

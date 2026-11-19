@@ -1,0 +1,65 @@
+# Lean C specification: safe integer array read.
+leanc_spec: 1
+spec_id: safe-array-get
+version: 1
+title: Safe integer array read
+requirement: |
+  實作一個安全的整數陣列讀取函式。當索引超出範圍時，必須回傳錯誤，而不是讀取非法記憶體。
+  (Implement a safe integer-array read. Out-of-range indices must return an error
+  instead of reading invalid memory.)
+language: {name: c, standard: c17}
+target:
+  function: safe_array_get
+  signature: "int safe_array_get(const int *arr, size_t len, size_t idx, int *out)"
+  params:
+    - {name: arr, type: "const int *", description: "array of len readable ints, or NULL"}
+    - {name: len, type: size_t, description: "number of elements in arr"}
+    - {name: idx, type: size_t, description: "index to read (any value)"}
+    - {name: out, type: "int *", description: "where the element is written, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "SAFE_ARRAY_OK (0)", meaning: "success, *out == arr[idx]"}
+      - {value: "SAFE_ARRAY_ERR_NULL (-1)", meaning: "arr or out is NULL; nothing dereferenced"}
+      - {value: "SAFE_ARRAY_ERR_RANGE (-2)", meaning: "idx >= len; no memory read, *out untouched"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "if arr != NULL then arr points to at least len readable ints", c_expr: "len <= MAX_LEN"}
+  postconditions:
+    - {id: POST1, text: "arr, out non-NULL and idx < len => returns 0 and *out == arr[idx]"}
+    - {id: POST2, text: "idx >= len => returns -2 and *out is unchanged"}
+    - {id: POST3, text: "arr == NULL or out == NULL => returns -1"}
+    - {id: POST4, text: "the return value is always one of 0, -1, -2"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds memory access", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE3, text: "no undefined behaviour", checks: [signed-overflow, pointer-overflow, undefined-shift]}
+  frame:
+    - "arr[0..len) is never modified"
+sources:
+  editable: [src/safe_array.c]
+  headers: [include/safe_array.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_safe_array_get.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: out_of_range, args: [out_of_range]}
+    - {name: "null", args: ["null"]}
+verification:
+  harness: harness/safe_array_get_harness.c
+  checks: [unsigned-overflow, conversion]
+  unwind: 9
+  input_bounds:
+    - {name: len, min: "0", max: "8", note: "array sizes up to MAX_LEN=8 are explored"}
+    - {name: idx, note: "unconstrained (full size_t range)"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

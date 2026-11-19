@@ -32,6 +32,22 @@ def _tiny_c(dir_: Path, name: str, text: str) -> Path:
     return p
 
 
+def _safe_url(url: str) -> str:
+    """Strip userinfo, query and fragment before printing a URL."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    from leanc.core.redact import redact
+
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if parts.port:
+            host += f":{parts.port}"
+        return redact(urlunsplit((parts.scheme, host, parts.path, "", "")))
+    except ValueError:
+        return "[unparsable URL]"
+
+
 def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
     checks: list[Check] = []
     py_ok = sys.version_info >= (3, 11)
@@ -47,7 +63,14 @@ def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
         if clang:
             checks.append(Check("clang", True, True, f"{clang}: {tool_version(clang)}"))
         else:
-            checks.append(Check("clang", False, True, "not found", f"install clang ({APT_HINT}) or set LEANC_CLANG"))
+            hint = (
+                f"LEANC_CLANG={os.environ['LEANC_CLANG']!r} is not an executable"
+                if os.environ.get("LEANC_CLANG")
+                else f"install clang ({APT_HINT}) or set LEANC_CLANG"
+            )
+            checks.append(Check("clang", False, True, "not found", hint))
+            checks.append(Check("clang-static-analyzer", False, True, "not checked: clang missing", hint))
+            checks.append(Check("sanitizers", False, True, "not checked: clang missing", hint))
         # ------------------------------------------------- static analyzer
         if clang:
             src = _tiny_c(tdir, "sa.c", "int f(int *p){ if(!p) return *p; return 0; }\n")
@@ -138,7 +161,9 @@ def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
         else:
             checks.append(Check("cbmc", False, True, "not found", f"install CBMC ({APT_HINT}) or set LEANC_CBMC"))
         # ----------------------------------------------------------- sandbox
-        if sb.active:
+        if sandbox_preference == "none":
+            checks.append(Check("sandbox", True, False, "skipped (--no-sandbox); untrusted tests would be SKIPPED"))
+        elif sb.active:
             blocked = network_probe_blocked(sb, tdir)
             detail = sb.note + (
                 "; network: blocked" if blocked else "; network: COULD NOT CONFIRM isolation" if blocked is None else "; network: VISIBLE"
@@ -158,14 +183,17 @@ def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
     # ------------------------------------------------------------------ LLM
     key = bool(os.environ.get("LEANC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
     model = os.environ.get("LEANC_MODEL")
-    if key and model:
-        detail = f"OpenAI-compatible provider configured (model {model}, base {os.environ.get('LEANC_BASE_URL', 'https://api.openai.com/v1')})"
+    base = _safe_url(os.environ.get("LEANC_BASE_URL", "https://api.openai.com/v1"))
+    custom_base = bool(os.environ.get("LEANC_BASE_URL"))
+    configured = bool(model and (key or custom_base))
+    if configured:
+        detail = f"OpenAI-compatible provider configured (model {model}, base {base}{'' if key else ', no API key'})"
     elif key:
         detail = "API key present but LEANC_MODEL not set"
     else:
         detail = "no API key: offline mode (verification works; use --provider mock for generation/repair demos)"
     checks.append(
-        Check("llm-provider", bool(key and model), False, detail, "" if key and model else "set LEANC_API_KEY and LEANC_MODEL (optional)")
+        Check("llm-provider", configured, False, detail, "" if configured else "set LEANC_API_KEY and LEANC_MODEL (optional)")
     )
     kp = leanc_home() / "approval.key"
     checks.append(

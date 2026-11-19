@@ -32,6 +32,7 @@ from typing import Mapping, Sequence
 SYSTEM_RO_DIRS = ("/usr", "/etc/alternatives")
 SYSTEM_RO_FILES = ("/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/localtime")
 MERGED_USR_LINKS = ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
+TMPFS_SIZE_MB = 256
 
 
 @dataclass
@@ -48,6 +49,7 @@ class Sandbox:
     executable: str | None = None
     note: str = ""
     allow_network: bool = False
+    tmpfs_size_mb: int | None = None  # set by detect_sandbox when bwrap supports --size
 
     @property
     def active(self) -> bool:
@@ -76,7 +78,12 @@ class Sandbox:
             args.append("--share-net")
         args += ["--cap-drop", "ALL", "--uid", "65534", "--gid", "65534"]
         args += _system_mount_args()
-        args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+        args += ["--proc", "/proc", "--dev", "/dev"]
+        if self.tmpfs_size_mb:
+            # size-capped private /tmp (bubblewrap >= 0.8): untrusted code
+            # cannot exhaust host memory through tmpfs writes
+            args += ["--size", str(int(self.tmpfs_size_mb) * 1024 * 1024)]
+        args += ["--tmpfs", "/tmp"]
         mounts = mounts or SandboxMounts()
         bound: set[str] = set()
         # Make sure the executable itself is visible.
@@ -147,15 +154,20 @@ def detect_sandbox(preference: str = "auto") -> Sandbox:
             note="bubblewrap (bwrap) not found; install it (e.g. `apt-get install bubblewrap`) "
             "to enable isolated execution of untrusted programs",
         )
-    probe = Sandbox(kind="bwrap", executable=exe)
     true_bin = shutil.which("true") or "/usr/bin/true"
-    argv = probe.wrap([true_bin], cwd="/", env={"PATH": "/usr/bin:/bin"})
-    try:
-        cp = subprocess.run(  # noqa: S603 - fixed argv
-            argv, capture_output=True, timeout=20, check=False, env={"PATH": "/usr/bin:/bin"}
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return Sandbox(kind="none", note=f"bwrap present but not functional: {exc}")
+    size_mb: int | None = TMPFS_SIZE_MB
+    for attempt in (TMPFS_SIZE_MB, None):  # prefer a size-capped /tmp
+        probe = Sandbox(kind="bwrap", executable=exe, tmpfs_size_mb=attempt)
+        argv = probe.wrap([true_bin], cwd="/", env={"PATH": "/usr/bin:/bin"})
+        try:
+            cp = subprocess.run(  # noqa: S603 - fixed argv
+                argv, capture_output=True, timeout=20, check=False, env={"PATH": "/usr/bin:/bin"}
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return Sandbox(kind="none", note=f"bwrap present but not functional: {exc}")
+        size_mb = attempt
+        if cp.returncode == 0:
+            break
     if cp.returncode != 0:
         err = cp.stderr.decode("utf-8", "replace").strip().splitlines()
         return Sandbox(
@@ -166,8 +178,10 @@ def detect_sandbox(preference: str = "auto") -> Sandbox:
     return Sandbox(
         kind="bwrap",
         executable=exe,
+        tmpfs_size_mb=size_mb,
         note="bubblewrap: unshared user/pid/net/ipc/uts/cgroup namespaces, no network, "
-        "caps dropped, uid nobody, read-only system dirs, private /tmp",
+        "caps dropped, uid nobody, read-only system dirs, private /tmp"
+        + (f" (capped at {size_mb} MB)" if size_mb else ""),
     )
 
 

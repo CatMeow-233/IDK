@@ -1256,6 +1256,7 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
             cpu_s=math.ceil(timeout_s),
             memory_mb=None if plan.uses_shadow_runtime else tests.memory_mb,
             max_output_bytes=tests.max_output_bytes,
+            max_file_mb=64,  # untrusted code: cap every file it may write
         )
         mounts = SandboxMounts(ro=[str(out_root)], rw=[str(case_dir)])
         stdin_data = case.stdin.encode("utf-8") if case.stdin is not None else None

@@ -21,7 +21,7 @@ from typing import Any, Callable
 from leanc import __version__
 from leanc.core.config import CONFIG_FILE, load_config
 from leanc.core.context import VerifyOptions, find_project_root, new_run_id, runs_dir
-from leanc.core.errors import LeanCError
+from leanc.core.errors import LeanCError, ProviderError
 from leanc.core.models import RunRecord, utcnow
 from leanc.core.status import EXIT_INTERNAL, EXIT_USAGE, Status, exit_code, is_success
 
@@ -36,6 +36,11 @@ EPILOG = """exit codes:
 VERIFIED_BOUNDED only means: no violation of the checked properties exists within the
 approved harness, input constraints and unwind bound (all loops fully unwound, harness
 non-vacuous). It is never reported as PROVED.
+
+`leanc generate` exits 0 when generation succeeded (the code is NOT verified yet);
+`leanc report` exits with the run's status, or 20 if a successful run's files changed since.
+Integrity-gate violations (symbol overrides, tool-divergent preprocessing, termination
+calls, ...) are reported as STATIC_ANALYSIS_WARNING by the mandatory `integrity` gate.
 """
 
 
@@ -72,12 +77,31 @@ def _setup_logging(log_file: Path | None, verbose: bool) -> None:
     root.addHandler(sh)
 
 
+def _explicit_root(args) -> Path | None:
+    pr = getattr(args, "project_root", None)
+    if not pr:
+        return None
+    root = Path(pr).resolve()
+    if not root.is_dir():
+        raise LeanCError(f"--project-root {pr} is not an existing directory")
+    return root
+
+
+def _discover_root(start: Path) -> Path:
+    """Nearest ancestor of ``start`` containing leanc.yaml or .leanc/ (else start)."""
+    start = start.resolve()
+    for d in (start, *start.parents):
+        if (d / CONFIG_FILE).is_file() or (d / ".leanc").is_dir():
+            return d
+    return start
+
+
 def _spec_and_root(args) -> tuple[Path, Path]:
     spec_path = Path(args.spec)
     if not spec_path.is_file():
         raise LeanCError(f"spec file not found: {spec_path}")
-    root = Path(args.project_root).resolve() if getattr(args, "project_root", None) else find_project_root(spec_path)
-    return spec_path, root
+    root = _explicit_root(args) or find_project_root(spec_path)
+    return spec_path.resolve(), root
 
 
 def _verify_options(args, root: Path) -> VerifyOptions:
@@ -86,8 +110,16 @@ def _verify_options(args, root: Path) -> VerifyOptions:
     if getattr(args, "gates", None):
         gates = [g.strip() for g in args.gates.split(",") if g.strip()]
     sandbox_pref = "none" if getattr(args, "no_sandbox", False) else cfg.sandbox
+    if cfg.allow_unsandboxed:
+        print(
+            "leanc: warning: 'allow_unsandboxed' in leanc.yaml is ignored (a project file cannot disable "
+            "isolation); pass --allow-unsandboxed explicitly if you accept the risk",
+            file=sys.stderr,
+        )
+    if getattr(args, "allow_unsandboxed", False):
+        print("leanc: WARNING: --allow-unsandboxed: untrusted test programs may run WITHOUT isolation", file=sys.stderr)
     return VerifyOptions(
-        allow_unsandboxed=bool(getattr(args, "allow_unsandboxed", False) or cfg.allow_unsandboxed),
+        allow_unsandboxed=bool(getattr(args, "allow_unsandboxed", False)),
         sandbox_preference=sandbox_pref,
         timeout_scale=float(getattr(args, "timeout_scale", 1.0) or 1.0),
         gates=gates,
@@ -108,13 +140,15 @@ def _provider(args, root: Path, run_dir: Path):
 
 
 def _new_run(root: Path, prefix: str) -> tuple[str, Path]:
+    from leanc.core.controller import ensure_runs_dir
+
     run_id = new_run_id(prefix)
-    run_dir = runs_dir(root) / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = ensure_runs_dir(root) / run_id
+    run_dir.mkdir(parents=False, exist_ok=False)
     return run_id, run_dir
 
 
-def _finish_run(record: RunRecord, run_dir: Path, out: _Out) -> int:
+def _finish_run(record: RunRecord, run_dir: Path, out: _Out, *, exit_override: int | None = None) -> int:
     from leanc.reports.json_report import summary, write_json
     from leanc.reports.markdown import render_run_md
 
@@ -128,11 +162,14 @@ def _finish_run(record: RunRecord, run_dir: Path, out: _Out) -> int:
         "run_id": record.run_id,
         "command": record.command,
         "status": record.status.value,
-        "exit_code": exit_code(record.status),
+        "exit_code": exit_override if exit_override is not None else exit_code(record.status),
+        "provider": record.provider.model_dump() if record.provider else None,
         "run_dir": str(run_dir),
         "report": str(run_dir / "report.md"),
         "messages": record.messages,
     }
+    if record.initial_verification is not None:
+        payload["initial_status"] = record.initial_verification.status.value
     if record.verification is not None:
         payload["verification"] = summary(record.verification)
     if record.repair_rounds:
@@ -150,11 +187,20 @@ def _finish_run(record: RunRecord, run_dir: Path, out: _Out) -> int:
     out.emit(payload)
     if not out.as_json:
         _print_human_summary(record, run_dir, out)
-    return exit_code(record.status)
+    for m in record.messages:
+        log.info("%s", m)
+    log.info("final status %s", record.status.value)
+    return exit_override if exit_override is not None else exit_code(record.status)
 
 
 def _print_human_summary(record: RunRecord, run_dir: Path, out: _Out) -> None:
     vr = record.verification
+    if record.provider is not None and not record.provider.real_llm:
+        out.info(f"provider  {record.provider.name} (fixed fixtures; NOT a real LLM, not LLM performance)")
+    if record.initial_verification is not None:
+        out.info(f"initial   {record.initial_verification.status.value}")
+    if vr is not None and record.status is Status.REPAIR_EXHAUSTED:
+        out.info("best candidate (NOT written to the workspace):")
     if vr is not None:
         out.info(f"spec      {vr.spec_id} v{vr.spec_version}")
         for s in vr.stages:
@@ -197,45 +243,57 @@ def _template_root() -> Path:
 
 
 def cmd_init(args) -> int:
+    from leanc.core.workspace import Workspace
+
     out = _Out(args.json)
-    dest = Path(args.directory).resolve()
-    tpl = _template_root() / args.template
-    if not tpl.is_dir():
-        avail = sorted(p.name for p in _template_root().iterdir() if p.is_dir())
+    dest = Path(args.directory)
+    avail = sorted(p.name for p in _template_root().iterdir() if p.is_dir())
+    if args.template not in avail:
         raise LeanCError(f"unknown template {args.template!r}; available: {', '.join(avail)}")
+    tpl = _template_root() / args.template
+    if dest.exists() and not dest.is_dir():
+        raise LeanCError(f"{dest} exists and is not a directory")
+    if dest.is_symlink():
+        raise LeanCError(f"{dest} is a symbolic link")
     dest.mkdir(parents=True, exist_ok=True)
-    created: list[str] = []
+    ws = Workspace(dest)
+    plan: list[tuple[str, bytes]] = []
     for src in sorted(tpl.rglob("*")):
         if src.is_dir() or "__pycache__" in src.parts:
             continue
-        rel = src.relative_to(tpl)
-        target = dest / rel
+        plan.append((src.relative_to(tpl).as_posix(), src.read_bytes()))
+    cfg_text = (
+        "# Lean C project configuration (cannot weaken verification; see docs/spec-format.md)\n"
+        "provider: mock\nmock_dir: mock\nsandbox: auto\n"
+    ).encode()
+    plan.append((CONFIG_FILE, cfg_text))
+    # Check every target before writing anything (no half-initialised projects).
+    conflicts = []
+    for rel, _ in plan:
+        target = ws.resolve(rel)  # rejects symlinked components
         if target.exists() and not args.force:
-            raise LeanCError(f"{target} already exists (use --force to overwrite)")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, target)
-        created.append(rel.as_posix())
-    cfg = dest / CONFIG_FILE
-    if not cfg.exists() or args.force:
-        cfg.write_text(
-            "# Lean C project configuration (cannot weaken verification; see docs/spec-format.md)\n"
-            "provider: mock\nmock_dir: mock\nsandbox: auto\nallow_unsandboxed: false\n",
-            encoding="utf-8",
-        )
-        created.append(CONFIG_FILE)
-    gi = dest / ".gitignore"
-    line = ".leanc/runs/\n"
-    if not gi.exists() or line.strip() not in gi.read_text(encoding="utf-8"):
-        with open(gi, "a", encoding="utf-8") as fh:
-            fh.write(line)
-        created.append(".gitignore")
+            conflicts.append(rel)
+    if conflicts:
+        raise LeanCError(f"{len(conflicts)} file(s) already exist in {dest} (use --force): {', '.join(conflicts[:8])}")
+    created: list[str] = []
+    for rel, data in plan:
+        ws.write_bytes(rel, data)
+        created.append(rel)
+    line = ".leanc/runs/"
+    gi_rel = ".gitignore"
+    existing = ws.read_text(gi_rel) if ws.exists(gi_rel) else ""
+    if line not in existing.splitlines():
+        sep = "" if not existing or existing.endswith("\n") else "\n"
+        ws.write_text(gi_rel, existing + sep + line + "\n")
+        created.append(gi_rel)
+    dest = ws.root
     out.emit({"directory": str(dest), "template": args.template, "created": created})
     out.info(f"initialised Lean C project in {dest} (template {args.template})")
     for c in created:
         out.info(f"  + {c}")
     out.info("")
     out.info("next steps:")
-    out.info(f"  1. review spec.yaml, the harness and the tests")
+    out.info("  1. review spec.yaml, the harness and the tests")
     out.info(f"  2. leanc spec approve {dest / 'spec.yaml'} --by <your name>")
     out.info(f"  3. leanc verify {dest / 'spec.yaml'}")
     return 0
@@ -245,9 +303,14 @@ def cmd_spec_draft(args) -> int:
     from leanc.core.generation import draft_spec
 
     out = _Out(args.json)
-    root = Path(args.project_root or ".").resolve()
+    root = _explicit_root(args) or Path(".").resolve()
     if args.requirement_file:
-        requirement = Path(args.requirement_file).read_text(encoding="utf-8")
+        try:
+            requirement = Path(args.requirement_file).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            raise LeanCError(f"cannot read --requirement-file: {exc}") from None
+        except UnicodeDecodeError as exc:
+            raise LeanCError(f"--requirement-file is not valid UTF-8 (byte offset {exc.start})") from None
     elif args.requirement:
         requirement = args.requirement
     else:
@@ -278,22 +341,28 @@ def cmd_spec_approve(args) -> int:
     ws = Workspace(root)
     rel = ws.relpath(spec_path)
     files = protected_file_hashes(spec, ws)
+    err = sys.stderr  # interactive review goes to stderr so --json stdout stays pure JSON
+    if spec.provenance.origin == "ai-draft":
+        print(
+            "leanc: WARNING: this spec is an AI DRAFT (provenance.origin: ai-draft). Approving makes it, its harness "
+            "and its tests the trusted verification standard.",
+            file=err,
+        )
     if not args.yes:
         if not sys.stdin.isatty():
             raise LeanCError("refusing to approve non-interactively; review the spec and pass --yes")
-        print(f"Approving spec {spec.spec_id} v{spec.version} (sha256 {spec_hash(spec)})")
-        if spec.provenance.origin == "ai-draft":
-            print("WARNING: this spec is an AI DRAFT. Approving makes it the trusted verification standard.")
+        print(f"Approving spec {spec.spec_id} v{spec.version} (sha256 {spec_hash(spec)})", file=err)
         prev = approved_snapshot(root, spec.spec_id)
         if prev:
             changes = diff_spec_dicts(prev, spec_canonical_dict(spec))
-            print("changes since the last approved version:" if changes else "no field changes since last approval")
+            print("changes since the last approved version:" if changes else "no field changes since last approval", file=err)
             for c in changes[:50]:
-                print("  " + c)
-        print("protected files (these become trusted and hash-locked):")
+                print("  " + c, file=err)
+        print("protected files (these become trusted and hash-locked):", file=err)
         for p, h in files.items():
-            print(f"  {p}  {h[:16]}")
-        ans = input("type 'approve' to confirm: ").strip()
+            print(f"  {p}  {h[:16]}", file=err)
+        print("type 'approve' to confirm: ", end="", file=err, flush=True)
+        ans = input().strip()
         if ans != "approve":
             out.err("not approved")
             return exit_code(Status.SPEC_UNAPPROVED)
@@ -350,7 +419,7 @@ def cmd_generate(args) -> int:
     spec = load_spec(spec_path)
     run_id, run_dir = _new_run(root, "gen-")
     _setup_logging(run_dir / "leanc.log", args.verbose)
-    provider = _provider(args, root, run_dir)
+    provider = _provider(args, root, run_dir)  # ProviderError here: readable error, exit 2
     rec = RunRecord(
         run_id=run_id,
         command="generate",
@@ -367,6 +436,10 @@ def cmd_generate(args) -> int:
         rec.status = Status.SPEC_UNAPPROVED if str(exc).startswith("SPEC_UNAPPROVED") else Status.TOOL_ERROR
         rec.messages.append(str(exc))
         return _finish_run(rec, run_dir, out)
+    except ProviderError as exc:
+        rec.status = Status.TOOL_ERROR
+        rec.messages.append(f"provider error: {exc}")
+        return _finish_run(rec, run_dir, out)
     rec.generation = gen
     rec.messages.append(
         f"generated {len(gen.files)} file(s): {', '.join(gen.files) or '(none)'}; "
@@ -374,9 +447,10 @@ def cmd_generate(args) -> int:
     )
     if gen.note:
         rec.messages.append(gen.note)
-    # Generation itself verifies nothing: report UNKNOWN (exit 20) to make that explicit.
+    # Generation itself verifies nothing: the record says UNKNOWN (nothing was
+    # verified), but the command succeeded, so it exits 0 (see --help).
     rec.status = Status.UNKNOWN
-    return _finish_run(rec, run_dir, out)
+    return _finish_run(rec, run_dir, out, exit_override=0)
 
 
 def _do_verify(args, spec_path: Path, root: Path, run_id: str, run_dir: Path):
@@ -414,9 +488,21 @@ def cmd_verify(args) -> int:
     return _finish_run(rec, run_dir, out)
 
 
-def _repair_and_record(args, rec: RunRecord, spec_path: Path, spec, root: Path, run_dir: Path, provider, initial) -> None:
+def _repair_and_record(args, rec: RunRecord, spec_path: Path, spec, root: Path, run_dir: Path, initial) -> None:
+    from leanc.core.status import REPAIRABLE
     from leanc.repair.loop import repair_loop
 
+    if is_success(initial.status) or initial.status not in REPAIRABLE:
+        provider = None  # no LLM needed (and none is constructed)
+    else:
+        try:
+            provider = _provider(args, root, run_dir)
+        except ProviderError as exc:
+            rec.status = Status.TOOL_ERROR
+            rec.messages.append(f"repair not attempted: LLM provider unavailable: {exc} "
+                                f"(verification status: {initial.status.value})")
+            return
+        rec.provider = provider.info
     outcome = repair_loop(
         spec_path,
         spec,
@@ -435,7 +521,10 @@ def _repair_and_record(args, rec: RunRecord, spec_path: Path, spec, root: Path, 
     if outcome.written_back:
         rec.messages.append("wrote verified sources back to the workspace: " + ", ".join(outcome.written_back))
     elif args.no_write and is_success(outcome.status):
-        rec.messages.append("--no-write: verified candidate kept in the run directory only")
+        rec.messages.append(
+            "--no-write: the workspace was NOT changed and is NOT verified; the verified candidate is in "
+            f"{run_dir / 'verified-candidate'}"
+        )
 
 
 def cmd_repair(args) -> int:
@@ -446,7 +535,6 @@ def cmd_repair(args) -> int:
     spec = load_spec(spec_path)
     run_id, run_dir = _new_run(root, "repair-")
     _setup_logging(run_dir / "leanc.log", args.verbose)
-    provider = _provider(args, root, run_dir)
     initial = _do_verify(args, spec_path, root, run_id, run_dir)
     rec = RunRecord(
         run_id=run_id,
@@ -456,11 +544,10 @@ def cmd_repair(args) -> int:
         spec_path=str(spec_path),
         spec_id=spec.spec_id,
         project_root=str(root),
-        provider=provider.info,
         initial_verification=initial,
         verification=initial,
     )
-    _repair_and_record(args, rec, spec_path, spec, root, run_dir, provider, initial)
+    _repair_and_record(args, rec, spec_path, spec, root, run_dir, initial)
     return _finish_run(rec, run_dir, out)
 
 
@@ -475,7 +562,6 @@ def cmd_run(args) -> int:
     spec = load_spec(spec_path)
     run_id, run_dir = _new_run(root, "run-")
     _setup_logging(run_dir / "leanc.log", args.verbose)
-    provider = _provider(args, root, run_dir)
     rec = RunRecord(
         run_id=run_id,
         command="run",
@@ -484,7 +570,6 @@ def cmd_run(args) -> int:
         spec_path=str(spec_path),
         spec_id=spec.spec_id,
         project_root=str(root),
-        provider=provider.info,
     )
     # 1. specification check (no generation for an unapproved spec)
     chk = check_approval(spec, Workspace(root))
@@ -497,20 +582,28 @@ def cmd_run(args) -> int:
     ws = Workspace(root)
     if args.regenerate or any(not ws.exists(p) for p in spec.sources.editable):
         try:
+            provider = _provider(args, root, run_dir)
+            rec.provider = provider.info
             rec.generation = generate_sources(spec, root, provider, run_dir=run_dir, force=args.regenerate)
             rec.messages.append(f"generated: {', '.join(rec.generation.files) or '(nothing)'}")
+            if rec.generation.note:
+                rec.messages.append(rec.generation.note)
         except GenerationRejected as exc:
             rec.status = Status.TOOL_ERROR
             rec.messages.append(str(exc))
             return _finish_run(rec, run_dir, out)
-    # 3-5. compile -> analyse -> sanitize -> CBMC
+        except ProviderError as exc:
+            rec.status = Status.TOOL_ERROR
+            rec.messages.append(f"provider error during generation: {exc}")
+            return _finish_run(rec, run_dir, out)
+    # 3-5. compile -> integrity -> analyse -> sanitize -> CBMC
     initial = _do_verify(args, spec_path, root, run_id, run_dir)
     rec.initial_verification = initial
     rec.verification = initial
     rec.status = initial.status
     # 6. repair -> re-verify
     if not is_success(initial.status) and not args.no_repair:
-        _repair_and_record(args, rec, spec_path, spec, root, run_dir, provider, initial)
+        _repair_and_record(args, rec, spec_path, spec, root, run_dir, initial)
     return _finish_run(rec, run_dir, out)
 
 
@@ -532,21 +625,55 @@ def _find_run(arg: str | None, root: Path) -> Path:
     return p
 
 
+def _stale_files(rr: RunRecord) -> list[str]:
+    """Files whose current content differs from what the run verified."""
+    from leanc.core.hashing import sha256_bytes
+    from leanc.core.workspace import Workspace
+
+    vr = rr.verification
+    if vr is None or not vr.source_hashes or not rr.project_root:
+        return []
+    try:
+        ws = Workspace(rr.project_root)
+    except LeanCError:
+        return sorted(vr.source_hashes)
+    stale = []
+    for rel, h in vr.source_hashes.items():
+        try:
+            cur = sha256_bytes(ws.read_bytes(rel))
+        except LeanCError:
+            stale.append(rel)
+            continue
+        if cur != h:
+            stale.append(rel)
+    return stale
+
+
 def cmd_report(args) -> int:
     from leanc.reports.json_report import read_run_record, summary
     from leanc.reports.markdown import render_run_md
 
-    root = Path(args.project_root or ".").resolve()
+    root = _explicit_root(args) or _discover_root(Path("."))
     run = _find_run(args.run, root)
     rr = read_run_record(run / "run.json")
+    stale = _stale_files(rr)
     if args.format == "json":
         data = rr.model_dump(mode="json")
         if rr.verification:
             data["summary"] = summary(rr.verification)
+        data["stale_files"] = stale
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
         print(render_run_md(rr))
-    return exit_code(rr.status)
+    if stale:
+        print(
+            "leanc: warning: STALE: the current workspace differs from what this run verified, so its status does "
+            "not describe the current workspace: " + ", ".join(stale),
+            file=sys.stderr,
+        )
+        if is_success(rr.status):
+            return exit_code(Status.UNKNOWN)  # never vouch for code that was not verified
+    return 0 if rr.command == "generate" and rr.status is Status.UNKNOWN else exit_code(rr.status)
 
 
 # ---------------------------------------------------------------- parser
@@ -656,8 +783,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
         if args.command == "spec":
-            parser.parse_args(["spec", "--help"])
-        parser.print_help()
+            parser._subparsers._group_actions[0].choices["spec"].print_help()  # type: ignore[union-attr]
+        else:
+            parser.print_help()
         return EXIT_USAGE
     if getattr(args, "max_rounds", None) is not None and not (0 <= args.max_rounds <= 20):
         print("leanc: error: --max-rounds must be between 0 and 20", file=sys.stderr)
@@ -670,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except LeanCError as exc:
+        log.error("%s", exc)
         print(f"leanc: error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except KeyboardInterrupt:

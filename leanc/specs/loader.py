@@ -63,9 +63,11 @@ def load_spec(path: str | Path) -> Spec:
     if p.is_symlink():
         raise SpecError(f"{p}: spec must not be a symbolic link")
     try:
-        text = p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise SpecError(f"cannot read spec {p}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise SpecError(f"{p}: not valid UTF-8 (byte offset {exc.start})") from None
     return parse_spec_text(text, source=str(p))
 
 

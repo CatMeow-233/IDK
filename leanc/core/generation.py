@@ -65,31 +65,55 @@ def generate_sources(
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "generation-response.txt").write_text(redact(out.raw_response or ""), encoding="utf-8")
     files = {k: v for k, v in out.files.items()}
+    notes: list[str] = []
+    # A model may echo an unchanged copy of a kept editable file: drop it
+    # (with a note) instead of rejecting the whole generation.
+    for rel in sorted(set(files) - set(targets)):
+        try:
+            same = rel in spec.sources.editable and ws.exists(rel) and ws.read_text(rel) == files[rel]
+        except LeanCError:
+            same = False
+        if same:
+            del files[rel]
+            notes.append(f"ignored unchanged echo of kept file {rel}")
     unexpected = sorted(set(files) - set(targets))
-    # Evaluate the policy on the complete editable set (generated files plus
-    # editable files that already exist and were not regenerated), so that a
-    # target function living in a kept file is not reported as MISSING_TARGET.
-    full = {p: ws.read_text(p) for p in spec.sources.editable if p not in files and ws.exists(p)}
-    full.update(files)
-    decision = check_generated(spec, full)
     if unexpected:
-        raise GenerationRejected(f"provider returned files that were not requested: {unexpected}", decision)
+        raise GenerationRejected(f"provider returned files that were not requested: {unexpected}")
+    # Content rules apply to the generated files only (kept user files are not
+    # the generator's output); the target function may live in a kept file.
+    decision = check_generated(spec, files)
+    kept = {p: ws.read_text(p) for p in spec.sources.editable if p not in files and ws.exists(p)}
+    if kept and any(v.rule == "MISSING_TARGET" for v in decision.violations):
+        from leanc.repair.policy import CSource, find_function_definitions
+
+        if any(find_function_definitions(CSource(t), spec.target.function, rel) for rel, t in kept.items()):
+            remaining = [v for v in decision.violations if v.rule != "MISSING_TARGET"]
+            decision = PolicyDecision(allowed=not remaining, violations=remaining)
     if not decision.allowed:
-        lines = [f"{v.rule}: {v.message}" for v in decision.violations]
+        lines = [f"{v.rule}: {v.message}" + (f" ({v.file}:{v.line})" if v.file else "") for v in decision.violations]
         raise GenerationRejected("generated code rejected by policy:\n  " + "\n  ".join(lines), decision)
     missing = sorted(set(targets) - set(files))
     if missing:
         raise GenerationRejected(f"provider did not generate: {missing}", decision)
     gen_dir = run_dir / "generated"
+    backup_dir = run_dir / "backup"
     for rel, content in files.items():
+        if ws.exists(rel):
+            # never destroy user code: keep the overwritten version
+            b = backup_dir / rel
+            b.parent.mkdir(parents=True, exist_ok=True)
+            b.write_bytes(ws.read_bytes(rel))
+            notes.append(f"previous {rel} backed up to {b}")
         ws.write_text(rel, content)
         dest = gen_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
+    if out.notes:
+        notes.insert(0, out.notes)
     return GenerationRecord(
         provider=provider.info,
         files={rel: sha256_text(c) for rel, c in files.items()},
-        note=out.notes or "",
+        note="; ".join(notes),
     )
 
 
@@ -172,7 +196,8 @@ def draft_spec(
     ws.write_text(paths["notes"], notes)
     written["notes"] = paths["notes"]
     written["validation"] = validation
-    (ws.root / base / "draft-meta.json").write_text(
-        json.dumps({"provider": provider.info.model_dump(), "validation": validation}, indent=2), encoding="utf-8"
+    ws.write_text(
+        f"{base}/draft-meta.json",
+        json.dumps({"provider": provider.info.model_dump(), "validation": validation}, indent=2),
     )
     return written

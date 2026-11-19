@@ -554,6 +554,32 @@ def _finish(lines: list[str]) -> str:
 
 
 # =========================================================================== public
+def _coverage(vr: VerificationResult | None) -> list[str]:
+    """CBMC ``--cover location`` results (spec verification.coverage: true)."""
+    if vr is None:
+        return []
+    st = vr.stage("cbmc")
+    cov = st.details.get("coverage") if st is not None else None
+    if not isinstance(cov, dict) or not cov:
+        return []
+    out = [
+        "## Coverage under the harness assumptions",
+        "",
+        "Location coverage of the editable sources reachable under the approved harness (CBMC `--cover location`). "
+        "Uncovered lines can indicate over-constrained assumptions or dead code; coverage is advisory and never "
+        "changes the verdict.",
+        "",
+        "| file | goals | covered | uncovered lines |",
+        "|---|---|---|---|",
+    ]
+    for f in sorted(cov):
+        c = cov[f] if isinstance(cov[f], dict) else {}
+        unc = c.get("uncovered_lines") or []
+        shown = ", ".join(str(x) for x in unc[:40]) + (" ..." if len(unc) > 40 else "")
+        out.append(f"| {_cell(_code(f))} | {_cell(str(c.get('goals', '?')))} | {_cell(str(c.get('covered', '?')))} | {_cell(shown or '-')} |")
+    return out + [""]
+
+
 def render_verification_md(vr: VerificationResult) -> str:
     """Render one verification as Markdown (``verification.md``)."""
     lines = _header_vr(vr)
@@ -564,6 +590,7 @@ def render_verification_md(vr: VerificationResult) -> str:
     lines += _gates(vr)
     lines += _findings(vr)
     lines += _counterexamples(vr)
+    lines += _coverage(vr)
     lines += _limitations(vr)
     lines += _reproduce(vr)
     return _finish(lines)
@@ -769,6 +796,7 @@ def render_run_md(rr: RunRecord) -> str:
         lines += _gates(vr, intro=f"Final verification {_code(vr.run_id)}{where}.")
         lines += _findings(vr)
         lines += _counterexamples(vr)
+        lines += _coverage(vr)
     if iv is not None and vr is not None and iv.run_id != vr.run_id:
         lines += _initial_section(iv)
     if rr.repair_rounds or rr.command in ("repair", "run"):

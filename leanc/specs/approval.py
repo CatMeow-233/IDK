@@ -23,6 +23,7 @@ import hmac
 import json
 import os
 import secrets
+import tempfile
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -51,14 +52,28 @@ def _key_path() -> Path:
     return leanc_home() / KEY_FILE
 
 
-def load_key(create: bool = False) -> bytes | None:
-    p = _key_path()
-    if p.is_file() and not p.is_symlink():
+def _read_key(p: Path) -> bytes:
+    try:
         data = p.read_text(encoding="ascii").strip()
-        try:
-            return bytes.fromhex(data)
-        except ValueError as exc:
-            raise ApprovalError(f"corrupt approval key {p}") from exc
+        key = bytes.fromhex(data)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ApprovalError(f"corrupt approval key {p}") from exc
+    if len(key) < 16:
+        raise ApprovalError(f"corrupt approval key {p} (too short)")
+    return key
+
+
+def load_key(create: bool = False) -> bytes | None:
+    """Load (or atomically create) the per-user approval signing key.
+
+    Creation writes a complete temp file and hard-links it into place, so a
+    concurrent reader never sees a partially written key and concurrent
+    creators agree on a single key."""
+    p = _key_path()
+    if p.is_symlink():
+        raise ApprovalError(f"approval key must not be a symbolic link: {p}")
+    if p.is_file():
+        return _read_key(p)
     if not create:
         return None
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -66,11 +81,23 @@ def load_key(create: bool = False) -> bytes | None:
         os.chmod(p.parent, 0o700)
     except OSError:
         pass
-    key = secrets.token_bytes(32)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as fh:
-        fh.write(key.hex() + "\n")
-    return key
+    fd, tmp = tempfile.mkstemp(prefix=".approval-key-", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(secrets.token_bytes(32).hex() + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        try:
+            os.link(tmp, p)
+        except FileExistsError:
+            pass  # another process won the race; use its key
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    return _read_key(p)
 
 
 def key_id(key: bytes) -> str:
@@ -80,6 +107,50 @@ def key_id(key: bytes) -> str:
 def _sign(record: dict[str, Any], key: bytes) -> str:
     body = {k: v for k, v in record.items() if k != "signature"}
     return hmac.new(key, canonical_json(body).encode("utf-8"), sha256).hexdigest()
+
+
+LEDGER_FILE = "approval-ledger.json"
+
+
+def _ledger_key(root: Path, spec_id: str) -> str:
+    return f"{os.path.realpath(root)}::{spec_id}"
+
+
+def _load_ledger(key: bytes) -> tuple[dict[str, Any], str | None]:
+    """Signed per-user record of the highest approved version per project and
+    spec, kept outside the workspace.  Prevents rolling an approval record back
+    to a superseded (e.g. weaker) version from inside the workspace."""
+    p = leanc_home() / LEDGER_FILE
+    if not p.is_file() or p.is_symlink():
+        return {}, None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        entries = data.get("entries", {})
+        sig = data.get("signature", "")
+    except (OSError, ValueError, AttributeError):
+        return {}, "approval ledger is corrupt"
+    expected = hmac.new(key, canonical_json(entries).encode("utf-8"), sha256).hexdigest()
+    if not hmac.compare_digest(str(sig), expected):
+        return {}, "approval ledger signature is invalid"
+    return entries, None
+
+
+def _update_ledger(key: bytes, root: Path, spec_id: str, version: int, spec_hash_: str) -> None:
+    entries, _err = _load_ledger(key)
+    k = _ledger_key(root, spec_id)
+    cur = entries.get(k)
+    if cur is None or int(cur.get("version", 0)) <= version:
+        entries[k] = {"version": version, "spec_hash": spec_hash_}
+    body = {
+        "entries": entries,
+        "signature": hmac.new(key, canonical_json(entries).encode("utf-8"), sha256).hexdigest(),
+    }
+    p = leanc_home() / LEDGER_FILE
+    fd, tmp = tempfile.mkstemp(prefix=".ledger-", dir=p.parent)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(body, fh, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, p)
 
 
 def approvals_dir(root: Path) -> Path:
@@ -159,11 +230,15 @@ def approve_spec(
         store["history"].append(cur)
     store["current"] = record
     d = approvals_dir(ws.root)
+    for part in (ws.root / ".leanc", d):
+        if part.is_symlink():
+            raise ApprovalError(f"{part} must not be a symbolic link")
     d.mkdir(parents=True, exist_ok=True)
     ws.write_text(
         ws.relpath(d) + f"/{spec.spec_id}.json",
         json.dumps(store, indent=2, ensure_ascii=False) + "\n",
     )
+    _update_ledger(key, ws.root, spec.spec_id, spec.version, h)
     return record
 
 
@@ -203,6 +278,15 @@ def check_approval(spec: Spec, ws: Workspace, files_ws: Workspace | None = None)
         sig_ok = hmac.compare_digest(str(rec.get("signature", "")), _sign(rec, key))
         if not sig_ok:
             reasons.append("approval record signature is invalid (record was modified)")
+        entries, ledger_err = _load_ledger(key)
+        if ledger_err:
+            reasons.append(ledger_err)
+        latest = entries.get(_ledger_key(ws.root, spec.spec_id))
+        if latest and int(latest.get("version", 0)) > int(rec.get("spec_version", 0)):
+            reasons.append(
+                f"approval rollback: version {rec.get('spec_version')} was superseded by approved version "
+                f"{latest.get('version')}"
+            )
     if rec.get("spec_id") != spec.spec_id:
         reasons.append("approval record is for a different spec id")
     if int(rec.get("spec_version", -1)) != spec.version:

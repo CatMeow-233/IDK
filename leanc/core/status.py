@@ -142,6 +142,9 @@ def outcome_to_status(stage: str, outcome: Outcome) -> Status | None:
         "spec": Status.SPEC_UNAPPROVED,
         "compile": Status.COMPILE_ERROR,
         "static_analysis": Status.STATIC_ANALYSIS_WARNING,
+        # The mandatory source-integrity gate is a static check of the code
+        # under test (verification-hostile constructs, symbol overrides, ...).
+        "integrity": Status.STATIC_ANALYSIS_WARNING,
         "sanitizer": Status.RUNTIME_TEST_FAILED,
         "cbmc": Status.COUNTEREXAMPLE_FOUND,
         "policy": Status.TOOL_ERROR,

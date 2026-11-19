@@ -73,6 +73,10 @@ def _gate_runner(name: str) -> Callable[[BackendContext], StageResult]:
         from leanc.backends.cbmc import run_cbmc
 
         return run_cbmc
+    if name == "integrity":
+        from leanc.backends.integrity import run_integrity
+
+        return run_integrity
     raise ValueError(f"unknown gate {name!r}")
 
 
@@ -110,12 +114,43 @@ def _run_gate(name: str, ctx: BackendContext) -> StageResult:
     return res
 
 
+def _recheck_protected(spec: Spec, ws: Workspace, ctx: BackendContext, when: str) -> StageResult | None:
+    """Re-verify the approval against the snapshot.  Gates run code (tests) and
+    tools that could, if isolation were weaker than intended, modify the
+    snapshot; a protected file that changes *during* verification must never
+    be followed by a verdict that relies on it."""
+    chk = check_approval(spec, ws, files_ws=Workspace(ctx.snapshot_dir))
+    if chk.approved:
+        return None
+    return StageResult(
+        stage="spec",
+        outcome=Outcome.FAIL,
+        status=Status.SPEC_UNAPPROVED,
+        summary=f"approval no longer valid {when}: " + "; ".join(chk.reasons),
+        details={"reasons": [f"{when}: {r}" for r in chk.reasons], "spec_hash": chk.spec_hash},
+    )
+
+
+def ensure_runs_dir(root: Path) -> Path:
+    """Create ``<root>/.leanc/runs`` refusing symlinked components, so run
+    artefacts can never be redirected outside the project."""
+    from leanc.core.errors import WorkspaceError
+
+    root = Path(root)
+    for d in (root / ".leanc", root / ".leanc" / "runs"):
+        if d.is_symlink():
+            raise WorkspaceError(f"{d} is a symbolic link; refusing to write run artefacts through it")
+        d.mkdir(exist_ok=True)
+        if d.is_symlink() or not d.is_dir():
+            raise WorkspaceError(f"{d} is not a real directory")
+    return root / ".leanc" / "runs"
+
+
 def aggregate(stages: list[StageResult], approved: bool) -> tuple[Status, list[str]]:
     """Combine stage results into the overall status and the reasons for it."""
     reasons: list[str] = []
     if not approved:
-        spec_stage = next((s for s in stages if s.stage == "spec"), None)
-        if spec_stage:
+        for spec_stage in (s for s in stages if s.stage == "spec" and s.outcome is not Outcome.PASS):
             reasons.extend(spec_stage.details.get("reasons", []) or [spec_stage.summary])
         return Status.SPEC_UNAPPROVED, reasons
     contributed: list[Status] = []
@@ -159,7 +194,7 @@ def verify(
     spec = spec or load_spec(spec_path)
     root = Path(project_root).resolve() if project_root else find_project_root(spec_path)
     run_id = run_id or new_run_id()
-    run_dir = Path(run_dir) if run_dir else runs_dir(root) / run_id
+    run_dir = Path(run_dir) if run_dir else ensure_runs_dir(root) / run_id
     started = utcnow()
 
     ctx = make_context(spec, root, run_dir, options)
@@ -198,6 +233,7 @@ def verify(
     run_gates = approval.approved or options.check_unapproved
     if run_gates:
         blocked_reason: str | None = None
+        dynamic_blocked: str | None = None
         for g in gates:
             if options.gates is not None and g not in options.gates:
                 stages.append(_skipped(g, "excluded by --gates (the result cannot be VERIFIED_BOUNDED)"))
@@ -205,13 +241,44 @@ def verify(
             if blocked_reason:
                 stages.append(_skipped(g, blocked_reason))
                 continue
+            if g == "sanitizer" and dynamic_blocked:
+                stages.append(_skipped(g, dynamic_blocked))
+                continue
+            if g == "cbmc" and approval.approved:
+                tampered = _recheck_protected(spec, ws, ctx, "before the cbmc gate")
+                if tampered is not None:
+                    stages.append(tampered)
+                    approval = approval.model_copy(update={"approved": False, "reasons": tampered.details["reasons"]})
+                    blocked_reason = "a protected file changed during verification"
+                    stages.append(_skipped(g, blocked_reason))
+                    continue
             res = _run_gate(g, ctx)
             stages.append(res)
             log.info("gate %s: %s %s", g, res.outcome.value, res.summary)
+            if g == "compile" and res.outcome is Outcome.PASS:
+                # Mandatory, not listed in spec.gates: reject verification-hostile
+                # constructs (symbol overrides of harness/libc/CBMC names, tool-
+                # divergent preprocessing, termination calls, constructors ...)
+                # before any verdict can rely on the code.
+                integ = _run_gate("integrity", ctx)
+                integ.required = True
+                stages.append(integ)
+                if integ.outcome is not Outcome.PASS:
+                    dynamic_blocked = (
+                        "the integrity gate did not pass; code with forbidden constructs is never executed"
+                    )
+                log.info("gate integrity: %s %s", integ.outcome.value, integ.summary)
+                if options.fail_fast and integ.outcome is not Outcome.PASS:
+                    blocked_reason = f"--fail-fast after integrity {integ.outcome.value}"
             if g == "compile" and res.outcome is not Outcome.PASS:
                 blocked_reason = "compilation did not succeed"
             elif options.fail_fast and res.outcome is not Outcome.PASS:
                 blocked_reason = f"--fail-fast after {g} {res.outcome.value}"
+        if approval.approved:
+            tampered = _recheck_protected(spec, ws, ctx, "after the gates")
+            if tampered is not None:
+                stages.append(tampered)
+                approval = approval.model_copy(update={"approved": False, "reasons": tampered.details["reasons"]})
 
     status, reasons = aggregate(stages, approval.approved)
 
