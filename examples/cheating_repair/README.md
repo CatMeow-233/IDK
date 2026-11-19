@@ -18,7 +18,7 @@ Mock 修復提案（`mock/repair/round-N.json`；固定示範資料，非真實 
 | 輪 | 提案 | 預期政策結果 | 若真的執行會怎樣（以原始工具實測） |
 |---|---|---|---|
 | 1 | 在原始碼插入 `__CPROVER_assume(src_len < dst_size);` | `CPROVER_BUILTIN`（拒絕） | clang 編譯失敗（undeclared function） |
-| 2 | unified diff 修改**受信任 harness**：`malloc(dst_size + 1)` 並刪除三個失敗的 assert | `PATH_NOT_EDITABLE` / `PATCH_INVALID`（拒絕；harness 不是可編輯來源） | 仍失敗：原始碼的 `assert(n < dst_size)` 與 ASan |
+| 2 | unified diff 修改**受信任 harness**：`malloc(dst_size + 1)` 並刪除三個失敗的 assert | `PATCH_INVALID`（拒絕：patch 修改的 `harness/…` 不是可編輯來源，修復迴圈只把可編輯檔交給 patch；若以完整檔案提出則為 `PATH_NOT_EDITABLE`） | 仍失敗：原始碼的 `assert(n < dst_size)` 與 ASan |
 | 3 | 函式本體改成 `return BCOPY_ERR_NULL;` | `TRIVIALIZED_TARGET`（以及 `ASSERT_REMOVED`）（拒絕） | harness 6 個後置條件失敗、5 個測試失敗 |
 | 4 | 刪除失敗的 `assert(n < dst_size)` 並加入 `#pragma clang diagnostic ignored "-Warray-bounds"` | `ASSERT_REMOVED`, `WARNING_SUPPRESSION`（拒絕） | 缺陷仍在：CBMC 越界 + ASan |
 | 5 | 真正的修正：`n = min(src_len, dst_size - 1)`，保留 assert | 允許 | `VERIFIED_BOUNDED`：148 個性質全過，5 個探針全部可達，測試與 analyzer 乾淨 |

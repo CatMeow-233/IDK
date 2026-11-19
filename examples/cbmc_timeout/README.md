@@ -15,7 +15,7 @@
 
 實測（CBMC 5.95.1，本機）：以與 Lean C 相同的旗標執行
 `timeout 25 cbmc src/mul_checked.c harness/mul_checked_harness.c -Iinclude -I<leanc include> --bounds-check --pointer-check --div-by-zero-check --signed-overflow-check --pointer-overflow-check --undefined-shift-check --unsigned-overflow-check --unwind 1 --unwinding-assertions`
-在 25 秒後被終止，沒有結論（exit 124）。因此 3 秒的上限（即使乘上數倍的 `timeout_scale`）一定會觸發。
+在 25 秒後被終止，沒有結論（exit 124）；不設上限的同一執行在 SAT 求解階段（52 852 個變數、282 953 個子句）跑了 269 秒仍未結束（手動終止）。因此 3 秒的上限（即使乘上數倍的 `timeout_scale`）一定會觸發。
 
 預期：`verify` → `TIMEOUT`（exit 21）；`run --provider mock` → `TIMEOUT`，修復迴圈不會被呼叫 ——
 逾時不是程式碼缺陷，「測試全過」也不會被升級成驗證結果。要得到結論需要人類決定：例如收窄輸入範圍
