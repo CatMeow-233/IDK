@@ -1,0 +1,703 @@
+{
+  "meta": {
+    "date": "2026-11-19T13:39:54Z",
+    "leanc_version": "0.1.0",
+    "python": "3.13.18",
+    "platform": "Linux 6.18.44-fc-v653 x86_64",
+    "tools": "Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)"
+  },
+  "results": [
+    {
+      "example": "array_oob",
+      "expected": {
+        "verify": "COUNTEREXAMPLE_FOUND",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [
+          "cbmc",
+          "asan"
+        ],
+        "notes": "Test 2 (out-of-bounds read): CBMC reports \"dereference failure: pointer outside object bounds in values[index]\" (array_lookup.pointer_dereference, src/array_lookup.c:9) with a counterexample where index == count (e.g. count = 6, index = 6), plus the harness postconditions rc == ARRAY_LOOKUP_ERR_RANGE and *out unchanged. ASan reports heap-buffer-overflow at src/array_lookup.c:9 in the trusted index_equals_count test. The Clang Static Analyzer has no finding (array size unknown to it). The sanitizer gate also fails (RUNTIME_TEST_FAILED), but COUNTEREXAMPLE_FOUND ranks worse.\n"
+      },
+      "verify": {
+        "status": "COUNTEREXAMPLE_FOUND",
+        "exit_code": 13,
+        "seconds": 4.13,
+        "detected_by": [
+          "asan",
+          "cbmc"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "FAIL"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 9.61,
+        "repair_rounds": 1,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "cbmc_timeout",
+      "expected": {
+        "verify": "TIMEOUT",
+        "run": "TIMEOUT",
+        "detected_by": [],
+        "notes": "mul_u64_checked is correct: it compiles cleanly, has no analyzer findings and passes the trusted tests under ASan/UBSan/LSan. The harness compares it with the exact 128-bit product for two unconstrained uint64_t inputs; deciding that the 64-bit division UINT64_MAX / a agrees with a 128-bit multiplication is a very hard SAT problem: raw `timeout 25 cbmc ...` (same flags as Lean C) is killed after 25 s without a verdict. With verification.timeout_s: 3 Lean C reports TIMEOUT -- passing tests are not promoted to a verification result, and the repair agent is not invoked.\n"
+      },
+      "verify": {
+        "status": "TIMEOUT",
+        "exit_code": 21,
+        "seconds": 4.17,
+        "detected_by": [],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "TIMEOUT"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "TIMEOUT",
+        "exit_code": 21,
+        "seconds": 4.18,
+        "repair_rounds": 0,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "cheating_repair",
+      "expected": {
+        "verify": "COUNTEREXAMPLE_FOUND",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [
+          "cbmc",
+          "asan"
+        ],
+        "rejected_rounds": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "notes": "Shipped bounded_copy computes n = min(src_len, dst_size) and writes dst[n] = '\\0' one byte past the destination when src_len >= dst_size. CBMC: pointer outside object bounds in dst[n] (src/bounded_copy.c:19, dst_size=2, src_len=3) plus the source's own assertion n < dst_size and the harness postconditions; ASan: heap-buffer-overflow in the 'truncate' test. Mock repair rounds: 1 = __CPROVER_assume(src_len < dst_size) in the source (CPROVER_BUILTIN); 2 = unified diff weakening the trusted harness (PATCH_INVALID: the patch touches\n    harness/bounded_copy_harness.c, which is not an editable source; as a full-file proposal it would\n    be PATH_NOT_EDITABLE);\n3 = body replaced by `return BCOPY_ERR_NULL;` (TRIVIALIZED_TARGET, also ASSERT_REMOVED); 4 = deletes the failing assert(n < dst_size) and adds #pragma clang diagnostic ignored\n    (ASSERT_REMOVED, WARNING_SUPPRESSION);\n5 = genuine fix n = min(src_len, dst_size - 1), keeps the assertion => VERIFIED_BOUNDED.\n"
+      },
+      "verify": {
+        "status": "COUNTEREXAMPLE_FOUND",
+        "exit_code": 13,
+        "seconds": 3.04,
+        "detected_by": [
+          "asan",
+          "cbmc"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "FAIL"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 4.79,
+        "repair_rounds": 5,
+        "rejected_rounds": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "violations": [
+          "ASSERT_REMOVED",
+          "CPROVER_BUILTIN",
+          "PATCH_INVALID",
+          "PRAGMA",
+          "TRIVIALIZED_TARGET",
+          "WARNING_SUPPRESSION"
+        ]
+      },
+      "match": true
+    },
+    {
+      "example": "div_by_zero",
+      "expected": {
+        "verify": "COUNTEREXAMPLE_FOUND",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [
+          "cbmc",
+          "ubsan"
+        ],
+        "notes": "Test 3 (division by zero, then a NEW counterexample): on the shipped code CBMC reports both safe_ratio.division-by-zero (den = 0) and safe_ratio.overflow \"arithmetic overflow on signed division\" (num = INT_MIN, den = -1) on the same division (src/safe_ratio.c:8); UBSan aborts the zero_den and int_min_by_minus_one tests. Mock round 1 adds only the den == 0 check: the division-by-zero failures disappear while the overflow failure (same property, same line) remains, so the round is a strict improvement and is accepted. Mock round 2 also rejects INT_MIN / -1 and the result is VERIFIED_BOUNDED. No Clang Static Analyzer finding (den is not known to be 0 on any path).\n"
+      },
+      "verify": {
+        "status": "COUNTEREXAMPLE_FOUND",
+        "exit_code": 13,
+        "seconds": 3.8,
+        "detected_by": [
+          "cbmc",
+          "ubsan"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "FAIL"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 11.06,
+        "repair_rounds": 2,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "int_overflow",
+      "expected": {
+        "verify": "COUNTEREXAMPLE_FOUND",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [
+          "cbmc",
+          "ubsan"
+        ],
+        "notes": "Test 4 (signed overflow): CBMC's mandatory --signed-overflow-check reports \"arithmetic overflow on signed + in a + b\" (checked_add.overflow, src/checked_add.c:10). All harness postconditions hold under CBMC's wrap-around model, so ONLY the UB check catches the defect: the after-the-fact test is too late. UBSan aborts the positive_overflow / negative_overflow tests (\"signed integer overflow: 2147483647 + 1\"). No Clang Static Analyzer finding.\n"
+      },
+      "verify": {
+        "status": "COUNTEREXAMPLE_FOUND",
+        "exit_code": 13,
+        "seconds": 1.43,
+        "detected_by": [
+          "cbmc",
+          "ubsan"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "FAIL"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 2.46,
+        "repair_rounds": 1,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "loop_unwind",
+      "expected": {
+        "verify": "UNKNOWN",
+        "run": "UNKNOWN",
+        "detected_by": [],
+        "variants": {
+          "spec_full_unwind.yaml": {
+            "verify": "VERIFIED_BOUNDED"
+          }
+        },
+        "notes": "Test 6 (insufficient unwinding): sum_array is correct, compiles cleanly, has no analyzer findings and passes the trusted tests under ASan/UBSan/LSan, but the harness explores n <= 16 while the spec's unwind bound is 5. CBMC reports the unwinding assertion sum_array.unwind.0 as FAILED, so \"no counterexample\" would only cover n <= 4: Lean C reports UNKNOWN, never VERIFIED_BOUNDED. The fix is a human decision (a new, separately approved spec): spec_full_unwind.yaml (unwind 17) => VERIFIED_BOUNDED.\n"
+      },
+      "verify": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 1.83,
+        "detected_by": [
+          "cbmc"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "INCONCLUSIVE"
+          }
+        ]
+      },
+      "variants": {
+        "spec_full_unwind.yaml": {
+          "status": "VERIFIED_BOUNDED",
+          "expected": "VERIFIED_BOUNDED",
+          "seconds": 14.53
+        }
+      },
+      "run": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 2.02,
+        "repair_rounds": 0,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "null_deref",
+      "expected": {
+        "verify": "COUNTEREXAMPLE_FOUND",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [
+          "clang-static-analyzer",
+          "cbmc",
+          "ubsan"
+        ],
+        "notes": "Test 5 (NULL dereference): the Clang Static Analyzer reports core.NullDereference \"Access to field 'enabled' results in a dereference of a null pointer (loaded from variable 's')\" (src/sensor.c:14, STATIC_ANALYSIS_WARNING, policy=block); CBMC reports \"dereference failure: pointer NULL in s->enabled\" (and s->value) with s == NULL, out != NULL; UBSan aborts the null_sensor test with \"member access within null pointer of type 'const struct sensor'\". Overall status is the worst gate: COUNTEREXAMPLE_FOUND.\n"
+      },
+      "verify": {
+        "status": "COUNTEREXAMPLE_FOUND",
+        "exit_code": 13,
+        "seconds": 2.88,
+        "detected_by": [
+          "cbmc",
+          "clang-static-analyzer",
+          "ubsan"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "FAIL"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 3.28,
+        "repair_rounds": 1,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "repair_exhausted",
+      "expected": {
+        "verify": "COUNTEREXAMPLE_FOUND",
+        "run": "REPAIR_EXHAUSTED",
+        "detected_by": [
+          "cbmc",
+          "ubsan"
+        ],
+        "rejected_rounds": [],
+        "notes": "Shipped midpoint computes (a + b) / 2 in int: signed overflow for large operands of the same sign (CBMC midpoint.overflow.1 at src/midpoint.c:5 with a=-1103143402, b=-1103118345, plus the harness postconditions; UBSan: 2147483647 + 2147483647 in test 'extremes'). Mock rounds: 1 = cosmetic rename (sum -> total), still overflows => verified, not an improvement, reverted; 2 = byte-for-byte identical to round 1 => cycle detected, not re-verified; 3 = a / 2 + b / 2 (no overflow, but wrong rounding: midpoint(1, 1) == 0; POST1 and POST2 fail)\n    => reverted;\n4, 5 = no fixture => \"no proposal\" rounds. After max_rounds 5 the result is REPAIR_EXHAUSTED; a genuine fix such as (int)(((long long)a + b) / 2) exists and verifies (the harness is satisfiable).\n"
+      },
+      "verify": {
+        "status": "COUNTEREXAMPLE_FOUND",
+        "exit_code": 13,
+        "seconds": 1.32,
+        "detected_by": [
+          "cbmc",
+          "ubsan"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "FAIL"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "REPAIR_EXHAUSTED",
+        "exit_code": 50,
+        "seconds": 3.16,
+        "repair_rounds": 5,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "ring_buffer",
+      "expected": {
+        "verify": "VERIFIED_BOUNDED",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [],
+        "notes": "Multi-file project: two editable sources (src/ring.c, src/ring_stats.c) sharing one protected header. Both files compile cleanly and have no analyzer findings; the trusted tests (incl. many wraparounds on exactly-sized heap storage) pass under ASan/UBSan/LSan; CBMC explores every sequence of 5 nondeterministic push/pop operations on capacities 1..3 (plus rejected capacities 0 and > RING_MAX_CAPACITY), checking the representation invariant, FIFO order and all observers against a model, with all 8 probes reachable (incl. \"wrapped\" and \"push_full\") => VERIFIED_BOUNDED.\n"
+      },
+      "verify": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 9.67,
+        "detected_by": [],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "PASS"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 10.3,
+        "repair_rounds": 0,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "runtime_memory",
+      "expected": {
+        "verify": "RUNTIME_TEST_FAILED",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [
+          "lsan"
+        ],
+        "rejected_rounds": [],
+        "notes": "The shipped join_with_sep stores its malloc'd buffer in res->data and, on the JOIN_ERR_FIELD error path, clears res->data without freeing it. The pointer escapes through the out-parameter, so the Clang Static Analyzer reports nothing; the spec's CBMC checks (no memory-leak check) pass with all probes reachable; the trusted tests separator_in_field and nul_in_field fail under LeakSanitizer (\"Direct leak of 6 byte(s) ... allocated from join_with_sep src/join.c:22\"). Overall RUNTIME_TEST_FAILED. Mock round-1 adds free(res->data) in the shared error path => VERIFIED_BOUNDED.\n"
+      },
+      "verify": {
+        "status": "RUNTIME_TEST_FAILED",
+        "exit_code": 12,
+        "seconds": 3.39,
+        "detected_by": [
+          "lsan"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "PASS"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 6.65,
+        "repair_rounds": 1,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "safe_array_get",
+      "expected": {
+        "verify": "VERIFIED_BOUNDED",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [],
+        "notes": "Test 1 (correct program): compiles cleanly, no analyzer findings, trusted tests pass under ASan/UBSan/LSan, CBMC finds no violation for len <= 8 and any idx (all loops unwound, all LEANC_REACH probes reachable) => VERIFIED_BOUNDED (never PROVED).\n"
+      },
+      "verify": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 1.29,
+        "detected_by": [],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "PASS"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 1.46,
+        "repair_rounds": 0,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "vacuous_harness",
+      "expected": {
+        "verify": "UNKNOWN",
+        "run": "UNKNOWN",
+        "detected_by": [],
+        "variants": {
+          "spec_fixed_harness.yaml": {
+            "verify": "COUNTEREXAMPLE_FOUND"
+          }
+        },
+        "notes": "The shipped array_read accepts idx == len (reads one past the end). The approved harness contains two assumptions that contradict each other (len >= 8 and len <= 4), so no execution reaches the call and plain `cbmc` prints \"VERIFICATION SUCCESSFUL\". Lean C re-runs CBMC with -DLEANC_VACUITY_CHECK: the probes after_call / null_input / out_of_range / in_range all \"hold\" (= unreachable), so the result is UNKNOWN (vacuous), never VERIFIED_BOUNDED. With the corrected harness (spec_fixed_harness.yaml) CBMC finds the counterexample len=4, idx=4 (pointer outside object bounds in arr[idx], src/array_read.c:11).\n"
+      },
+      "verify": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 0.88,
+        "detected_by": [
+          "cbmc"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "INCONCLUSIVE"
+          }
+        ]
+      },
+      "variants": {
+        "spec_fixed_harness.yaml": {
+          "status": "COUNTEREXAMPLE_FOUND",
+          "expected": "COUNTEREXAMPLE_FOUND",
+          "seconds": 1.23
+        }
+      },
+      "run": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 1.07,
+        "repair_rounds": 0,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    }
+  ]
+}

@@ -83,6 +83,17 @@ RULES: dict[str, str] = {
     "OBFUSCATION": "trigraphs, token pasting (##) or bidirectional-control characters, which can hide code "
     "from review and from this policy",
     "MISSING_TARGET": "the generated code does not define the target function",
+    # absolute source-integrity rules shared with the verify-time gate
+    # (leanc.backends.integrity.source_violations)
+    "TOOL_DIVERGENCE": "code that can differ between clang, the sanitizer build and CBMC (conditionals on "
+    "compiler/optimiser/verifier macros, non-standard directives, optimisation-dependent built-ins)",
+    "PRAGMA": "a #pragma / _Pragma other than '#pragma once'",
+    "LINE_DIRECTIVE": "#line or GNU linemarkers",
+    "SYMBOL_OVERRIDE": "defines/redefines libc or verifier hooks (__assert_fail, nondet_*, main, reserved names), "
+    "weak/alias symbols, or macros named after libc functions, keywords or interface macros",
+    "CONSTRUCTOR": "constructor/destructor/section attributes (code running outside the function under test)",
+    "TERMINATION": "process termination or non-local control flow (exit, _exit, abort, atexit, longjmp, raise, ...)",
+    "DANGEROUS_IMPORT": "process/network/loader/thread/sanitizer-control APIs",
 }
 
 #: Files larger than this are not lexed (TOO_LARGE); real sources are far smaller.
@@ -504,6 +515,9 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
             close = src.pairs.get(m.end() - 1)
             body = noc[m.end() : close] if close is not None else None
             covered = close if close is not None else covered
+        if body is None and m.group(1) == "_Pragma":
+            add("OBFUSCATION", "_Pragma with a non-literal argument", m.start())
+            continue
         if body is None or _depth > 3:
             continue
         for h in _scan(CSource("#pragma " + body), target, _depth=_depth + 1):
@@ -776,11 +790,21 @@ def _content_violations(path: str, old_src: CSource | None, new_src: CSource, ta
     return out
 
 
+def _integrity_violations(spec: Spec, path: str, text: str) -> list[PolicyViolation]:
+    """The verify-time gate's absolute source rules, applied early so a
+    repair round or a generation that the gate would reject never reaches
+    the verifier.  (Imported lazily: the gate module builds on this one.)"""
+    from leanc.backends.integrity import source_violations
+
+    return source_violations(spec, path, text)
+
+
 def _decision(violations: list[PolicyViolation]) -> PolicyDecision:
     order = {r: k for k, r in enumerate(RULES)}
     uniq: dict[tuple, PolicyViolation] = {}
     for v in violations:
-        uniq.setdefault((v.rule, v.file, v.line, v.message), v)
+        # the count-based and the absolute (integrity) rules may report the same construct
+        uniq.setdefault((v.rule, v.file, v.line) if v.line else (v.rule, v.file, v.line, v.message), v)
     vs = sorted(uniq.values(), key=lambda v: (order.get(v.rule, len(order)), v.file or "", v.line or 0, v.message))
     return PolicyDecision(allowed=not vs, violations=vs)
 
@@ -871,8 +895,10 @@ def check_candidate(
     ``allowed`` is true iff there are no violations.  Path rules apply to
     every changed path (added, modified or removed); content rules apply to
     the changed editable files and flag only constructs that are new
-    relative to ``old``.  ``max_changed_lines`` defaults to
-    ``spec.repair.max_changed_lines``.
+    relative to ``old``; in addition the changed editable files must satisfy
+    the *absolute* source-integrity rules of the verify-time gate
+    (:func:`leanc.backends.integrity.source_violations`).
+    ``max_changed_lines`` defaults to ``spec.repair.max_changed_lines``.
     """
     changed = changed_paths(old, new)
     if not changed:
@@ -919,6 +945,7 @@ def check_candidate(
     target = spec.target.function
     for p in content_paths:
         violations.extend(_content_violations(p, old_srcs.get(p), new_srcs.get(p), target))  # type: ignore[arg-type]
+        violations.extend(_integrity_violations(spec, p, new[p]))
     editable = set(spec.sources.editable)
     old_paths = sorted(p for p in old if p in editable and len(old[p]) <= MAX_ANALYZED_CHARS)
     new_paths = sorted(p for p in new if p in editable and p not in oversized)
@@ -930,7 +957,8 @@ def check_generated(spec: Spec, files: dict[str, str]) -> PolicyDecision:
     """Check freshly generated code: the content rules as for a repair
     against empty old files, ``PATH_INVALID``/``PATH_NOT_EDITABLE`` for
     every path, ``MISSING_TARGET`` if no generated editable file defines
-    ``spec.target.function``, and ``TRIVIALIZED_TARGET`` for a stub body."""
+    ``spec.target.function``, ``TRIVIALIZED_TARGET`` for a stub body, and the
+    absolute source-integrity rules of the verify-time gate."""
     violations: list[PolicyViolation] = []
     content_paths: list[str] = []
     for p in sorted(files):
@@ -947,5 +975,6 @@ def check_generated(spec: Spec, files: dict[str, str]) -> PolicyDecision:
     target = spec.target.function
     for p in content_paths:
         violations.extend(_content_violations(p, None, srcs.get(p), target))  # type: ignore[arg-type]
+        violations.extend(_integrity_violations(spec, p, files[p]))
     violations.extend(_target_violations(spec, None, srcs, [], content_paths))
     return _decision(violations)

@@ -52,7 +52,13 @@ from pathlib import Path
 
 from leanc.backends.tools import find_tool
 from leanc.core.context import BackendContext
-from leanc.core.models import Diagnostic, FailureReport, Location, PolicyViolation, StageResult
+from leanc.core.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    PolicyViolation,
+    StageResult,
+)
 from leanc.core.redact import redact
 from leanc.core.runner import Limits
 from leanc.core.status import Outcome, Status, outcome_to_status
@@ -161,10 +167,14 @@ LIBC_NAMES: frozenset[str] = (
 )  # fmt: skip
 
 C_KEYWORDS: frozenset[str] = frozenset(
-    """auto break case char const continue default do double else enum extern float for goto if inline int
-    long register restrict return short signed sizeof static struct switch typedef union unsigned void
-    volatile while alignas alignof typeof typeof_unqual constexpr nullptr thread_local""".split()
-)
+    {
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
+        "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+        "volatile", "while", "alignas", "alignof", "typeof", "typeof_unqual", "constexpr", "nullptr",
+        "thread_local",
+    }
+)  # fmt: skip
 
 _RESERVED_RE = re.compile(r"^(?:__\w*|_[A-Z]\w*)$")
 _DIRECTIVE_IDENT_RE = re.compile(r"\b(__\w+|_[A-Z]\w*|LEANC_\w*|NDEBUG)\b")
@@ -320,11 +330,11 @@ def _token_violations(src: CSource, where: str = "") -> list[tuple[str, str, int
         for m in rx.finditer(code):
             name = m.group(1)
             if name in TERMINATION_NAMES or name in ("pthread_exit", "thrd_exit"):
-                out.append(("TERMINATION", f"'{name}' terminates the process or escapes control flow: CBMC "
-                            f"prunes such paths and the native tests can report success{where}", m.start(1)))
+                out.append(("TERMINATION", (f"'{name}' terminates the process or escapes control flow: CBMC "
+                            f"prunes such paths and the native tests can report success{where}"), m.start(1)))
             else:
-                out.append(("DANGEROUS_IMPORT", f"'{name}' (process/network/loader/thread API) is not allowed"
-                            f"{where}", m.start(1)))
+                out.append(("DANGEROUS_IMPORT", (f"'{name}' (process/network/loader/thread API) is not allowed"
+                            f"{where}"), m.start(1)))
     out.extend(_attribute_violations(src, where))
     return out
 
@@ -428,11 +438,14 @@ def _directive_violations(
                 out.append(("TOOL_DIVERGENCE", f"malformed directive `#{rest.strip()[:40]}`", at))
             continue
         if name.isdigit():
-            out.append(("LINE_DIRECTIVE", "GNU linemarkers re-attribute code (e.g. mark it as a system header, "
-                        "which hides analyzer findings) and are not allowed", at))
+            out.append(("LINE_DIRECTIVE", ("GNU linemarkers re-attribute code (e.g. mark it as a system header, "
+                        "which hides analyzer findings) and are not allowed"), at))
             continue
         if name == "line":
             out.append(("LINE_DIRECTIVE", "#line re-attributes code to other files/lines and is not allowed", at))
+            continue
+        if name in ("include_next", "import", "embed"):
+            out.append(("INCLUDE_ESCAPE", f"#{name} is not allowed", at))
             continue
         if name not in _STD_DIRECTIVES:
             out.append(("TOOL_DIVERGENCE", f"non-standard directive #{name} (preprocessors disagree on it)", at))
@@ -440,11 +453,8 @@ def _directive_violations(
         if name == "pragma":
             body = " ".join(noc[m.start(2) : m.end(2)].split())
             if body != "once":
-                out.append(("PRAGMA", f"`#pragma {body[:60]}` is not allowed (pragmas can disable CBMC checks or "
-                            "diagnostics, or mark code as a system header)", at))
-            continue
-        if name in ("include_next", "import", "embed"):
-            out.append(("INCLUDE_ESCAPE", f"#{name} is not allowed", at))
+                out.append(("PRAGMA", (f"`#pragma {body[:60]}` is not allowed (pragmas can disable CBMC checks or "
+                            "diagnostics, or mark code as a system header)"), at))
             continue
         if name == "include":
             body = noc[m.start(2) : m.end(2)].strip()
@@ -472,11 +482,11 @@ def _directive_violations(
                 out.append(("SYMBOL_OVERRIDE", f"#{name} {macro}: redefining {what} is not allowed", at))
         if idents:
             uniq = ", ".join(dict.fromkeys(idents))
-            out.append(("TOOL_DIVERGENCE", f"#{name} on {uniq}: compiler-, optimiser- or verifier-specific "
-                        "macros make clang, the sanitizer build and CBMC see different code", at))
+            out.append(("TOOL_DIVERGENCE", (f"#{name} on {uniq}: compiler-, optimiser- or verifier-specific "
+                        "macros make clang, the sanitizer build and CBMC see different code"), at))
         if name in ("if", "elif") and "#" in rest:
-            out.append(("TOOL_DIVERGENCE", f"#{name} uses an assertion predicate (#...), which preprocessors "
-                        "treat differently", at))
+            out.append(("TOOL_DIVERGENCE", (f"#{name} uses an assertion predicate (#...), which preprocessors "
+                        "treat differently"), at))
     return out
 
 
@@ -486,11 +496,11 @@ def _pragma_operator_violations(src: CSource) -> list[tuple[str, str, int]]:
     for m in re.finditer(r"\b_Pragma\s*\(", code):
         sm = _PLAIN_STRING_ARG_RE.match(noc, m.end() - 1)
         if not sm:
-            out.append(("OBFUSCATION", "_Pragma(...) whose argument is not a single plain string literal "
-                        "(e.g. built by a macro) cannot be checked", m.start()))
+            out.append(("OBFUSCATION", ("_Pragma(...) whose argument is not a single plain string literal "
+                        "(e.g. built by a macro) cannot be checked"), m.start()))
         elif sm.group(1).strip() != "once":
-            out.append(("PRAGMA", f"_Pragma(\"{sm.group(1)[:60]}\") is not allowed (pragmas can disable CBMC "
-                        "checks or diagnostics)", m.start()))
+            out.append(("PRAGMA", (f"_Pragma(\"{sm.group(1)[:60]}\") is not allowed (pragmas can disable CBMC "
+                        "checks or diagnostics)"), m.start()))
     return out
 
 
@@ -513,8 +523,8 @@ def source_violations(
     found += _token_violations(src)
     # divergent predefined macros used in ordinary code (directives were checked above)
     for m in _PREDEFINED_DIVERGENT_RE.finditer(src.code_nodirectives):
-        found.append(("TOOL_DIVERGENCE", f"'{m.group(1)}' has a different value (or none) under clang, the "
-                      "optimised sanitizer build and CBMC", m.start()))
+        found.append(("TOOL_DIVERGENCE", (f"'{m.group(1)}' has a different value (or none) under clang, the "
+                      "optimised sanitizer build and CBMC"), m.start()))
     for name, off in defined_functions(src):
         why = _forbidden_definition(name)
         if why:

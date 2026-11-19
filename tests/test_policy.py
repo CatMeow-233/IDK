@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from leanc.backends.integrity import source_violations
 from leanc.repair.patch import proposal_to_contents
 from leanc.repair.policy import (
     RULES,
@@ -300,9 +301,13 @@ def test_content_rule_flags_new_construct(spec, rule, construct, label):
     assert rule in rules(d), (label, d.violations)
     v = next(v for v in d.violations if v.rule == rule)
     assert v.file == SRC and v.line is not None and v.line >= 1
-    # the same construct already present in the old code is not "new": not flagged again
-    d2 = cand(spec, new.replace("if (idx > len) {", "if (idx >= len) {"), old_src=new)
-    assert rule not in rules(d2), (label, d2.violations)
+    # the same construct already present in the old code is not "new": the
+    # count-based rule does not fire again (unless the construct is also
+    # forbidden absolutely by the source-integrity rules)
+    new2 = new.replace("if (idx > len) {", "if (idx >= len) {")
+    d2 = cand(spec, new2, old_src=new)
+    absolute = {v.rule for v in source_violations(spec, SRC, new2)}
+    assert rule not in rules(d2) or rule in absolute, (label, d2.violations)
     # and freshly generated code is checked with old = {}
     assert rule in rules(check_generated(spec, {SRC: new}))
 
@@ -339,8 +344,14 @@ def test_member_calls_named_like_dangerous_functions_are_not_flagged(spec):
 
 
 def test_ordinary_includes_are_fine(spec):
-    new = at_top('#include <stdio.h>\n#include "sub/dir/helper.h"\n#include <sys/types.h>')
+    new = at_top('#include <stdio.h>\n#include <sys/types.h>\n#include <safe_array.h>')
     assert cand(spec, new.replace("if (idx > len) {", "if (idx >= len) {")).allowed
+
+
+def test_quoted_include_must_be_a_protected_header(spec):
+    new = at_top('#include "sub/dir/helper.h"').replace("if (idx > len) {", "if (idx >= len) {")
+    d = cand(spec, new)
+    assert rules(d) == {"INCLUDE_ESCAPE"} and "protected header" in d.violations[0].message
 
 
 def test_count_based_more_occurrences_is_flagged_with_the_new_line(spec):
@@ -499,7 +510,7 @@ def test_check_generated_target_in_any_editable_file(spec2):
 
 def test_check_generated_content_rules(spec):
     bad = GOOD.replace("    *out = arr[idx];", '    __CPROVER_assume(idx < len);\n    system("x");\n    *out = arr[idx];')
-    assert rules(check_generated(spec, {SRC: bad})) == {"CPROVER_BUILTIN", "DANGEROUS_CALL"}
+    assert rules(check_generated(spec, {SRC: bad})) >= {"CPROVER_BUILTIN", "DANGEROUS_CALL"}
 
 
 # ============================================================================ decision shape

@@ -92,7 +92,8 @@ def test_init_then_full_lifecycle(capsys, tmp_path, needs_toolchain):
     assert rc == 0, data
     assert data["status"] == "VERIFIED_BOUNDED"
     stages = {s["stage"]: s["outcome"] for s in data["verification"]["stages"]}
-    assert stages == {"spec": "PASS", "compile": "PASS", "static_analysis": "PASS", "sanitizer": "PASS", "cbmc": "PASS"}
+    assert stages == {"spec": "PASS", "compile": "PASS", "integrity": "PASS", "static_analysis": "PASS",
+                      "sanitizer": "PASS", "cbmc": "PASS"}
     run_dir = Path(data["run_dir"])
     for f in ("run.json", "report.md", "leanc.log", "verify/verification.json", "verify/verification.md"):
         assert (run_dir / f).exists(), f
