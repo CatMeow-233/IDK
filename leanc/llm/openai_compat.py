@@ -28,14 +28,14 @@ import ipaddress
 import json
 import logging
 import os
-import socket
 import ssl
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Literal
 
 from leanc import __version__
 from leanc.core.errors import ProviderError
@@ -185,7 +185,7 @@ class OpenAICompatProvider(LLMProvider):
         transcript_dir: Path | None = None,
         environ: Mapping[str, str] | None = None,
         **overrides: Any,
-    ) -> "OpenAICompatProvider":
+    ) -> OpenAICompatProvider:
         """Configure from environment variables.
 
         ``LEANC_API_KEY`` (fallback ``OPENAI_API_KEY``), ``LEANC_BASE_URL``
@@ -342,10 +342,10 @@ class OpenAICompatProvider(LLMProvider):
             reason = exc.reason
             if isinstance(reason, ssl.SSLCertVerificationError):
                 raise ProviderError(f"TLS certificate verification failed for {self.base_url}: {reason}") from None
-            if isinstance(reason, (TimeoutError, socket.timeout)):
+            if isinstance(reason, TimeoutError):
                 raise _Retryable(f"timed out after {self.timeout_s:g}s") from None
             raise _Retryable(f"connection error: {reason}") from None
-        except (TimeoutError, socket.timeout):
+        except TimeoutError:
             raise _Retryable(f"timed out after {self.timeout_s:g}s") from None
         except (http.client.HTTPException, ConnectionError) as exc:
             raise _Retryable(f"connection error: {type(exc).__name__}: {exc}") from None

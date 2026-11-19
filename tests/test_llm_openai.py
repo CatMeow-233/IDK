@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import socket
 import threading
 import time
@@ -117,7 +118,7 @@ def fake():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     server.daemon_threads = True
     server.fake = FakeLLM()  # type: ignore[attr-defined]
-    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     t.start()
     server.fake.url = f"http://127.0.0.1:{server.server_address[1]}"  # type: ignore[attr-defined]
     try:
@@ -259,7 +260,7 @@ def test_repair_prompt_states_hard_rules_and_parses_answer(fake, make, spec):
     for path in ("harness/safe_array_get_harness.c", "include/safe_array.h", "tests/test_safe_array_get.c"):
         assert path in user
     assert "idx=3" in user and "len=3" in user and "unused variable" in user and "earlier attempt reverted" in user
-    assert ">9 |" in user  # numbered excerpt around the counterexample location
+    assert re.search(r"^\s*>\s*9 \| ", user, re.M)  # numbered excerpt around the counterexample location
     assert "Repair round 1" in user
 
 
@@ -324,7 +325,7 @@ def test_connection_refused_is_retried_then_reported(sleeps, tmp_path, spec):
     port = s.getsockname()[1]
     s.close()
     prov = OpenAICompatProvider(f"http://127.0.0.1:{port}/v1", KEY, "m", max_retries=2, proxy="none", sleep=sleeps.append)
-    with pytest.raises(ProviderError, match=r"connection error.*|after 3 attempt") as ei:
+    with pytest.raises(ProviderError, match="connection error") as ei:
         prov.generate_code(codegen_req(spec))
     assert "after 3 attempt(s)" in str(ei.value) and len(sleeps) == 2
 
@@ -517,7 +518,7 @@ def test_context_caps_and_patch_fallback(spec):
     assert "3 more failure(s) omitted" in p.user and "3 more diagnostic(s) omitted" in p.user
     tiny = build_codegen_prompt(codegen_req(spec), PromptLimits(max_prompt_chars=2_000))
     assert len(tiny.user) < 2_200 and "prompt truncated" in tiny.user
-    assert truncate("x" * 100, 10).count("x") == 10
+    assert truncate("q" * 100, 10).count("q") == 10 and truncate("q" * 10, 10) == "q" * 10
 
 
 def test_prompts_are_redacted_and_deterministic(spec, monkeypatch):

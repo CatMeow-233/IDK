@@ -25,9 +25,10 @@ import json
 import re
 import types
 import typing
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Iterable, Literal, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -760,8 +761,15 @@ def build_repair_prompt(req: RepairRequest, limits: PromptLimits = DEFAULT_LIMIT
     ]
     if missing:
         parts.append("Editable files that do not exist yet: " + ", ".join(missing))
+    # Numbered excerpts are shown for failures located in editable sources and
+    # in the trusted harness / tests (an assertion failure points at the harness).
+    excerpt_files = dict(req.sources)
+    if req.harness:
+        excerpt_files.setdefault(spec.verification.harness, req.harness)
+    if req.tests and spec.tests.driver:
+        excerpt_files.setdefault(spec.tests.driver, req.tests)
     parts += [
-        "## Failures reported by the verification tools\n" + render_failures(req.failures, limits, req.sources),
+        "## Failures reported by the verification tools\n" + render_failures(req.failures, limits, excerpt_files),
         "## Diagnostics\n" + render_diagnostics(req.diagnostics, limits),
         "## Earlier repair rounds (do not repeat rejected or reverted ideas)\n" + render_history(req.history, limits),
         "## Trusted CBMC harness (protected, read-only)\n" + harness,
