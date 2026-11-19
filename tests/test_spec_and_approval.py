@@ -274,3 +274,31 @@ def test_write_preserves_mode(tmp_path):
     os.chmod(p, 0o600)
     Workspace(tmp_path).write_text("a.c", "y")
     assert p.read_text() == "y" and (p.stat().st_mode & 0o777) == 0o600
+
+
+def test_approving_a_superseded_version_is_refused(project):
+    ws = Workspace(project)
+    text = (project / "spec.yaml").read_text()
+    approve_spec(parse_spec_text(text), "spec.yaml", ws, approved_by="a")
+    approve_spec(parse_spec_text(text.replace("unwind: 9", "unwind: 12").replace("version: 1", "version: 2")),
+                 "spec.yaml", ws, approved_by="a")
+    (approvals_dir(project) / "safe-array-get.json").unlink()  # even with the record store reset
+    with pytest.raises(ApprovalError, match="bump"):
+        approve_spec(parse_spec_text(text), "spec.yaml", ws, approved_by="a")
+    with pytest.raises(ApprovalError, match="bump"):
+        approve_spec(parse_spec_text(text.replace("unwind: 9", "unwind: 3").replace("version: 1", "version: 2")),
+                     "spec.yaml", ws, approved_by="a")
+
+
+def test_tampered_ledger_is_never_rewritten(project, _isolated_leanc_home):
+    ws = Workspace(project)
+    spec = load_spec(project / "spec.yaml")
+    approve_spec(spec, "spec.yaml", ws, approved_by="a")
+    ledger = _isolated_leanc_home / "approval-ledger.json"
+    data = json.loads(ledger.read_text())
+    data["signature"] = "0" * 64
+    ledger.write_text(json.dumps(data))
+    assert not check_approval(spec, ws).approved
+    with pytest.raises(ApprovalError, match="ledger"):
+        approve_spec(spec, "spec.yaml", ws, approved_by="a")
+    assert json.loads(ledger.read_text())["signature"] == "0" * 64

@@ -96,7 +96,7 @@ def generate_sources(
     if missing:
         raise GenerationRejected(f"provider did not generate: {missing}", decision)
     gen_dir = run_dir / "generated"
-    backup_dir = run_dir / "backup"
+    backup_dir = run_dir / "backup" / "before-generate"
     for rel, content in files.items():
         if ws.exists(rel):
             # never destroy user code: keep the overwritten version

@@ -188,7 +188,7 @@ def test_pass_details_record_what_was_checked(example_copy, needs_clang, tmp_pat
     files = {f["source"]: f for f in res.details["files"]}
     assert set(files) == {"src/ring.c", "src/ring_stats.c"}
     for f in files.values():
-        assert f["checks"] == ["source", "preprocessed", "symbols", "sections"]
+        assert f["checks"] == ["source", "preprocessed", "stack", "symbols", "sections"]
         assert {"preprocess", "nm", "readelf"} <= set(f["argv"])
         assert "-E" in f["argv"]["preprocess"]
     assert "ring_push" in files["src/ring.c"]["defined"]

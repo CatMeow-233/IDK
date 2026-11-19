@@ -101,7 +101,7 @@ leanc run path/to/spec.yaml --provider openai
 子目錄：`snapshot/`、`raw/`（`cbmc-verify.json`、SARIF…）、`logs/`、`verification.json`、`verification.md`。
 `doctor`、`init`、`spec approve/status/show` 是即時指令，不建立執行紀錄。
 `generate` 成功時 exit 0（但程式碼**尚未驗證**，紀錄中的狀態是 `UNKNOWN`）；`report` 以該次執行的狀態為
-exit code，若成功的執行之後檔案已被修改則顯示 STALE 並回傳 20。
+exit code，若成功的執行之後原始碼、受保護檔或規格已被修改則顯示 STALE 並回傳 20。
 驗證相關指令有 `--timeout-scale`、`--gates`、`--fail-fast`、`--no-sandbox`、`--allow-unsandboxed`、
 `--check-unapproved`；LLM 相關有 `--provider`、`--mock-dir`、`--llm-timeout`、`--max-rounds`。
 

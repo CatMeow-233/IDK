@@ -43,6 +43,8 @@ ATTACKS = [
     "sec_ab.c",  # abort() is assume(false) in CBMC
     "sec_af.c",
     "sec_vf.c",  # weak __VERIFIER_assume
+    "r2_vla.c",  # round 2: input-sized VLA (CBMC has no stack limit) crashes natively
+    "r2_alloca.c",  # round 2: __builtin_alloca, no import left for nm to see
 ]
 
 

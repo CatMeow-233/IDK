@@ -161,7 +161,7 @@ def test_generate_backs_up_and_exits_zero(capsys, example_copy, needs_toolchain)
     rc, data = run(capsys, "generate", spec, "--force", "--provider", "mock", "--json")
     assert rc == 0 and data["exit_code"] == 0
     assert "PRECIOUS" not in src.read_text()
-    backup = Path(data["run_dir"]) / "backup/src/safe_array.c"
+    backup = Path(data["run_dir"]) / "backup/before-generate/src/safe_array.c"
     assert "PRECIOUS" in backup.read_text()
 
 
@@ -237,3 +237,51 @@ def test_bad_project_root_and_requirement_file(capsys, tmp_path, example_copy):
                  "--project-root", str(tmp_path)]) == 2
     assert "cannot read --requirement-file" in capsys.readouterr().err
     assert main(["spec"]) == 2
+
+
+def test_run_regenerate_keeps_the_users_original(capsys, example_copy, needs_toolchain):
+    proj = example_copy("div_by_zero")
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    capsys.readouterr()
+    src = proj / "src/safe_ratio.c"
+    src.write_text(src.read_text() + "/* USER MARKER */\n")
+    rc, data = run(capsys, "run", spec, "--provider", "mock", "--regenerate", "--json")
+    assert data["status"] == "VERIFIED_BOUNDED"
+    rd = Path(data["run_dir"])
+    assert "USER MARKER" in (rd / "backup/before-generate/src/safe_ratio.c").read_text()
+    assert "USER MARKER" not in (rd / "backup/before-writeback/src/safe_ratio.c").read_text()
+
+
+def test_changed_spec_makes_report_stale(capsys, example_copy, needs_toolchain):
+    proj = example_copy("safe_array_get")
+    spec = proj / "spec.yaml"
+    main(["spec", "approve", str(spec), "--by", "t", "--yes"])
+    capsys.readouterr()
+    rc, data = run(capsys, "verify", str(spec), "--json")
+    assert rc == 0
+    spec.write_text(spec.read_text().replace("unwind: 9", "unwind: 2"))
+    rc = main(["report", data["run_dir"], "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 20 and any("spec content" in s for s in out["stale_files"])
+
+
+def test_symlinked_spec_is_refused(capsys, example_copy, tmp_path):
+    proj = example_copy("safe_array_get")
+    link = proj / "link.yaml"
+    link.symlink_to(proj / "spec.yaml")
+    assert main(["verify", str(link)]) == 2
+    assert "symbolic link" in capsys.readouterr().err
+
+
+def test_input_error_after_run_dir_creation_still_records_the_run(capsys, example_copy, monkeypatch):
+    proj = example_copy("safe_array_get")
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    capsys.readouterr()
+    monkeypatch.delenv("LEANC_MODEL", raising=False)
+    rc = main(["generate", spec, "--provider", "openai"])
+    err = capsys.readouterr().err
+    assert rc == 2 and err.count("error:") == 1
+    runs = list((proj / ".leanc/runs").iterdir())
+    assert len(runs) == 1 and (runs[0] / "run.json").exists() and (runs[0] / "report.md").exists()

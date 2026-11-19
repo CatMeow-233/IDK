@@ -193,3 +193,19 @@ def test_max_rounds_zero_keeps_the_real_status(buggy_project, tmp_path):
     initial = _initial(root, spec, tmp_path)
     out = repair_loop(root / "spec.yaml", spec, root, ScriptedProvider([]), initial, run_dir=tmp_path / "r", max_rounds=0)
     assert out.status is Status.COUNTEREXAMPLE_FOUND and out.rounds == []
+
+
+def test_lf_unified_diff_applies_to_crlf_sources(example_copy, needs_toolchain, tmp_path):
+    from leanc.repair.patch import make_unified_diff
+
+    root = example_copy("safe_array_get")
+    (root / "src/safe_array.c").write_bytes(BUGGY.replace("\n", "\r\n").encode())
+    spec = load_spec(root / "spec.yaml")
+    approve_spec(spec, "spec.yaml", Workspace(root), approved_by="tester")
+    initial = verify(root / "spec.yaml", project_root=root, run_dir=tmp_path / "init", spec=spec)
+    lf_patch = make_unified_diff(files(BUGGY), files(GOOD))
+    assert "\r" not in lf_patch
+    provider = ScriptedProvider([RepairProposal(root_cause="r", rationale="fix", patch=lf_patch)])
+    out = repair_loop(root / "spec.yaml", spec, root, provider, initial, run_dir=tmp_path / "rep", max_rounds=1)
+    assert out.status is Status.VERIFIED_BOUNDED, out.rounds[0].note
+    assert (root / "src/safe_array.c").read_bytes() == GOOD.replace("\n", "\r\n").encode()

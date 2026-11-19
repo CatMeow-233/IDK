@@ -254,7 +254,11 @@ def repair_loop(
             rounds.append(rr)
             continue
         try:
-            candidate = proposal_to_contents(proposal.files, proposal.patch, best_sources)
+            base = best_sources
+            if proposal.patch and "\r" not in proposal.patch and any("\r\n" in v for v in best_sources.values()):
+                # LF diff against CRLF sources: apply to the LF view, CRLF is restored below
+                base = {k: v.replace("\r\n", "\n") for k, v in best_sources.items()}
+            candidate = proposal_to_contents(proposal.files, proposal.patch, base)
             for rel, content in list(candidate.items()):
                 # Preserve CRLF line endings of existing sources: models (and
                 # the response parser) normalise to LF, which would otherwise
@@ -328,7 +332,7 @@ def repair_loop(
             d.parent.mkdir(parents=True, exist_ok=True)
             d.write_text(content, encoding="utf-8")
         if write_back:
-            backup = run_dir / "backup"
+            backup = run_dir / "backup" / "before-writeback"
             for rel, content in best_sources.items():
                 if ws.exists(rel):
                     b = backup / rel

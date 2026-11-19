@@ -1,6 +1,6 @@
 {
   "meta": {
-    "date": "2026-11-19T13:39:54Z",
+    "date": "2026-11-19T14:13:04Z",
     "leanc_version": "0.1.0",
     "python": "3.13.18",
     "platform": "Linux 6.18.44-fc-v653 x86_64",
@@ -21,7 +21,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 4.13,
+        "seconds": 4.51,
         "detected_by": [
           "asan",
           "cbmc"
@@ -57,7 +57,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 9.61,
+        "seconds": 10.75,
         "repair_rounds": 1,
         "rejected_rounds": [],
         "violations": []
@@ -75,7 +75,7 @@
       "verify": {
         "status": "TIMEOUT",
         "exit_code": 21,
-        "seconds": 4.17,
+        "seconds": 4.24,
         "detected_by": [],
         "stages": [
           {
@@ -108,7 +108,7 @@
       "run": {
         "status": "TIMEOUT",
         "exit_code": 21,
-        "seconds": 4.18,
+        "seconds": 4.39,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -135,7 +135,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 3.04,
+        "seconds": 3.31,
         "detected_by": [
           "asan",
           "cbmc"
@@ -171,7 +171,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 4.79,
+        "seconds": 5.33,
         "repair_rounds": 5,
         "rejected_rounds": [
           1,
@@ -204,7 +204,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 3.8,
+        "seconds": 3.74,
         "detected_by": [
           "cbmc",
           "ubsan"
@@ -240,7 +240,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 11.06,
+        "seconds": 11.18,
         "repair_rounds": 2,
         "rejected_rounds": [],
         "violations": []
@@ -261,7 +261,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 1.43,
+        "seconds": 1.64,
         "detected_by": [
           "cbmc",
           "ubsan"
@@ -297,7 +297,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 2.46,
+        "seconds": 2.64,
         "repair_rounds": 1,
         "rejected_rounds": [],
         "violations": []
@@ -320,7 +320,7 @@
       "verify": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 1.83,
+        "seconds": 1.77,
         "detected_by": [
           "cbmc"
         ],
@@ -355,13 +355,13 @@
         "spec_full_unwind.yaml": {
           "status": "VERIFIED_BOUNDED",
           "expected": "VERIFIED_BOUNDED",
-          "seconds": 14.53
+          "seconds": 14.94
         }
       },
       "run": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 2.02,
+        "seconds": 2.24,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -383,7 +383,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 2.88,
+        "seconds": 2.9,
         "detected_by": [
           "cbmc",
           "clang-static-analyzer",
@@ -420,7 +420,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 3.28,
+        "seconds": 3.9,
         "repair_rounds": 1,
         "rejected_rounds": [],
         "violations": []
@@ -442,7 +442,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 1.32,
+        "seconds": 1.53,
         "detected_by": [
           "cbmc",
           "ubsan"
@@ -478,7 +478,7 @@
       "run": {
         "status": "REPAIR_EXHAUSTED",
         "exit_code": 50,
-        "seconds": 3.16,
+        "seconds": 3.93,
         "repair_rounds": 5,
         "rejected_rounds": [],
         "violations": []
@@ -496,7 +496,7 @@
       "verify": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 9.67,
+        "seconds": 10.95,
         "detected_by": [],
         "stages": [
           {
@@ -529,7 +529,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 10.3,
+        "seconds": 10.95,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -550,7 +550,7 @@
       "verify": {
         "status": "RUNTIME_TEST_FAILED",
         "exit_code": 12,
-        "seconds": 3.39,
+        "seconds": 3.83,
         "detected_by": [
           "lsan"
         ],
@@ -585,7 +585,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 6.65,
+        "seconds": 7.3,
         "repair_rounds": 1,
         "rejected_rounds": [],
         "violations": []
@@ -603,7 +603,7 @@
       "verify": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 1.29,
+        "seconds": 1.54,
         "detected_by": [],
         "stages": [
           {
@@ -636,7 +636,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 1.46,
+        "seconds": 1.66,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -659,7 +659,7 @@
       "verify": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 0.88,
+        "seconds": 1.21,
         "detected_by": [
           "cbmc"
         ],
@@ -686,13 +686,13 @@
         "spec_fixed_harness.yaml": {
           "status": "COUNTEREXAMPLE_FOUND",
           "expected": "COUNTEREXAMPLE_FOUND",
-          "seconds": 1.23
+          "seconds": 1.51
         }
       },
       "run": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 1.07,
+        "seconds": 1.19,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []

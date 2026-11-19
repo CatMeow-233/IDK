@@ -106,6 +106,8 @@ RULES: dict[str, str] = {
     "DANGEROUS_IMPORT": "imports a function that is not on the allowlist of faithfully modelled library functions "
     "(process, network, dynamic loading, threads, sanitizer control, weak references, anything unmodelled)",
     "MISSING_TARGET": "no editable object defines the target function",
+    "UNBOUNDED_STACK": "variable-length arrays or alloca: CBMC has no model of stack limits, so an input-sized "
+    "stack allocation verifies while crashing natively",
 }
 
 # =========================================================================== name sets
@@ -218,6 +220,22 @@ _TOKEN_RULES: list[tuple[str, re.Pattern[str], str]] = [
         "sanitizer runtime interface",
     ),
     ("PRAGMA", re.compile(r"\b__pragma(?=\s*\()"), "MS-style __pragma"),
+    (
+        "UNBOUNDED_STACK",
+        re.compile(r"(?<![\w.])(?<!->)\b(?:alloca|__builtin_alloca\w*)(?=\s*\()"),
+        "stack allocation (alloca)",
+    ),
+    (
+        "TERMINATION",
+        re.compile(r"\b__builtin_(?:setjmp|longjmp|unwind_init|eh_return)(?=\s*\()"),
+        "non-local control-flow built-in",
+    ),
+    (
+        "TOOL_DIVERGENCE",
+        re.compile(r"\b__builtin_(?:frame_address|return_address|extract_return_addr|stack_save|stack_restore)"
+                   r"(?=\s*\()"),
+        "stack/frame introspection built-in",
+    ),
 ]
 
 _NAMES_ALT = "|".join(sorted(TERMINATION_NAMES | DANGEROUS_NAMES, key=len, reverse=True))
@@ -687,6 +705,12 @@ def _find(names: tuple[str, ...]) -> str | None:
     return None
 
 
+_STACK_DIAG_RE = re.compile(
+    r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
+    re.M,
+)
+
+
 def run_integrity(ctx: BackendContext) -> StageResult:
     """Mandatory source-integrity gate; see the module docstring."""
     t0 = time.monotonic()
@@ -765,6 +789,44 @@ def run_integrity(ctx: BackendContext) -> StageResult:
             if pp is not None:
                 violations += preprocessed_violations(rel, pp)
                 entry["checks"].append("preprocessed")
+            # Semantic check the preprocessor cannot do: VLAs (also those hidden
+            # behind typedefs or macros) and alloca.  CBMC treats any stack
+            # allocation as valid, so they must never reach a verdict.
+            sargv = [
+                ctx.tools.clang,
+                f"-std={spec.language.standard}",
+                *[d if d.startswith("-D") else f"-D{d}" for d in spec.compile.defines],
+                *ctx.include_args(),
+                "-fsyntax-only",
+                "-fno-color-diagnostics",
+                "-fno-caret-diagnostics",
+                "-Wno-everything",
+                "-Wvla",
+                "-Walloca",
+                "-Werror=vla",
+                "-Werror=alloca",
+                rel,
+            ]
+            entry["argv"]["stack"] = sargv
+            proc = ctx.run(sargv, limits=limits, cwd=snap)
+            invocations.append(proc.to_invocation("clang", ctx.run_dir, ctx.log_name(STAGE, f"stack-{rel}")))
+            if proc.timed_out:
+                timeouts.append(f"stack check of {rel} timed out")
+            elif proc.error:
+                problems.append(f"stack check of {rel} failed: {proc.error}")
+            else:
+                hits = 0
+                for m in _STACK_DIAG_RE.finditer(proc.stderr):
+                    hits += 1
+                    line = int(m.group("line"))
+                    violations.append(
+                        _v("UNBOUNDED_STACK", f"{m.group('msg').strip()} (CBMC cannot model stack exhaustion)",
+                           m.group("file") if m.group("file") == rel else rel, line)
+                    )
+                if proc.exit_code not in (0, None) and not hits:
+                    problems.append(f"stack check of {rel} failed (exit {proc.exit_code}): "
+                                    f"{redact(proc.stderr.strip())[:300]}")
+                entry["checks"].append("stack")
         else:
             problems.append("clang not found: cannot check the preprocessed source")
 

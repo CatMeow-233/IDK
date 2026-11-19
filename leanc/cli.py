@@ -98,6 +98,8 @@ def _discover_root(start: Path) -> Path:
 
 def _spec_and_root(args) -> tuple[Path, Path]:
     spec_path = Path(args.spec)
+    if spec_path.is_symlink():
+        raise LeanCError(f"{spec_path}: spec must not be a symbolic link")
     if not spec_path.is_file():
         raise LeanCError(f"spec file not found: {spec_path}")
     root = _explicit_root(args) or find_project_root(spec_path)
@@ -139,13 +141,43 @@ def _provider(args, root: Path, run_dir: Path):
     return get_provider(name, project_root=root, mock_dir=mock_dir, transcript_dir=run_dir / "llm")
 
 
+_ACTIVE_RUN: dict[str, Any] = {}
+
+
 def _new_run(root: Path, prefix: str) -> tuple[str, Path]:
     from leanc.core.controller import ensure_runs_dir
 
     run_id = new_run_id(prefix)
     run_dir = ensure_runs_dir(root) / run_id
     run_dir.mkdir(parents=False, exist_ok=False)
+    _ACTIVE_RUN.clear()
+    _ACTIVE_RUN.update(run_id=run_id, run_dir=run_dir, root=root, command=prefix.rstrip("-"))
     return run_id, run_dir
+
+
+def _record_aborted_run(message: str) -> None:
+    """A run directory created before an input error still gets a run.json /
+    report.md explaining why the run stopped (never an empty run folder)."""
+    run_dir = _ACTIVE_RUN.get("run_dir")
+    if not run_dir or (Path(run_dir) / "run.json").exists():
+        return
+    try:
+        from leanc.reports.json_report import write_json
+        from leanc.reports.markdown import render_run_md
+
+        rec = RunRecord(
+            run_id=_ACTIVE_RUN["run_id"],
+            command=_ACTIVE_RUN["command"],
+            leanc_version=__version__,
+            status=Status.TOOL_ERROR,
+            project_root=str(_ACTIVE_RUN["root"]),
+            messages=[f"aborted before completion (input error, exit 2): {message}"],
+            finished_at=utcnow(),
+        )
+        write_json(rec, Path(run_dir) / "run.json")
+        (Path(run_dir) / "report.md").write_text(render_run_md(rec), encoding="utf-8")
+    except Exception:  # pragma: no cover - best effort
+        pass
 
 
 def _finish_run(record: RunRecord, run_dir: Path, out: _Out, *, exit_override: int | None = None) -> int:
@@ -273,6 +305,11 @@ def cmd_init(args) -> int:
         target = ws.resolve(rel)  # rejects symlinked components
         if target.exists() and not args.force:
             conflicts.append(rel)
+    gi_rel = ".gitignore"
+    gi_path = ws.resolve(gi_rel)  # pre-check .gitignore too (symlink / dir / encoding)
+    if gi_path.exists() and not gi_path.is_file():
+        raise LeanCError(f"{gi_path} is not a regular file")
+    existing = ws.read_text(gi_rel) if gi_path.exists() else ""
     if conflicts:
         raise LeanCError(f"{len(conflicts)} file(s) already exist in {dest} (use --force): {', '.join(conflicts[:8])}")
     created: list[str] = []
@@ -280,8 +317,6 @@ def cmd_init(args) -> int:
         ws.write_bytes(rel, data)
         created.append(rel)
     line = ".leanc/runs/"
-    gi_rel = ".gitignore"
-    existing = ws.read_text(gi_rel) if ws.exists(gi_rel) else ""
     if line not in existing.splitlines():
         sep = "" if not existing or existing.endswith("\n") else "\n"
         ws.write_text(gi_rel, existing + sep + line + "\n")
@@ -638,6 +673,14 @@ def _stale_files(rr: RunRecord) -> list[str]:
     except LeanCError:
         return sorted(vr.source_hashes)
     stale = []
+    if rr.spec_path and vr.spec_hash:
+        from leanc.specs.loader import load_spec, spec_hash
+
+        try:
+            if spec_hash(load_spec(rr.spec_path)) != vr.spec_hash:
+                stale.append(f"{rr.spec_path} (spec content)")
+        except LeanCError:
+            stale.append(f"{rr.spec_path} (spec unreadable)")
     for rel, h in vr.source_hashes.items():
         try:
             cur = sha256_bytes(ws.read_bytes(rel))
@@ -798,7 +841,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except LeanCError as exc:
-        log.error("%s", exc)
+        log.info("error: %s", exc)  # log file only; printed once below
+        _record_aborted_run(str(exc))
         print(f"leanc: error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except KeyboardInterrupt:

@@ -55,7 +55,9 @@ verification.json / verification.md
 
 批准檢查讀取的是 **snapshot** 中的受保護檔，因此「被檢查雜湊的位元組」就是「被驗證的位元組」，
 避免 time-of-check/time-of-use 差異。修復回合在各自的 `repair/round-N/verify/` 快照中驗證候選碼，
-工作區在迴圈期間不被修改；只有達到成功狀態的候選碼才會寫回（並備份原檔）。
+工作區在迴圈期間不被修改；只有達到成功狀態的候選碼才會寫回，原檔備份在 `backup/before-writeback/`
+（`generate --force` / `run --regenerate` 覆寫前的原檔在 `backup/before-generate/`；已驗證的候選碼一律另存於
+`verified-candidate/`）。
 
 ## 關卡規則
 

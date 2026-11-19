@@ -1,6 +1,6 @@
 # Lean C experiment results
 
-- date (UTC): 2026-11-19T13:39:54Z
+- date (UTC): 2026-11-19T14:13:04Z
 - leanc: 0.1.0; python 3.13.18; Linux 6.18.44-fc-v653 x86_64
 - tools: Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)
 - provider for `run`: **mock** (fixed fixtures; NOT a measurement of LLM performance)

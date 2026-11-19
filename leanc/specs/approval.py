@@ -19,7 +19,9 @@ mismatch yields ``SPEC_UNAPPROVED`` and no verified status can be reported.
 
 from __future__ import annotations
 
+import fcntl
 import hmac
+from contextlib import contextmanager
 import json
 import os
 import secrets
@@ -135,8 +137,32 @@ def _load_ledger(key: bytes) -> tuple[dict[str, Any], str | None]:
     return entries, None
 
 
+@contextmanager
+def _ledger_lock():
+    """Serialise ledger read-modify-write across processes."""
+    home = leanc_home()
+    home.mkdir(parents=True, exist_ok=True)
+    fd = os.open(home / ".approval-ledger.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _ledger_floor(key: bytes, root: Path, spec_id: str) -> tuple[int, str | None]:
+    entries, err = _load_ledger(key)
+    if err:
+        raise ApprovalError(f"{err}; refusing to approve (restore {leanc_home() / LEDGER_FILE} or remove it deliberately)")
+    cur = entries.get(_ledger_key(root, spec_id))
+    return (int(cur.get("version", 0)), cur.get("spec_hash")) if cur else (0, None)
+
+
 def _update_ledger(key: bytes, root: Path, spec_id: str, version: int, spec_hash_: str) -> None:
-    entries, _err = _load_ledger(key)
+    entries, err = _load_ledger(key)
+    if err:  # never "repair" a tampered ledger by rewriting it from scratch
+        raise ApprovalError(f"{err}; refusing to rewrite it")
     k = _ledger_key(root, spec_id)
     cur = entries.get(k)
     if cur is None or int(cur.get("version", 0)) <= version:
@@ -204,6 +230,13 @@ def approve_spec(
     files = protected_file_hashes(spec, ws)
     store = load_store(ws.root, spec.spec_id) or {"current": None, "history": []}
     cur = store.get("current")
+    with _ledger_lock():
+        floor, floor_hash = _ledger_floor(key, ws.root, spec.spec_id)
+    if spec.version < floor or (spec.version == floor and floor_hash not in (None, h)):
+        raise ApprovalError(
+            f"version {spec.version} of '{spec.spec_id}' conflicts with approved version {floor}; "
+            f"bump 'version' to at least {floor + 1} to approve this content"
+        )
     if cur:
         same_content = cur.get("spec_hash") == h and cur.get("protected_files") == files
         if not same_content and spec.version <= int(cur.get("spec_version", 0)):
@@ -238,7 +271,8 @@ def approve_spec(
         ws.relpath(d) + f"/{spec.spec_id}.json",
         json.dumps(store, indent=2, ensure_ascii=False) + "\n",
     )
-    _update_ledger(key, ws.root, spec.spec_id, spec.version, h)
+    with _ledger_lock():
+        _update_ledger(key, ws.root, spec.spec_id, spec.version, h)
     return record
 
 
