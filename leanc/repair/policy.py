@@ -24,11 +24,13 @@ How matching works:
 * path rules are absolute: any changed path outside ``spec.sources.editable``
   is rejected, whatever the content.
 
-Known limits (documented in docs/security.md): this is a lexical check, not a
-preprocessor.  Macro tricks that assemble forbidden identifiers are partly
-covered (token pasting ``##`` and trigraphs are rejected as ``OBFUSCATION``)
-but not exhaustively; the protected harness and the independent verifiers
-remain the real line of defence.
+Known limits: this is a lexical check, not a preprocessor.  Macro tricks
+that assemble forbidden identifiers are partly covered (token pasting ``##``
+and trigraphs are rejected as ``OBFUSCATION``) but not exhaustively;
+conditionals other than literal ``#if 0``/``#if 1`` are treated as live; a
+target defined through a macro or K&R syntax reads as "removed".  The
+protected harness and the independent verifiers remain the real line of
+defence.
 """
 
 from __future__ import annotations
@@ -206,17 +208,20 @@ def _blank_dead_branches(code: str, noc: str) -> tuple[str, str]:
     code_lines = code.split("\n")
     noc_lines = noc.split("\n")
     stack: list[list[bool]] = []  # [skipping, a branch is certainly taken]
+    skipping = 0  # number of frames on the stack that are skipping
     for idx, line in enumerate(code_lines):
         m = _COND_RE.match(line)
         if m:
             d, rest = m.group(1), m.group(2)
             if d in ("if", "ifdef", "ifndef"):
-                outer = any(f[0] for f in stack)
+                dead = skipping > 0
                 v = _const01(rest) if d == "if" else None
                 stack.append([v == 0, v == 1])
+                skipping += v == 0
             elif stack:
-                outer = any(f[0] for f in stack[:-1])
                 top = stack[-1]
+                dead = skipping - top[0] > 0  # an *enclosing* group is skipped
+                skipping -= top[0]
                 if d == "endif":
                     stack.pop()
                 elif top[1]:
@@ -226,15 +231,35 @@ def _blank_dead_branches(code: str, noc: str) -> tuple[str, str]:
                 else:
                     v = _const01(rest) if d == "elif" else None
                     top[0], top[1] = v == 0, v == 1
+                if d != "endif":
+                    skipping += top[0]
             else:
-                outer = False
-            dead = outer
+                dead = False
         else:
-            dead = any(f[0] for f in stack)
+            dead = skipping > 0
         if dead:
             code_lines[idx] = _blank(line)
             noc_lines[idx] = _blank(noc_lines[idx])
     return "\n".join(code_lines), "\n".join(noc_lines)
+
+
+def _pair_map(s: str) -> dict[int, int]:
+    """Offset of every matched ``(``/``[``/``{`` -> offset of its partner,
+    computed in one pass (each bracket kind nests independently).  Lets all
+    later matching be O(1), so hostile input such as 50 000 unclosed
+    ``__attribute__((`` cannot make the checker quadratic."""
+    out: dict[int, int] = {}
+    stacks: dict[str, list[int]] = {"(": [], "[": [], "{": []}
+    partner = {")": "(", "]": "[", "}": "{"}
+    for m in re.finditer(r"[()\[\]{}]", s):
+        ch = m.group()
+        if ch in stacks:
+            stacks[ch].append(m.start())
+        else:
+            st = stacks[partner[ch]]
+            if st:
+                out[st.pop()] = m.start()
+    return out
 
 
 class CSource:
@@ -258,14 +283,35 @@ class CSource:
         code = _DIGRAPH_RE.sub(lambda m: _DIGRAPHS[m.group()], code)
         self.code, self.nocomment = _blank_dead_branches(code, noc)
 
+        self._line_text: dict[int, str] = {}
+        self._shown: dict[int, str] = {}
+
     def line_of(self, offset: int) -> int:
+        """Original (unspliced) line number of an offset in the views."""
         return self._lines[bisect.bisect_right(self._offs, offset) - 1]
 
+    def raw_line_of(self, offset: int) -> int:
+        """Line number of an offset in :attr:`raw`."""
+        return bisect.bisect_right(self._raw_newlines, offset - 1) + 1
+
+    @cached_property
+    def _code_newlines(self) -> list[int]:
+        return [m.start() for m in re.finditer("\n", self.code)]
+
+    @cached_property
+    def _raw_newlines(self) -> list[int]:
+        return [m.start() for m in re.finditer("\n", self.raw)]
+
     def line_text(self, offset: int) -> str:
-        """Whitespace-normalised code line containing ``offset``."""
-        start = self.code.rfind("\n", 0, offset) + 1
-        end = self.code.find("\n", offset)
-        return " ".join(self.code[start : len(self.code) if end < 0 else end].split())
+        """Whitespace-normalised code line containing ``offset`` (cached per
+        line, so many findings on one huge line stay linear)."""
+        nl = self._code_newlines
+        k = bisect.bisect_left(nl, offset)
+        if k not in self._line_text:
+            start = nl[k - 1] + 1 if k > 0 else 0
+            end = nl[k] if k < len(nl) else len(self.code)
+            self._line_text[k] = " ".join(self.code[start:end].split())[:500]
+        return self._line_text[k]
 
     @cached_property
     def _raw_lines(self) -> list[str]:
@@ -274,11 +320,22 @@ class CSource:
     def shown_line(self, line: int) -> str:
         """Original source line ``line`` for messages (whitespace collapsed,
         control/bidi characters escaped, truncated)."""
-        lines = self._raw_lines
-        text = lines[line - 1] if 1 <= line <= len(lines) else ""
-        text = " ".join(text.split())
-        text = "".join(c if c.isprintable() and not _BIDI_RE.match(c) else f"\\u{ord(c):04x}" for c in text)
-        return text if len(text) <= 120 else text[:117] + "..."
+        if line not in self._shown:
+            lines = self._raw_lines
+            text = " ".join((lines[line - 1] if 1 <= line <= len(lines) else "")[:1000].split())
+            text = "".join(c if c.isprintable() and not _BIDI_RE.match(c) else f"\\u{ord(c):04x}" for c in text)
+            self._shown[line] = text if len(text) <= 120 else text[:117] + "..."
+        return self._shown[line]
+
+    @cached_property
+    def pairs(self) -> dict[int, int]:
+        """Bracket partners in :attr:`code`."""
+        return _pair_map(self.code)
+
+    @cached_property
+    def pairs_nodirectives(self) -> dict[int, int]:
+        """Bracket partners in :attr:`code_nodirectives`."""
+        return _pair_map(self.code_nodirectives)
 
     @cached_property
     def code_nodirectives(self) -> str:
@@ -375,7 +432,8 @@ _PRAGMA_STR_RE = re.compile(r'\(\s*(?:L|u8|u|U)?"((?:[^"\\\n]|\\.)*)"\s*\)')
 _INCLUDE_RE = re.compile(rf"^{_WS}#{_WS}(include_next|include|import|embed)\b", re.MULTILINE)
 _HEADER_NAME_RE = re.compile(r'^(<[^>\n]*>|"[^"\n]*")')
 _ATTRIBUTE_RE = re.compile(r"\b(__attribute__|__declspec)\s*\(")
-_STD_ATTRIBUTE_RE = re.compile(r"\[\s*\[(.*?)\]\s*\]", re.DOTALL)
+_STD_ATTRIBUTE_RE = re.compile(r"\[\s*\[")
+_SUPPRESS_ATTR_RE = re.compile(r"\bclang\s*::\s*suppress\b")
 _ASSUME_ATTR_RE = re.compile(r"\b(?:\w+\s*::\s*)?_*(assume|assume_aligned|nonnull|returns_nonnull)_*\b")
 _ALIAS_ATTR_RE = re.compile(r'\b_*(?:alias|weakref)_*\s*\(\s*"\s*(__CPROVER\w*|LEANC_\w*)')
 _TRIGRAPH_RE = re.compile(r"\?\?[=/'()!<>\-]")
@@ -435,13 +493,17 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
     for m in _PRAGMA_RE.finditer(code):
         for rule, key in _pragma_hits(noc[m.start(1) : m.end(1)]):
             add(rule, key, m.start())
+    covered = -1
     for m in _PRAGMA_OP_RE.finditer(code):
+        if m.start() < covered:
+            continue
         if m.group(1) == "_Pragma":
             sm = _PRAGMA_STR_RE.match(noc, m.end() - 1)
             body = sm.group(1).replace('\\"', '"').replace("\\\\", "\\") if sm else None
         else:
-            close = _match_close(noc, m.end() - 1)
+            close = src.pairs.get(m.end() - 1)
             body = noc[m.end() : close] if close is not None else None
+            covered = close if close is not None else covered
         if body is None or _depth > 3:
             continue
         for h in _scan(CSource("#pragma " + body), target, _depth=_depth + 1):
@@ -466,17 +528,31 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
             add("CPROVER_BUILTIN", "#include of the harness header leanc.h", m.start())
 
     # attributes: GNU/MS style and C23 [[...]]
+    # (regions are scanned once: a match inside an already-scanned attribute
+    # is part of it, which keeps hostile nesting linear)
+    covered = -1
     for m in _ATTRIBUTE_RE.finditer(code):
-        close = _match_close(code, m.end() - 1)
-        body_code = code[m.end() : close if close is not None else len(code)]
-        for a in _ASSUME_ATTR_RE.finditer(body_code):
+        if m.start() < covered:
+            continue
+        # an unclosed attribute is checked up to the end of its line
+        close = src.pairs.get(m.end() - 1)
+        if close is None:
+            eol = code.find("\n", m.end())
+            close = len(code) if eol < 0 else eol
+        covered = close
+        for a in _ASSUME_ATTR_RE.finditer(code, m.end(), close):
             add("ASSUMPTION_INJECTION", f"'{a.group(1)}' attribute", m.start())
-        for a in _ALIAS_ATTR_RE.finditer(noc[m.end() : close if close is not None else len(code)]):
+        for a in _ALIAS_ATTR_RE.finditer(noc, m.end(), close):
             add("CPROVER_BUILTIN", f"alias of {a.group(1)}", m.start())
+    covered = -1
     for m in _STD_ATTRIBUTE_RE.finditer(code):
-        for a in _ASSUME_ATTR_RE.finditer(m.group(1)):
+        close = src.pairs.get(m.start())  # partner of the outer '['
+        if m.start() < covered or close is None or close <= m.end():
+            continue
+        covered = close
+        for a in _ASSUME_ATTR_RE.finditer(code, m.end(), close):
             add("ASSUMPTION_INJECTION", f"'{a.group(1)}' attribute", m.start())
-        if re.search(r"\bclang\s*::\s*suppress\b", m.group(1)):
+        if _SUPPRESS_ATTR_RE.search(code, m.end(), close):
             add("WARNING_SUPPRESSION", "[[clang::suppress]]", m.start())
 
     # raw-text checks: trigraphs (phase 1, active even inside literals and
@@ -484,7 +560,7 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
     raw = src.raw
     for rx, what in ((_TRIGRAPH_RE, "trigraph"), (_BIDI_RE, "bidirectional control character")):
         for m in rx.finditer(raw):
-            line = raw.count("\n", 0, m.start()) + 1
+            line = src.raw_line_of(m.start())
             shown = src.shown_line(line)
             key = f"{what} {m.group()!r}" if what == "trigraph" else f"{what} U+{ord(m.group()):04X}"
             hits.append(_Hit("OBFUSCATION", key, line, shown, shown))
@@ -520,7 +596,9 @@ _CONST_RE = re.compile(
     r"(?:0[xX][0-9a-fA-F]+|0[bB][01]+|\d+\.?\d*(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?)[uUlLfF]*"
     r"|'[^'\n]*'|(?:L|u8|u|U)?\"[^\"\n]*\"|NULL|nullptr|true|false|[A-Z_][A-Z0-9_]+"
 )
-_VOID_CAST_STMT_RE = re.compile(r"^\s*(?:;|\(\s*void\s*\)\s*\(?\s*[A-Za-z_]\w*\s*\)?\s*;)")
+_MAX_TRIVIAL_BODY = 2000
+# a no-op statement `(void)param;` / `(void)(param);` (silences -Wunused-parameter)
+_VOID_CAST_STMT_RE = re.compile(r"\(\s*void\s*\)\s*(?:[A-Za-z_]\w*|\(\s*[A-Za-z_]\w*\s*\))\s*;")
 _DEF_ATTR_RE = re.compile(r"__attribute__\s*\(|__declspec\s*\(")
 _NORETURN_RE = re.compile(
     r"(?:abort|exit|_Exit|quick_exit|__builtin_trap)\s*\([^;]*\)\s*;(?:\s*return\b[^;]*;)?"
@@ -549,16 +627,18 @@ def is_trivial_body(body: str) -> bool:
     """Heuristic: does a function body (code view, without the outer braces)
     do nothing but return a literal / macro constant (or nothing at all, or
     only call abort/exit)?  ``(void)param;`` casts and extra braces or
-    semicolons are ignored."""
-    s = body
+    semicolons are ignored, however many there are."""
+    s = " ".join(_VOID_CAST_STMT_RE.sub(" ", body).split())
+    if len(s) > _MAX_TRIVIAL_BODY:
+        return False  # a stub is short; this also bounds the work below
     while True:
-        s2 = _VOID_CAST_STMT_RE.sub("", s, count=1).strip()
+        s2 = s.lstrip("; ").strip()
         if s2.startswith("{") and _match_close(s2, 0, "{", "}") == len(s2) - 1:
-            s2 = s2[1:-1]
+            s2 = s2[1:-1].strip()
         if s2 == s:
             break
         s = s2
-    s = re.sub(r";[\s;]*$", ";", " ".join(s.split()))
+    s = re.sub(r";[\s;]*$", ";", s)
     if s == "" or re.fullmatch(r"return\s*;", s):
         return True
     if _NORETURN_RE.fullmatch(s):
@@ -574,13 +654,13 @@ def find_function_definitions(src: CSource, name: str, file: str = "") -> list[F
     are not definitions; the conservative consequence is that hiding the
     target behind a macro reads as "definition removed"."""
     code = src.code_nodirectives
-    braces = [(k, ch) for k, ch in enumerate(code) if ch in "{}"]
+    pairs = src.pairs_nodirectives
     marks: list[int] = []
     depth_after: list[int] = []
     d = 0
-    for k, ch in braces:
-        d += 1 if ch == "{" else -1
-        marks.append(k)
+    for bm in re.finditer(r"[{}]", code):
+        d += 1 if bm.group() == "{" else -1
+        marks.append(bm.start())
         depth_after.append(d)
 
     def depth_at(off: int) -> int:
@@ -591,29 +671,23 @@ def find_function_definitions(src: CSource, name: str, file: str = "") -> list[F
     for m in re.finditer(rf"(?<![\w.])(?<!->)\b{re.escape(name)}\s*\(", code):
         if depth_at(m.start()) > 0:
             continue
-        close = _match_close(code, m.end() - 1)
+        close = pairs.get(m.end() - 1)
         if close is None:
             continue
         j = close + 1
-        while True:
+        for _ in range(64):  # skip attributes between ')' and '{'
             while j < len(code) and code[j].isspace():
                 j += 1
             am = _DEF_ATTR_RE.match(code, j)
-            if am:
-                c2 = _match_close(code, am.end() - 1)
-                if c2 is None:
-                    break
+            if am and (c2 := pairs.get(am.end() - 1)) is not None:
                 j = c2 + 1
                 continue
-            if code.startswith("[[", j):
-                c2 = code.find("]]", j)
-                if c2 < 0:
-                    break
-                j = c2 + 2
+            if code.startswith("[[", j) and (c2 := pairs.get(j)) is not None:
+                j = c2 + 1
                 continue
             break
         if j < len(code) and code[j] == "{":
-            end = _match_close(code, j, "{", "}")
+            end = pairs.get(j)
             body = code[j + 1 : end if end is not None else len(code)]
             out.append(FunctionDefinition(file, src.line_of(m.start()), body, is_trivial_body(body)))
     return out

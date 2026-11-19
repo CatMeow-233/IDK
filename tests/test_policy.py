@@ -100,6 +100,34 @@ def test_lexer_blanks_if0_regions():
     assert "int a" not in nested and "int b" not in nested and "int c" in nested
     other = strip_c("#ifdef FOO\nint a;\n#else\nint b;\n#endif\n")
     assert "int a" in other and "int b" in other  # unknown conditions are treated as live
+    chain = strip_c("#if 0\nint a;\n#elif 1\nint b;\n#else\nint c;\n#endif\nint d;\n")
+    assert "int a" not in chain and "int b" in chain and "int c" not in chain and "int d" in chain
+    chain2 = strip_c("#if X\nint a;\n#elif 0\nint b;\n#else\nint c;\n#endif\n")
+    assert "int a" in chain2 and "int b" not in chain2 and "int c" in chain2
+    inner = strip_c("#if 0\n#if 1\nint a;\n#else\nint b;\n#endif\nint c;\n#endif\nint d;\n")
+    assert "int a" not in inner and "int b" not in inner and "int c" not in inner and "int d" in inner
+
+
+@pytest.mark.parametrize(
+    "junk",
+    [
+        "__attribute__((" * 20000,
+        "__attribute__((" * 10000 + "))" * 10000,
+        "[[" * 50000,
+        "__pragma(" * 10000 + ")" * 10000,
+        "safe_array_get(" * 20000,
+        "int safe_array_get(){" * 20000,
+        "#if X\n" * 50000,
+        "asm " * 50000,
+    ],
+    ids=["attr", "attr-nested", "std-attr", "ms-pragma", "calls", "defs", "ifs", "one-line"],
+)
+def test_hostile_input_is_checked_in_linear_time(spec, junk):
+    import time
+
+    t = time.monotonic()
+    check_generated(spec, {SRC: GOOD + junk})
+    assert time.monotonic() - t < 5.0
 
 
 # ============================================================================ baseline
@@ -389,6 +417,8 @@ TRIVIAL_BODIES = [
     "    { return 0; }",
     "",
     "    abort();",
+    "    (void)(arr);\n    ;\n    return SAFE_ARRAY_ERR_NULL;;",
+    "    (void)arr; (void)len; (void)idx; (void)out;\n" * 300 + "    return SAFE_ARRAY_OK;",  # padded stub
 ]
 
 
@@ -433,6 +463,8 @@ def test_nontrivial_bodies_are_not_trivial():
         "return len > idx ? 0 : -2;",
         "return (x) + 1;",
         "return helper(arr, len);",
+        "(void)compute(arr); return 0;",
+        "if (x) (void)y; return 0;",
     ):
         assert not is_trivial_body(body), body
 
