@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leanc"
+version = "0.1.0"
+description = "Lean C: spec-first, verifier-checked AI code generation for C17 (research prototype)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Lean C contributors" }]
+dependencies = [
+  "pydantic>=2.5",
+  "PyYAML>=6.0",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C",
+  "Topic :: Software Development :: Compilers",
+  "Topic :: Software Development :: Quality Assurance",
+  "Development Status :: 3 - Alpha",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+leanc = "leanc.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["leanc*"]
+
+[tool.setuptools.package-data]
+leanc = ["data/include/*.h", "data/templates/**/*", "data/templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "tools: requires clang/cbmc/bwrap toolchain (skipped automatically when missing)",
+  "slow: slower end-to-end tests",
+]

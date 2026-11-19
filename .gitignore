@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+.leanc/runs/
+**/.leanc/runs/
+*.o
+*.plist
+*.sarif
+a.out
