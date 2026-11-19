@@ -251,7 +251,7 @@ def _parse_hunk(lines: list[str], i: int) -> tuple[Hunk, int]:
         if not hunk.lines:
             raise PatchError(f"line {at + 1}: '\\ No newline at end of file' before any hunk line")
         op, text = hunk.lines[-1]
-        hunk.lines[-1] = (op, text[:-1] if text.endswith("\n") else text)
+        hunk.lines[-1] = (op, text.removesuffix("\n"))
 
     while old_rem > 0 or new_rem > 0:
         if i >= n:
@@ -359,7 +359,7 @@ def parse_unified_diff(text: str) -> list[FilePatch]:
             continue
         if git is not None:
             handled = True
-            if line.startswith("old mode ") or line.startswith("new mode "):
+            if line.startswith(("old mode ", "new mode ")):
                 git.mode_change = True
             elif line.startswith("new file mode "):
                 git.new_file = True
@@ -449,7 +449,7 @@ def _apply_hunks(fp: FilePatch, base: str, max_offset: int) -> str:
             if pos <= want <= len(src):
                 found = want
         else:
-            for d in range(0, max_offset + 1):
+            for d in range(max_offset + 1):
                 for p in ((want,) if d == 0 else (want - d, want + d)):
                     if pos <= p and p + len(old) <= len(src) and src[p : p + len(old)] == old:
                         found = p

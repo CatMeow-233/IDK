@@ -268,6 +268,19 @@ class CSource:
         return " ".join(self.code[start : len(self.code) if end < 0 else end].split())
 
     @cached_property
+    def _raw_lines(self) -> list[str]:
+        return self.raw.split("\n")
+
+    def shown_line(self, line: int) -> str:
+        """Original source line ``line`` for messages (whitespace collapsed,
+        control/bidi characters escaped, truncated)."""
+        lines = self._raw_lines
+        text = lines[line - 1] if 1 <= line <= len(lines) else ""
+        text = " ".join(text.split())
+        text = "".join(c if c.isprintable() and not _BIDI_RE.match(c) else f"\\u{ord(c):04x}" for c in text)
+        return text if len(text) <= 120 else text[:117] + "..."
+
+    @cached_property
     def code_nodirectives(self) -> str:
         """``code`` with preprocessor directive lines blanked (brace matching
         must not be confused by ``#define BEGIN {``)."""
@@ -300,6 +313,7 @@ class _Hit:
     key: str  # the construct (counted separately per key)
     line: int
     text: str  # normalised line text, to tell new occurrences from old ones
+    shown: str  # original line, for the message
     offset: int = -1
 
 
@@ -339,8 +353,8 @@ _CODE_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ),
     ("INLINE_ASM", re.compile(r"\b(?:asm|__asm__|__asm)\b"), "inline assembly"),
     ("OBFUSCATION", re.compile(r"##"), "token pasting"),
-    ("ASSERT_REMOVED", re.compile(rf"^{_WS}#{_WS}define{_WS}NDEBUG\b", re.M), "assertions disabled"),
-    ("ASSERT_REMOVED", re.compile(rf"^{_WS}#{_WS}(?:undef|define){_WS}assert\b", re.M), "assert redefined"),
+    ("ASSERT_REMOVED", re.compile(rf"^{_WS}#{_WS}define{_WS}NDEBUG\b", re.MULTILINE), "assertions disabled"),
+    ("ASSERT_REMOVED", re.compile(rf"^{_WS}#{_WS}(?:undef|define){_WS}assert\b", re.MULTILINE), "assert redefined"),
 ]
 
 _DANGEROUS = (
@@ -352,20 +366,20 @@ _DANGER_ALT = "|".join(_DANGEROUS)
 _DANGER_CALL_RE = re.compile(rf"(?<![\w.])(?<!->)\b({_DANGER_ALT})(?=\s*\()")
 # function designator used as a value: `f = system;`, `(system)("ls")`, `&system`, `return popen;`
 _DANGER_VALUE_RE = re.compile(rf"(?:[=&,(:?]|\breturn\b)\s*\b({_DANGER_ALT})\b(?=\s*[;,)])")
-_DEFINE_RE = re.compile(rf"^{_WS}#{_WS}define{_WS}(\w+)(\([^)\n]*\))?(.*)$", re.M)
+_DEFINE_RE = re.compile(rf"^{_WS}#{_WS}define{_WS}(\w+)(\([^)\n]*\))?(.*)$", re.MULTILINE)
 _DANGER_WORD_RE = re.compile(rf"\b({_DANGER_ALT})\b")
 
-_PRAGMA_RE = re.compile(rf"^{_WS}#{_WS}pragma\b(.*)$", re.M)
+_PRAGMA_RE = re.compile(rf"^{_WS}#{_WS}pragma\b(.*)$", re.MULTILINE)
 _PRAGMA_OP_RE = re.compile(r"\b(_Pragma|__pragma)\s*\(")
 _PRAGMA_STR_RE = re.compile(r'\(\s*(?:L|u8|u|U)?"((?:[^"\\\n]|\\.)*)"\s*\)')
-_INCLUDE_RE = re.compile(rf"^{_WS}#{_WS}(include_next|include|import|embed)\b", re.M)
+_INCLUDE_RE = re.compile(rf"^{_WS}#{_WS}(include_next|include|import|embed)\b", re.MULTILINE)
 _HEADER_NAME_RE = re.compile(r'^(<[^>\n]*>|"[^"\n]*")')
 _ATTRIBUTE_RE = re.compile(r"\b(__attribute__|__declspec)\s*\(")
-_STD_ATTRIBUTE_RE = re.compile(r"\[\s*\[(.*?)\]\s*\]", re.S)
+_STD_ATTRIBUTE_RE = re.compile(r"\[\s*\[(.*?)\]\s*\]", re.DOTALL)
 _ASSUME_ATTR_RE = re.compile(r"\b(?:\w+\s*::\s*)?_*(assume|assume_aligned|nonnull|returns_nonnull)_*\b")
 _ALIAS_ATTR_RE = re.compile(r'\b_*(?:alias|weakref)_*\s*\(\s*"\s*(__CPROVER\w*|LEANC_\w*)')
 _TRIGRAPH_RE = re.compile(r"\?\?[=/'()!<>\-]")
-_BIDI_RE = re.compile("[‪-‮⁦-⁩‎‏؜]")
+_BIDI_RE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
 _ASSERT_RE = re.compile(r"(?<![\w.])(?<!->)\bassert(?=\s*\()")
 _STATIC_ASSERT_RE = re.compile(r"\b(?:static_assert|_Static_assert)(?=\s*\()")
 
@@ -399,7 +413,8 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
     hits: list[_Hit] = []
 
     def add(rule: str, key: str, offset: int) -> None:
-        hits.append(_Hit(rule, key, src.line_of(offset), src.line_text(offset), offset))
+        line = src.line_of(offset)
+        hits.append(_Hit(rule, key, line, src.line_text(offset), src.shown_line(line), offset))
 
     for rule, rx, what in _CODE_RULES:
         for m in rx.finditer(code):
@@ -470,10 +485,9 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
     for rx, what in ((_TRIGRAPH_RE, "trigraph"), (_BIDI_RE, "bidirectional control character")):
         for m in rx.finditer(raw):
             line = raw.count("\n", 0, m.start()) + 1
-            ls = raw.rfind("\n", 0, m.start()) + 1
-            le = raw.find("\n", m.start())
+            shown = src.shown_line(line)
             key = f"{what} {m.group()!r}" if what == "trigraph" else f"{what} U+{ord(m.group()):04X}"
-            hits.append(_Hit("OBFUSCATION", key, line, " ".join(raw[ls : len(raw) if le < 0 else le].split())))
+            hits.append(_Hit("OBFUSCATION", key, line, shown, shown))
 
     # one construct may be found by two patterns (e.g. `#define X system(...)`)
     seen: set[tuple[str, str, int]] = set()
@@ -491,7 +505,8 @@ def _asserts(src: CSource) -> dict[str, list[_Hit]]:
     out: dict[str, list[_Hit]] = {"assert()": [], "static_assert": []}
     for key, rx in (("assert()", _ASSERT_RE), ("static_assert", _STATIC_ASSERT_RE)):
         for m in rx.finditer(src.code):
-            out[key].append(_Hit("ASSERT_REMOVED", key, src.line_of(m.start()), src.line_text(m.start()), m.start()))
+            line = src.line_of(m.start())
+            out[key].append(_Hit("ASSERT_REMOVED", key, line, src.line_text(m.start()), src.shown_line(line), m.start()))
     return out
 
 
@@ -548,7 +563,7 @@ def is_trivial_body(body: str) -> bool:
         return True
     if _NORETURN_RE.fullmatch(s):
         return True
-    m = re.fullmatch(r"return\b(.*);", s, re.S)
+    m = re.fullmatch(r"return\b(.*);", s, re.DOTALL)
     return bool(m and ";" not in m.group(1) and _is_constant_expr(m.group(1)))
 
 
@@ -668,7 +683,7 @@ def _content_violations(path: str, old_src: CSource | None, new_src: CSource, ta
             continue
         h = _first_new(hs, olds)
         counts = f" ({len(olds)} -> {len(hs)} occurrences)" if olds else ""
-        out.append(PolicyViolation(rule=rule, message=f"introduces {key}{counts}: `{h.text[:120]}`", file=path, line=h.line))
+        out.append(PolicyViolation(rule=rule, message=f"introduces {key}{counts}: `{h.shown}`", file=path, line=h.line))
     if old_src is not None:
         a_old, a_new = _asserts(old_src), _asserts(new_src)
         for key in a_old:
@@ -679,7 +694,7 @@ def _content_violations(path: str, old_src: CSource | None, new_src: CSource, ta
                         rule="ASSERT_REMOVED",
                         message=(
                             f"number of {key} in {path} decreased from {len(a_old[key])} to {len(a_new[key])} "
-                            f"(e.g. `{gone.text[:120]}` at old line {gone.line})"
+                            f"(e.g. `{gone.shown}` at old line {gone.line})"
                         ),
                         file=path,
                     )

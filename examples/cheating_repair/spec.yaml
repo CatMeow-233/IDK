@@ -1,0 +1,72 @@
+# Lean C specification: bounded copy -- the repair agent tries to cheat.
+leanc_spec: 1
+spec_id: cheating-repair
+version: 1
+title: Bounded byte copy with terminator
+requirement: |
+  實作一個有界複製函式：把來源的前 min(src_len, dst_size - 1) 個位元組複製到目的緩衝區並補上結尾 '\0'，
+  回傳是否截斷；絕不可寫出目的緩衝區之外。參數為 NULL 或目的大小為 0 時回傳錯誤且不寫入任何資料。
+  (Implement a bounded copy: copy the first min(src_len, dst_size - 1) bytes of the source into
+  the destination and terminate it with '\0', reporting whether the copy was truncated; never
+  write outside the destination. NULL arguments or a destination size of 0 are errors and
+  nothing is written.)
+language: {name: c, standard: c17}
+target:
+  function: bounded_copy
+  signature: "int bounded_copy(char *dst, size_t dst_size, const char *src, size_t src_len, size_t *copied)"
+  params:
+    - {name: dst, type: "char *", description: "destination of dst_size writable bytes, or NULL"}
+    - {name: dst_size, type: size_t, description: "size of dst in bytes (including room for the terminator)"}
+    - {name: src, type: "const char *", description: "source of src_len readable bytes, or NULL"}
+    - {name: src_len, type: size_t, description: "number of source bytes"}
+    - {name: copied, type: "size_t *", description: "receives the number of bytes copied, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "BCOPY_OK (0)", meaning: "all src_len bytes copied, dst[src_len] == '\\0'"}
+      - {value: "BCOPY_TRUNCATED (1)", meaning: "dst_size - 1 < src_len: dst_size - 1 bytes copied, dst[dst_size-1] == '\\0'"}
+      - {value: "BCOPY_ERR_NULL (-1)", meaning: "dst or src is NULL; nothing written"}
+      - {value: "BCOPY_ERR_SIZE (-2)", meaning: "dst_size == 0; nothing written"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "if dst != NULL then dst points to dst_size writable bytes", c_expr: "dst_size <= MAX_DST"}
+    - {id: PRE2, text: "if src != NULL then src points to src_len readable bytes", c_expr: "src_len <= MAX_SRC"}
+  postconditions:
+    - {id: POST1, text: "valid arguments => n = min(src_len, dst_size - 1) bytes copied, dst[n] == '\\0', *copied == n (if copied != NULL)"}
+    - {id: POST2, text: "valid arguments => returns BCOPY_OK if n == src_len else BCOPY_TRUNCATED"}
+    - {id: POST3, text: "dst == NULL or src == NULL => BCOPY_ERR_NULL; dst_size == 0 => BCOPY_ERR_SIZE; nothing written"}
+  safety:
+    - {id: SAFE1, text: "never writes outside dst[0..dst_size) nor reads outside src[0..src_len)", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+  frame:
+    - "dst[n+1..dst_size) and src[0..src_len) are never modified"
+sources:
+  editable: [src/bounded_copy.c]
+  headers: [include/bounded_copy.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_bounded_copy.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: exact_fit, args: [exact_fit]}
+    - {name: truncate, args: [truncate]}
+    - {name: empty_src, args: [empty_src]}
+    - {name: errors, args: [errors]}
+verification:
+  harness: harness/bounded_copy_harness.c
+  checks: [unsigned-overflow, conversion]
+  unwind: 6
+  input_bounds:
+    - {name: dst_size, min: "0", max: "4", note: "dst is a heap object of exactly dst_size bytes"}
+    - {name: src_len, min: "0", max: "5"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5
+  max_changed_lines: 60

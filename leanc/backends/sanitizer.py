@@ -50,9 +50,9 @@ import shlex
 import shutil
 import signal as _signal
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from leanc.core.context import BackendContext
 from leanc.core.models import (
@@ -68,6 +68,7 @@ from leanc.core.redact import redact
 from leanc.core.runner import Limits, ProcResult
 from leanc.core.sandbox import SandboxMounts
 from leanc.core.status import Outcome, Status, outcome_to_status
+from leanc.specs.model import TestCase
 
 STAGE = "sanitizer"
 LIMITATION = "sanitizers only observe the executed test paths; absence of findings is not a proof"
@@ -141,7 +142,7 @@ _INTERNAL_ERROR_RE = re.compile(
 
 #: UBSan "runtime error:" message -> rule id (first match wins; order matters).
 _UBSAN_RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
-    (re.compile(p, re.I), r)
+    (re.compile(p, re.IGNORECASE), r)
     for p, r in (
         (r"signed integer overflow|negation of .* cannot be represented|division of .* by -1 cannot be represented",
          "signed-integer-overflow"),
@@ -299,9 +300,8 @@ def _project_rel(path: str, project_files: set[str] | None, base_dir: str | None
     if project_files:
         best = None
         for cand in project_files:
-            if p == cand or p.endswith("/" + cand):
-                if best is None or len(cand) > len(best):
-                    best = cand
+            if (p == cand or p.endswith("/" + cand)) and (best is None or len(cand) > len(best)):
+                best = cand
         return best
     return None
 
@@ -630,7 +630,7 @@ _DRIVER_RE = re.compile(
 )
 _CRASH_RE = re.compile(
     r"PLEASE submit a bug report|clang frontend command failed due to signal|unable to execute command|^Stack dump:",
-    re.M,
+    re.MULTILINE,
 )
 
 
@@ -933,6 +933,145 @@ def _rel(ctx: BackendContext, p: Path) -> str:
     return os.path.relpath(os.path.realpath(p), os.path.realpath(ctx.run_dir))
 
 
+def _judge_case(
+    *,
+    case: TestCase,
+    proc: ProcResult,
+    sig: int | None,
+    cpu_limited: bool,
+    findings: list[SanitizerFinding],
+    inputs: list[CounterexampleInput],
+    raw_ref: str,
+    timeout_s: float,
+    max_output_bytes: int,
+    entry: dict,
+    seen_ids: set[str],
+) -> tuple[str, list[Diagnostic], list[FailureReport], str | None]:
+    """Judge one executed test case.
+
+    Returns ``(status, diagnostics, failures, error)`` with status one of
+    ``pass | fail | timeout | error``.  Precedence: sanitizer findings and
+    oracle mismatches (definite evidence) > tool problems > timeout.
+    """
+    diags: list[Diagnostic] = []
+    fails: list[FailureReport] = []
+    timed_out = bool(entry["timed_out"])
+    argv_text = shlex.join(case.args)
+
+    def oracle(rule: str, message: str, explanation: str, kind: str = "test-oracle") -> None:
+        text = f"test case {case.name!r}: {message}"
+        diags.append(Diagnostic(tool="test-oracle", rule_id=rule, severity="error", message=text))
+        fails.append(
+            FailureReport(
+                id=_unique(f"sanitizer:{case.name}:test-oracle:{rule}", seen_ids),
+                kind=kind,  # type: ignore[arg-type]
+                tool="test-oracle",
+                property_id=rule,
+                description=text,
+                inputs=list(inputs),
+                explanation=explanation,
+                raw_ref=raw_ref,
+            )
+        )
+
+    error: str | None = None
+    if proc.error:
+        error = f"{case.name}: could not run the test binary: {proc.error}"
+    elif _looks_like_sandbox_failure(proc) and not findings:
+        error = f"{case.name}: sandbox failed to start the test: {proc.stderr.strip()[:300]}"
+    elif not findings and _INTERNAL_ERROR_RE.search(proc.stderr):
+        line = next(ln for ln in proc.stderr.splitlines() if _INTERNAL_ERROR_RE.search(ln))
+        error = f"{case.name}: sanitizer runtime failure: {line.strip()[:300]}"
+
+    for f in findings:
+        d = f.diagnostic
+        d.message = f"{d.message} [test case {case.name!r}]"
+        diags.append(d)
+        where = f" at {d.location.short()}" if d.location else ""
+        entry["findings"].append(
+            {"tool": d.tool, "rule_id": d.rule_id, "location": d.location.short() if d.location else None}
+        )
+        fails.append(
+            FailureReport(
+                id=_unique(f"sanitizer:{case.name}:{d.tool}:{d.rule_id}", seen_ids),
+                kind="runtime",
+                tool=d.tool,
+                property_id=d.rule_id,
+                description=d.message,
+                location=d.location,
+                inputs=list(inputs),
+                call_stack=f.call_stack(),
+                explanation=(
+                    f"{_TOOL_TITLES.get(d.tool, d.tool)} reported {d.rule_id}{where} while executing trusted test "
+                    f"case {case.name!r} (argv: {argv_text or '<none>'}). A sanitizer report is definite "
+                    "evidence of memory-unsafe or undefined behaviour on this executed path."
+                ),
+                raw_ref=raw_ref,
+            )
+        )
+
+    if error is not None:
+        return ("fail" if findings else "error"), diags, fails, error
+
+    oracle_failed = False
+    if proc.output_truncated:
+        oracle_failed = True
+        oracle(
+            "output-limit-exceeded",
+            f"output exceeded the limit of {max_output_bytes} bytes per stream; the process was killed",
+            "The program printed more than tests.max_output_bytes (e.g. a runaway loop); its exit status "
+            "and output were not checked.",
+        )
+    elif timed_out:
+        why = "CPU time limit" if cpu_limited and not proc.timed_out else "wall-clock timeout"
+        entry["timeout_reason"] = why
+        if not findings:
+            oracle(
+                "timeout",
+                f"did not finish within {timeout_s:g}s ({why}); the process group was killed",
+                "Non-termination (or extreme slowness) on this input; no verdict about its output.",
+                kind="timeout",
+            )
+    elif not findings:
+        # With a sanitizer finding the program died inside the sanitizer
+        # runtime (even LeakSanitizer leaves through _exit() from its atexit
+        # hook, so buffered stdout is lost): exit status and output are then
+        # consequences of the finding, not independent evidence.
+        if proc.exit_code != case.expect_exit:
+            oracle_failed = True
+            got = f"exit code {proc.exit_code}" if proc.exit_code is not None else "no exit code"
+            extra = ""
+            if sig is not None:
+                extra = f" (terminated by {_signame(sig)})"
+            elif proc.exit_code in SANITIZER_EXIT_CODES:
+                extra = (
+                    f" (this is the exit code Lean C configures for {SANITIZER_EXIT_CODES[proc.exit_code]}, "
+                    "but no sanitizer report was found on stderr)"
+                )
+            oracle(
+                "exit-code",
+                f"{got}{extra}, expected {case.expect_exit}",
+                "The trusted test driver signals a failed check through its exit status; see the "
+                "case's stderr for the failing check.",
+            )
+        if case.expect_stdout is not None:
+            matches = proc.stdout == case.expect_stdout
+            entry["stdout_matches"] = matches
+            if not matches:
+                oracle_failed = True
+                oracle(
+                    "stdout",
+                    f"stdout differs from the expected output ({_first_diff(case.expect_stdout, proc.stdout)})",
+                    "The program's standard output must equal tests.cases[].expect_stdout exactly.",
+                )
+
+    if findings or oracle_failed:
+        return "fail", diags, fails, None
+    if timed_out:
+        return "timeout", diags, fails, None
+    return "pass", diags, fails, None
+
+
 def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
     """Build the sanitized test binary and run every trusted test case.
 
@@ -1097,7 +1236,6 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
 
     n_fail = n_timeout = n_error = 0
     timed_out_names: list[str] = []
-    failed_names: list[str] = []
     error_msgs: list[str] = []
     for idx, case in enumerate(tests.cases):
         case_dir = cases_root / f"{idx:02d}-{_safe(case.name)}"
@@ -1105,7 +1243,7 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
         timeout_s = ctx.timeout(case.timeout_s or tests.timeout_s)
         limits = Limits(
             timeout_s=timeout_s,
-            cpu_s=int(math.ceil(timeout_s)),
+            cpu_s=math.ceil(timeout_s),
             memory_mb=None if plan.uses_shadow_runtime else tests.memory_mb,
             max_output_bytes=tests.max_output_bytes,
         )
@@ -1148,127 +1286,31 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
             "raw_stdout": _rel(ctx, out_raw),
         }
         details["cases"].append(entry)
-        case_failed = False
-        case_error: str | None = None
-
-        def oracle(rule: str, message: str, explanation: str, kind: str = "test-oracle") -> None:
-            nonlocal case_failed
-            case_failed = kind == "test-oracle" or case_failed
-            diagnostics.append(Diagnostic(tool="test-oracle", rule_id=rule, severity="error",
-                                          message=f"test case {case.name!r}: {message}", raw=None))
-            failures.append(
-                FailureReport(
-                    id=_unique(f"sanitizer:{case.name}:test-oracle:{rule}", seen_ids),
-                    kind=kind,  # type: ignore[arg-type]
-                    tool="test-oracle",
-                    property_id=rule,
-                    description=f"test case {case.name!r}: {message}",
-                    inputs=list(inputs),
-                    explanation=explanation,
-                    raw_ref=raw_ref,
-                )
-            )
-
-        if proc.error:
-            case_error = f"{case.name}: could not run the test binary: {proc.error}"
-        elif _looks_like_sandbox_failure(proc) and not findings:
-            case_error = f"{case.name}: sandbox failed to start the test: {proc.stderr.strip()[:300]}"
-
-        for f in findings:
-            case_failed = True
-            d = f.diagnostic
-            d.message = f"{d.message} [test case {case.name!r}]"
-            diagnostics.append(d)
-            where = f" at {d.location.short()}" if d.location else ""
-            entry["findings"].append(
-                {"tool": d.tool, "rule_id": d.rule_id, "location": d.location.short() if d.location else None}
-            )
-            failures.append(
-                FailureReport(
-                    id=_unique(f"sanitizer:{case.name}:{d.tool}:{d.rule_id}", seen_ids),
-                    kind="runtime",
-                    tool=d.tool,
-                    property_id=d.rule_id,
-                    description=d.message,
-                    location=d.location,
-                    inputs=list(inputs),
-                    call_stack=f.call_stack(),
-                    explanation=(
-                        f"{_TOOL_TITLES.get(d.tool, d.tool)} reported {d.rule_id}{where} while executing trusted test "
-                        f"case {case.name!r} (argv: {argv_text or '<none>'}). A sanitizer report is definite "
-                        "evidence of memory-unsafe or undefined behaviour on this executed path."
-                    ),
-                    raw_ref=raw_ref,
-                )
-            )
-
-        if case_error is None and not findings and _INTERNAL_ERROR_RE.search(proc.stderr):
-            line = next(ln for ln in proc.stderr.splitlines() if _INTERNAL_ERROR_RE.search(ln))
-            case_error = f"{case.name}: sanitizer runtime failure: {line.strip()[:300]}"
-
-        if case_error is None:
-            if proc.output_truncated:
-                oracle(
-                    "output-limit-exceeded",
-                    f"output exceeded the limit of {tests.max_output_bytes} bytes per stream; the process was killed",
-                    "The program printed more than tests.max_output_bytes (e.g. a runaway loop); its exit status "
-                    "and output were not checked.",
-                )
-            elif timed_out:
-                why = "CPU time limit" if cpu_limited and not proc.timed_out else "wall-clock timeout"
-                entry["timeout_reason"] = why
-                if not findings:
-                    oracle(
-                        "timeout",
-                        f"did not finish within {timeout_s:g}s ({why}); the process group was killed",
-                        "Non-termination (or extreme slowness) on this input; no verdict about its output.",
-                        kind="timeout",
-                    )
-            else:
-                if not findings and proc.exit_code != case.expect_exit:
-                    got = f"exit code {proc.exit_code}" if proc.exit_code is not None else "no exit code"
-                    extra = ""
-                    if sig is not None:
-                        extra = f" (terminated by {_signame(sig)})"
-                    elif proc.exit_code in SANITIZER_EXIT_CODES:
-                        extra = (
-                            f" (this is the exit code Lean C configures for {SANITIZER_EXIT_CODES[proc.exit_code]}, "
-                            "but no sanitizer report was found on stderr)"
-                        )
-                    oracle(
-                        "exit-code",
-                        f"{got}{extra}, expected {case.expect_exit}",
-                        "The trusted test driver signals a failed check through its exit status; see the "
-                        "case's stderr for the failing check.",
-                    )
-                # With a sanitizer finding the program died in the sanitizer
-                # runtime (even LeakSanitizer exits via _exit() from its atexit
-                # hook, so buffered stdout is lost): its output is no evidence.
-                if case.expect_stdout is not None and not findings:
-                    matches = proc.stdout == case.expect_stdout
-                    entry["stdout_matches"] = matches
-                    if not matches:
-                        oracle(
-                            "stdout",
-                            f"stdout differs from the expected output ({_first_diff(case.expect_stdout, proc.stdout)})",
-                            "The program's standard output must equal tests.cases[].expect_stdout exactly.",
-                        )
-
-        if case_failed:
-            entry["status"] = "fail"
+        status, case_diags, case_failures, case_error = _judge_case(
+            case=case,
+            proc=proc,
+            sig=sig,
+            cpu_limited=cpu_limited,
+            findings=findings,
+            inputs=inputs,
+            raw_ref=raw_ref,
+            timeout_s=timeout_s,
+            max_output_bytes=tests.max_output_bytes,
+            entry=entry,
+            seen_ids=seen_ids,
+        )
+        diagnostics.extend(case_diags)
+        failures.extend(case_failures)
+        entry["status"] = status
+        if status == "fail":
             n_fail += 1
-            failed_names.append(case.name)
-        elif case_error is not None:
-            entry["status"] = "error"
+        elif status == "error":
             entry["error"] = case_error
             n_error += 1
-            error_msgs.append(case_error)
-        elif timed_out:
-            entry["status"] = "timeout"
+            error_msgs.append(case_error or case.name)
+        elif status == "timeout":
             n_timeout += 1
             timed_out_names.append(case.name)
-        else:
-            entry["status"] = "pass"
 
     total = len(tests.cases)
     details["counts"] = {

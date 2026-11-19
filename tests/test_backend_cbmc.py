@@ -478,12 +478,15 @@ def test_coverage_details(tmp_path, needs_cbmc):
     assert len(res.invocations) == 3
 
 
-def test_full_coverage_of_correct_code(tmp_path, needs_cbmc):
+def test_coverage_reveals_branch_the_harness_never_takes(tmp_path, needs_cbmc):
+    # malloc never fails in CBMC's default model and `out` is always &out, so
+    # the NULL-check branch of arr_get (line 6) is dead under this harness.
     ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get", coverage=True)
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.PASS
     st = res.details["coverage"]["src/impl.c"]
-    assert st["goals"] == st["covered"] > 0 and st["uncovered_lines"] == []
+    assert st["covered"] == st["goals"] - 1
+    assert st["uncovered_lines"] == [6]
 
 
 def test_truncated_output_is_error(tmp_path, needs_cbmc, monkeypatch):
@@ -557,7 +560,7 @@ def test_undecided_properties_are_error(tmp_path):
     _fake_tools(ctx, cbmc=_fake_cbmc(tmp_path, "cat @PAYLOAD@\nexit 6", json.dumps(data)))
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.ERROR
-    assert "could not decide 1 property" in res.summary and "main.assertion.1 (ERROR)" in res.summary
+    assert "could not decide 2 property(ies)" in res.summary and "main.assertion.1 (ERROR)" in res.summary
 
 
 def test_killed_by_signal_is_error(tmp_path):

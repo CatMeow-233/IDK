@@ -2,8 +2,10 @@
  *
  * Runs a bounded, fully nondeterministic sequence of N_OPS push/pop
  * operations on a ring of nondeterministic capacity 1..CAP_MAX and checks,
- * after every step, the representation invariant and FIFO order against a
- * simple linear-array model of the queue.
+ * after every step, the representation invariant, the result of the
+ * operation, FIFO order (popped / oldest value) and the observers against a
+ * simple linear-array model of the queue.  After the sequence, every stored
+ * element is compared via ring_peek and ring_sum (once, to keep CBMC fast).
  */
 #include <assert.h>
 #include <stdbool.h>
@@ -89,17 +91,24 @@ int main(void)
         assert(ring_count(&r) == m_count);
         assert(ring_is_empty(&r) == (m_count == 0));
         assert(ring_is_full(&r) == (m_count == cap));
-        long long m_sum = 0;
-        for (size_t i = 0; i < m_count; i++) {
-            int x = 0;
-            assert(ring_peek(&r, i, &x) == RING_OK);
-            assert(x == model[m_head + i]);
-            m_sum += model[m_head + i];
+        if (m_count > 0) {
+            int oldest = 0;
+            assert(ring_peek(&r, 0, &oldest) == RING_OK && oldest == model[m_head]);
         }
-        int y = 0;
-        assert(ring_peek(&r, m_count, &y) == RING_ERR_RANGE);
-        assert(ring_sum(&r) == m_sum);
     }
     LEANC_REACH("after_ops");
+
+    /* Full contents (oldest first) and the sum agree with the model. */
+    size_t m_count = m_tail - m_head;
+    long long m_sum = 0;
+    for (size_t i = 0; i < m_count; i++) {
+        int x = 0;
+        assert(ring_peek(&r, i, &x) == RING_OK);
+        assert(x == model[m_head + i]);
+        m_sum += model[m_head + i];
+    }
+    int y = 0;
+    assert(ring_peek(&r, m_count, &y) == RING_ERR_RANGE);
+    assert(ring_sum(&r) == m_sum);
     return 0;
 }

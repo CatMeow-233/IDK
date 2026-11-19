@@ -195,7 +195,9 @@ def run_command(
             preexec_fn=_make_preexec(limits),
             close_fds=True,
         )
-    except (OSError, ValueError) as exc:
+    # SubprocessError: the preexec hook failed in the child (e.g. an rlimit
+    # above the inherited hard limit); that is a launch failure, not a crash.
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return ProcResult(
             argv=exec_argv,
             cwd=cwd,

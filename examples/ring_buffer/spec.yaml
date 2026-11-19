@@ -1,0 +1,73 @@
+# Lean C specification: fixed-capacity ring buffer (multi-file project).
+leanc_spec: 1
+spec_id: ring-buffer
+version: 1
+title: Fixed-capacity integer ring buffer (FIFO)
+requirement: |
+  實作一個固定容量的整數環形緩衝區（FIFO）：初始化、推入、取出，以及統計函式（元素數、是否為空/滿、
+  依序窺視第 i 個元素、總和）。滿時推入與空時取出必須回傳錯誤且不改變內容；任何操作序列都必須
+  維持先進先出順序，且不得越界存取。
+  (Implement a fixed-capacity int ring buffer (FIFO): init, push, pop and statistics
+  functions (count, empty/full, peek at the i-th oldest element, sum). Pushing onto a full ring
+  and popping from an empty ring must return an error and leave the contents unchanged; every
+  sequence of operations must preserve FIFO order and never access memory out of bounds.)
+language: {name: c, standard: c17}
+target:
+  function: ring_push
+  signature: "int ring_push(struct ring *r, int value)"
+  params:
+    - {name: r, type: "struct ring *", description: "ring initialised by ring_init, or NULL"}
+    - {name: value, type: int, description: "value to append as the newest element"}
+  returns:
+    type: int
+    description: "status code (the other operations: ring_init, ring_pop in src/ring.c; ring_count, ring_is_empty, ring_is_full, ring_peek, ring_sum in src/ring_stats.c; see include/ring.h)"
+    values:
+      - {value: "RING_OK (0)", meaning: "value appended; count incremented"}
+      - {value: "RING_ERR_NULL (-1)", meaning: "r is NULL"}
+      - {value: "RING_ERR_FULL (-3)", meaning: "ring already holds capacity elements; ring unchanged"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "ring_init: storage points to at least capacity writable ints (or capacity is rejected)", c_expr: "cap <= CAP_MAX || cap > RING_MAX_CAPACITY"}
+    - {id: PRE2, text: "every other operation receives NULL or a ring successfully initialised by ring_init and only modified through this API"}
+  postconditions:
+    - {id: POST1, text: "ring_init with NULL ring/storage => RING_ERR_NULL; capacity 0 or > RING_MAX_CAPACITY => RING_ERR_CAPACITY; else RING_OK and the ring is empty"}
+    - {id: POST2, text: "ring_push on a full ring => RING_ERR_FULL and contents unchanged; otherwise RING_OK and value becomes the newest element"}
+    - {id: POST3, text: "ring_pop on an empty ring => RING_ERR_EMPTY and *out unchanged; otherwise RING_OK and *out is the oldest element (FIFO)"}
+    - {id: POST4, text: "invariant after every operation: head < capacity, count <= capacity, count equals pushes minus pops accepted"}
+    - {id: POST5, text: "ring_count / ring_is_empty / ring_is_full / ring_peek / ring_sum agree with the abstract FIFO contents; ring_peek(i >= count) => RING_ERR_RANGE"}
+    - {id: POST6, text: "NULL ring or out pointer => RING_ERR_NULL (observers: 0 / empty / not full / sum 0)"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds access of the storage", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE3, text: "no index arithmetic overflow, no signed overflow in ring_sum", checks: [unsigned-overflow, signed-overflow]}
+  frame:
+    - "storage outside the slot written by ring_push is never modified"
+sources:
+  editable: [src/ring.c, src/ring_stats.c]
+  headers: [include/ring.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_ring.c
+  cases:
+    - {name: basic_fifo, args: [basic_fifo]}
+    - {name: full_empty, args: [full_empty]}
+    - {name: wraparound, args: [wraparound]}
+    - {name: stats, args: [stats]}
+    - {name: init_errors, args: [init_errors]}
+    - {name: null_args, args: [null_args]}
+verification:
+  harness: harness/ring_harness.c
+  checks: [unsigned-overflow, conversion]
+  unwind: 6
+  input_bounds:
+    - {name: capacity, min: "1", max: "3", note: "plus capacities 0 and > RING_MAX_CAPACITY (rejected by ring_init)"}
+    - {name: operations, note: "every sequence of N_OPS=5 nondeterministic push(any int)/pop operations"}
+  timeout_s: 300
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

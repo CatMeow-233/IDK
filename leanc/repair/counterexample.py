@@ -30,7 +30,8 @@ import copy
 import os
 import posixpath
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from leanc.core.models import CounterexampleInput, FailureReport, Location, TraceStep
 
@@ -80,7 +81,7 @@ def _rel_file(file: str | None, working_dir: str | None = None) -> str | None:
     if f.startswith("<"):  # <builtin-library-malloc>, <built-in-additions>, ...
         return f
     f = posixpath.normpath(f)
-    return f[2:] if f.startswith("./") else f
+    return f.removeprefix("./")
 
 
 def location_from_cbmc(sl: Any) -> Location | None:
@@ -102,10 +103,8 @@ def _same_file(a: str | None, b: str | None) -> bool:
         return False
     na = posixpath.normpath(str(a))
     nb = posixpath.normpath(str(b))
-    if na.startswith("./"):
-        na = na[2:]
-    if nb.startswith("./"):
-        nb = nb[2:]
+    na = na.removeprefix("./")
+    nb = nb.removeprefix("./")
     return na == nb or na.endswith("/" + nb) or nb.endswith("/" + na)
 
 
@@ -150,15 +149,11 @@ def is_internal_name(name: str | None) -> bool:
         return True
     base = re.split(r"[\[.]", n, maxsplit=1)[0]
     base = base.split("::")[-1]
-    if not base:
-        return True
-    if base.startswith(_INTERNAL_PREFIXES) or base.startswith("__"):
-        return True
-    return False
+    return not base or base.startswith((*_INTERNAL_PREFIXES, "__"))
 
 
 def _internal_function(fid: str | None) -> bool:
-    return not fid or fid.startswith("__CPROVER") or fid.startswith("__VERIFIER")
+    return not fid or fid.startswith(("__CPROVER", "__VERIFIER"))
 
 
 def clean_type(t: Any) -> str | None:
@@ -203,7 +198,8 @@ def _render(v: Any, depth: int, max_elements: int) -> str:
             parts.append(f"... (+{len(elems) - max_elements} more)")
         return "{" + ", ".join(parts) + "}"
     if isinstance(v.get("members"), list):
-        mems = [m for m in v["members"] if isinstance(m, dict)]
+        # "$pad3"-style members are padding CBMC inserts, not program data.
+        mems = [m for m in v["members"] if isinstance(m, dict) and "$" not in str(m.get("name", ""))]
         parts = [
             f".{m.get('name', '?')}={_render(m.get('value'), depth + 1, max_elements)}" for m in mems[:max_elements]
         ]
@@ -396,16 +392,24 @@ def summarize_trace(trace: Any, max_steps: int = 80) -> list[TraceStep]:
     steps = _steps(trace)
     out: list[TraceStep] = []
     pending: tuple[TraceStep, list[str], str] | None = None  # (call step, args, function)
+    last_loc: Location | None = None
     for s in steps:
         st = s.get("stepType")
+        loc = location_from_cbmc(s.get("sourceLocation"))
+        prev_loc = last_loc
+        if loc is not None:
+            last_loc = loc
         if s.get("hidden"):
             continue
-        loc = location_from_cbmc(s.get("sourceLocation"))
         if st == "function-call":
             fid = _fn_id(s) or "?"
             if _internal_function(fid):
                 pending = None
                 continue
+            if loc is None:
+                # Some call steps carry no location: use the call site (the
+                # caller's last position), else the callee's definition.
+                loc = prev_loc or location_from_cbmc(_d(s.get("function")).get("sourceLocation"))
             call = TraceStep(kind="function-call", location=loc, text=f"call {fid}()")
             out.append(call)
             pending = (call, [], fid)
@@ -515,8 +519,7 @@ def is_unwinding_property(result: Any) -> bool:
     return (
         ".unwind." in prop
         or prop.endswith(".recursion")
-        or desc.startswith("unwinding assertion")
-        or desc.startswith("recursion unwinding assertion")
+        or desc.startswith(("unwinding assertion", "recursion unwinding assertion"))
     )
 
 
@@ -546,7 +549,7 @@ def property_class(property_id: str | None, description: str | None = None) -> s
         return "overflow"
     if "array" in desc and "bound" in desc:
         return "array_bounds"
-    if desc.startswith("assertion") or desc.startswith(REACH_PREFIX):
+    if desc.startswith(("assertion", REACH_PREFIX)):
         return "assertion"
     if "shift" in desc:
         return "undefined-shift"
@@ -720,8 +723,10 @@ def explain_counterexample(f: FailureReport, *, unwind: int | None = None) -> st
     if f.kind == "counterexample":
         cls = property_class(f.property_id, f.description)
         parts = [
-            f"CBMC found an execution of the approved harness that violates property "
-            f"{f.property_id or '?'} ({f.description}){where}."
+            (
+                f"CBMC found an execution of the approved harness that violates property "
+                f"{f.property_id or '?'} ({f.description}){where}."
+            )
         ]
         hint = _hint(cls, f.description)
         if hint:
@@ -741,8 +746,10 @@ def explain_counterexample(f: FailureReport, *, unwind: int | None = None) -> st
         what = "recursion" if property_class(f.property_id, f.description) == "recursion" else "loop"
         bound = f"the unwind bound {unwind}" if unwind is not None else "the unwind bound"
         parts = [
-            f"CBMC's unwinding assertion {f.property_id or '?'} for the {what}{where} failed: some execution "
-            f"allowed by the harness needs more iterations than {bound} permits."
+            (
+                f"CBMC's unwinding assertion {f.property_id or '?'} for the {what}{where} failed: some execution "
+                f"allowed by the harness needs more iterations than {bound} permits."
+            )
         ]
         if f.inputs:
             parts.append(f"For example: {_fmt_inputs(f.inputs)}.")

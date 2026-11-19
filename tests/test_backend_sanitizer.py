@@ -718,7 +718,7 @@ def test_parse_location_without_project_files_uses_first_non_system_frame():
 
 
 def test_parse_location_prefers_project_frame_over_other_files():
-    text = ASAN_HBO.replace(f"in f {SNAP}/src/f.c:6:13", "in helper /home/x/other/lib.c:3:1\n    #0b 0x1 in f x")
+    text = ASAN_HBO.replace(f"in f {SNAP}/src/f.c:6:13", "in helper /home/x/other/lib.c:3:1")
     d = parse_sanitizer_output(text, project_files=PF, base_dir=SNAP)[0]
     assert d.location.file == "tests/driver.c"  # first *project* frame of the access stack
 
