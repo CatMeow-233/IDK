@@ -27,7 +27,10 @@ namespace），Lean C **不會假裝已啟用沙箱**：
 
 * sanitizer 關卡 `SKIPPED`，原因寫入報告 → 整體 `UNKNOWN`；
 * 編譯、靜態分析與 CBMC 仍會執行（它們不執行不受信任的程式），報告註明「no sandbox」；
-* 只有明確傳入 `--allow-unsandboxed`（或在 `leanc.yaml` 設定）時才會在無沙箱下執行測試，並在報告中加上警告。
+* 只有明確傳入 `--allow-unsandboxed` 旗標時才會在無沙箱下執行測試（`leanc.yaml` 的同名設定會被忽略並警告），
+  stderr 與報告中都會加上警告。**無沙箱時，不可信程式以你的使用者身分執行，可以讀取你能讀的一切**——包括
+  leanc 父行程的 `/proc/<pid>/environ`（其中可能有 API key）與 `$LEANC_HOME/approval.key`——並可能修改
+  快照。批准在 CBMC 前與結束時會重新檢查，但金鑰外洩後的偽造無法偵測；只應在可拋棄的環境中使用。
 
 ## 已知限制
 
