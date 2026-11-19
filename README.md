@@ -147,7 +147,7 @@ exit code，若成功的執行之後原始碼、受保護檔或規格已被修�
 python scripts/run_experiments.py        # 結果寫入 experiments/results/results.{json,md}
 ```
 
-最近一次執行（2026-11-19T13:39:54Z，Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)，Python 3.13.18，`run` 使用 **mock** provider——固定 fixture，**不是** LLM 表現）：
+最近一次執行（2026-11-19T14:13:04Z，Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)，Python 3.13.18，`run` 使用 **mock** provider——固定 fixture，**不是** LLM 表現）：
 
 | example | verify (expected) | detected by | run --provider mock (expected) | rounds | rejected rounds | match |
 |---|---|---|---|---|---|---|
@@ -166,12 +166,12 @@ python scripts/run_experiments.py        # 結果寫入 experiments/results/resu
 | vacuous_harness | UNKNOWN (UNKNOWN) | cbmc | UNKNOWN (UNKNOWN) | 0 | - | yes |
 | ↳ vacuous_harness/spec_fixed_harness.yaml | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | | | | | |
 
-**12/12 範例符合預期。** 全部 `verify` 合計 38 s、全部 `run` 合計 60 s（4 核心容器）。
+**12/12 範例符合預期。** 全部 `verify` 合計 41 s、全部 `run` 合計 65 s（4 核心容器）。
 原始資料：[`experiments/results/results.json`](experiments/results/results.json)。
 
-另外，`tests/test_attacks_e2e.py` 收錄了對抗式審查中發現的 18 種「讓錯誤程式得到 `VERIFIED_BOUNDED`」的攻擊
+另外，`tests/test_attacks_e2e.py` 收錄了兩輪對抗式審查中發現的 20 種「讓錯誤程式得到 `VERIFIED_BOUNDED`」的攻擊
 （覆寫 `__assert_fail` / `nondet_*`、巨集組出的 `_Pragma(CPROVER check disable)`、`#ifdef __clang__`、
-`exit`/`abort`/`atexit(_exit)`、linemarker、弱引用 `__VERIFIER_assume`…），現在每一種都會被強制的完整性關卡
+`exit`/`abort`/`atexit(_exit)`、linemarker、弱引用 `__VERIFIER_assume`、依輸入大小的 VLA / `alloca`…），現在每一種都會被強制的完整性關卡
 擋下，且不會被執行。
 
 詳見 [docs/experiments.md](docs/experiments.md)。
