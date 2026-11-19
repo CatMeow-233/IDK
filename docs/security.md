@@ -1,0 +1,36 @@
+# 安全性
+
+Lean C 分析並執行 AI 生成的程式碼，因此把它當成潛在惡意輸入。
+
+| # | 要求 | 實作 |
+|---|---|---|
+| 1 | 不使用 `shell=True` | `leanc.core.runner.run_command` 只接受 argv 串列（傳字串會 `TypeError`）；`Popen(shell=False)`；NUL 位元組拒絕 |
+| 2 | 結構化參數 | 所有工具呼叫都是 argv 陣列；報告中記錄完整 argv |
+| 3 | 限制工作目錄 | 工具在 `run_dir/snapshot` 執行，輸出只寫 `build/`、`raw/`、`logs/` |
+| 4 | 路徑穿越 | `Workspace.normalize` 拒絕絕對路徑、`..`、反斜線穿越、NUL；規格中的所有路徑在載入時正規化 |
+| 5 | 符號連結 | `Workspace.resolve` 拒絕任何路徑元件為 symlink；`O_NOFOLLOW` 讀取；寫入以同目錄暫存檔 + `os.replace`；規格與批准紀錄不得為 symlink |
+| 6 | CPU/記憶體/時間/輸出 | `RLIMIT_CPU`、`RLIMIT_AS`（CBMC）、`RLIMIT_FSIZE`、`RLIMIT_NOFILE`、`RLIMIT_CORE=0`；牆鐘逾時後 `killpg(SIGKILL)` 整個 process group；stdout/stderr 增量讀取並設上限，超過即終止並標記 truncated；ASan 改用 `hard_rss_limit_mb`（ASan 需要巨大虛擬位址空間，不能用 `RLIMIT_AS`）；stdin 以非阻塞方式寫入，避免子行程不讀輸入時繞過逾時 |
+| 7 | 測試禁止網路 | bubblewrap `--unshare-all`（net/pid/ipc/uts/cgroup/user namespace），沙箱中只有 `lo` |
+| 8 | 不修改工作區外檔案 | 所有寫入經 `Workspace`；修復只寫 `sources.editable`；沙箱中只有 build/raw 目錄可寫 |
+| 9 | 保護規格與 harness | 雜湊鎖定 + HMAC 簽章；修復政策 `PATH_NOT_EDITABLE`；詳見 [trust-model.md](trust-model.md) |
+| 10 | 不洩漏憑證 | 子行程使用最小環境（不繼承 `OPENAI_API_KEY` 等）；日誌、報告、LLM transcript、run.json 經 `redact()`（已知環境變數值、`sk-…`、`Authorization: Bearer …`、`api_key=…`、GitHub token） |
+| 11 | 補丁政策 | `leanc.repair.policy.check_candidate`：路徑、CPROVER/assume 注入、assert 刪除、警告/sanitizer 抑制、`#include` 逃逸、危險呼叫、inline asm、目標函式被「掏空」、補丁大小 |
+| 12 | 隔離執行 | bubblewrap：丟棄所有 capabilities、uid/gid 65534、唯讀 `/usr`、私有 `/tmp`、最小 `/dev`、清空環境、`--die-with-parent`；家目錄、`/root`、`/home`、`/opt` 不可見 |
+
+## 沒有沙箱時
+
+`detect_sandbox()` 會實際執行一次 bwrap 探測。若 bwrap 不存在或無法運作（例如容器內沒有 user
+namespace），Lean C **不會假裝已啟用沙箱**：
+
+* sanitizer 關卡 `SKIPPED`，原因寫入報告 → 整體 `UNKNOWN`；
+* 編譯、靜態分析與 CBMC 仍會執行（它們不執行不受信任的程式），報告註明「no sandbox」；
+* 只有明確傳入 `--allow-unsandboxed`（或在 `leanc.yaml` 設定）時才會在無沙箱下執行測試，並在報告中加上警告。
+
+## 已知限制
+
+* bubblewrap 不是虛擬機；核心漏洞可能逃逸。高風險環境請在 Docker/VM 中執行（見 `docker/Dockerfile`），
+  並維持 bwrap 作為第二層。
+* `RLIMIT_CPU` 以行程為單位；fork 出的子行程各自計算，但整個 process group 受牆鐘逾時約束，
+  且政策會拒絕新引入的 `fork(`。
+* 政策檢查是靜態文字規則（已去除註解與字串），可能被極端的巨集技巧繞過；真正的正確性防線是受保護的
+  harness 與獨立驗證器，政策只是縱深防禦。

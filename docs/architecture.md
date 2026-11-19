@@ -1,0 +1,72 @@
+# Lean C 架構
+
+```
+自然語言需求
+   │  leanc spec draft（A. Specification Engine，產出「不受信任」草案）
+   ▼
+候選規格 drafts/<id>/spec.yaml + harness_draft.c + tests_draft.c   ← provenance.origin: ai-draft
+   │  人工審查 → leanc spec approve（雜湊鎖定 + HMAC 簽章）
+   ▼
+已批准規格（spec + harness + 可信測試 + 介面標頭 鎖定）
+   │  leanc generate（B. Code Generation Engine，只寫 sources.editable）
+   ▼
+C 原始碼 ──► I. Verification Controller ───────────────────────────────────────┐
+              │ spec 檢查 → C. 編譯 → D. 靜態分析 → E. Sanitizer 測試 → F. CBMC │
+              ▼                                                                 │
+           VerificationResult（狀態 + 每個關卡 + 診斷 + 反例）                    │
+              │ 若為可修復的確定性失敗                                            │
+              ▼                                                                 │
+           G. Counterexample Analyzer → FailureReport                           │
+              ▼                                                                 │
+           H. Repair Agent（LLM 提案）→ 政策檢查 → 循環偵測 → 在快照中重新驗證 ──┘
+              ▼
+           J. Report Generator：run.json / verification.json / report.md / raw/ / logs/
+```
+
+## 模組對應
+
+| 元件 | 模組 | 說明 |
+|---|---|---|
+| A. Specification Engine | `leanc/specs/model.py`、`loader.py`、`approval.py`、`leanc/core/generation.py:draft_spec` | 規格 schema（pydantic，`extra="forbid"`）、YAML 重複鍵拒絕、語意雜湊、HMAC 簽章批准、版本規則、AI 草案 |
+| B. Code Generation Engine | `leanc/core/generation.py:generate_sources` | 只對已批准規格生成；輸出經 `check_generated` 政策檢查；只寫 editable 檔 |
+| C. Compilation Engine | `leanc/backends/clang.py` | `clang -std=c17 -Wall -Wextra -Wpedantic -c`；診斷解析（檔案/行/欄/旗標）；warning 政策 |
+| D. Static Analysis Engine | `leanc/backends/analyzer.py` | `clang --analyze --analyzer-output sarif`；SARIF 解析（含 code flow）；不支援時退回文字格式並記錄 |
+| E. Runtime Verification Engine | `leanc/backends/sanitizer.py` | ASan/UBSan/LSan 建置可信測試；在 bubblewrap 沙箱中逐案例執行；逾時/輸出/記憶體限制 |
+| F. Formal Verification Engine | `leanc/backends/cbmc.py` | CBMC 有界模型檢查；強制檢查類別；unwinding assertions；vacuity 探針；可選覆蓋率 |
+| G. Counterexample Analyzer | `leanc/repair/counterexample.py` | 失敗性質、位置、輸入值、呼叫堆疊、精簡 trace、指紋（fingerprint） |
+| H. Repair Agent | `leanc/repair/loop.py`、`patch.py`、`policy.py`、`leanc/llm/*` | 提案 → 補丁 → 政策 → 去重 → 快照驗證 → 改善判定 / 還原 |
+| I. Verification Controller | `leanc/core/controller.py` | 關卡順序、略過規則、狀態彙總 |
+| J. Report Generator | `leanc/reports/json_report.py`、`markdown.py` | JSON 摘要、Markdown 報告（依偵測工具分組） |
+| 基礎設施 | `leanc/core/runner.py`、`sandbox.py`、`workspace.py`、`redact.py` | 無 shell 執行、rlimit、輸出上限、bwrap 沙箱、路徑穿越/符號連結防護、憑證遮蔽 |
+
+## 資料流與快照
+
+每次驗證都在 `.leanc/runs/<run_id>/` 下建立：
+
+```
+snapshot/   ← 規格列出的檔案（editable + 受保護檔）的複本；工具只讀這裡
+build/      ← 物件檔、SARIF、測試執行檔（唯一可寫的工具輸出目錄）
+raw/        ← 原始機器可讀輸出（cbmc-verify.json、cbmc-vacuity.json、*.sarif）
+logs/       ← 每次工具呼叫的 stdout/stderr（已遮蔽憑證）
+verification.json / verification.md
+```
+
+批准檢查讀取的是 **snapshot** 中的受保護檔，因此「被檢查雜湊的位元組」就是「被驗證的位元組」，
+避免 time-of-check/time-of-use 差異。修復回合在各自的 `repair/round-N/verify/` 快照中驗證候選碼，
+工作區在迴圈期間不被修改；只有達到成功狀態的候選碼才會寫回（並備份原檔）。
+
+## 關卡規則
+
+1. `spec`：未批准 / 規格或受保護檔被改 / 簽章無效 → `SPEC_UNAPPROVED`，其餘關卡不執行
+   （`--check-unapproved` 可僅供參考地執行，但狀態仍為 `SPEC_UNAPPROVED`）。
+2. `compile` 失敗 → 其餘關卡 `SKIPPED`。
+3. 其餘關卡互不阻擋（盡量蒐集資訊給修復代理），`--fail-fast` 可改變。
+4. 彙總狀態取「最差」者；確定性缺陷優先於不確定結果（見 [status-semantics.md](status-semantics.md)）。
+5. `VERIFIED_BOUNDED` 需要所有必要關卡通過 **且** 包含 `cbmc` 關卡。
+
+## 擴充點
+
+* 新後端：實作 `run_xxx(ctx: BackendContext) -> StageResult`，在 `controller._gate_runner` 註冊，
+  並在 `specs/model.py` 的 `GateName` 加入名稱。
+* 新 LLM provider：實作 `leanc.llm.base.LLMProvider`，在 `llm/factory.py` 註冊。
+* V2 規劃見 [roadmap.md](roadmap.md)。

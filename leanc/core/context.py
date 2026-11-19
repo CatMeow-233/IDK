@@ -50,6 +50,9 @@ class VerifyOptions:
     timeout_scale: float = 1.0  # multiply every tool timeout (CLI --timeout-scale)
     gates: list[str] | None = None  # restrict to a subset (cannot add gates the spec lacks)
     fail_fast: bool = False
+    # Run the gates even if the spec is not approved (informational only: the
+    # overall status stays SPEC_UNAPPROVED).
+    check_unapproved: bool = False
 
 
 @dataclass

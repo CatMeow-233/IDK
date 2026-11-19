@@ -1,0 +1,286 @@
+"""Counterexample-driven repair loop (Repair Agent orchestration).
+
+Each round:
+
+1. build a :class:`~leanc.llm.base.RepairRequest` from the approved spec, the
+   current best sources, all failure reports (compiler, analyzer, sanitizer,
+   CBMC counterexamples) and the history of earlier rounds;
+2. ask the provider for a proposal (full files or a unified diff);
+3. turn it into a candidate, compute the patch and **policy-check** it
+   (protected files, CBMC built-ins, assumption injection, assertion deletion,
+   warning/sanitizer suppression, trivialised target, size limit, ...);
+4. reject candidates already seen (cycle detection);
+5. verify the candidate *in a fresh snapshot* with the full required gates
+   (the workspace is untouched while rounds run);
+6. compare failures before/after (fixed / introduced) and keep the candidate
+   only if it is a genuine improvement; otherwise revert to the best one.
+
+The loop stops on a success status or after ``max_rounds`` rounds, in which
+case the result is ``REPAIR_EXHAUSTED``.  Only a candidate that reached a
+success status is written back to the workspace.  Inconclusive results
+(UNKNOWN / TIMEOUT / TOOL_ERROR) never count as improvements: making code
+unverifiable is not a repair.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from leanc.core.context import VerifyOptions
+from leanc.core.errors import PatchError, ProviderError
+from leanc.core.models import (
+    FailureReport,
+    PolicyDecision,
+    PolicyViolation,
+    RepairRound,
+    VerificationResult,
+)
+from leanc.core.redact import redact
+from leanc.core.status import DEFINITE_FAILURES, REPAIRABLE, Status, is_success, rank
+from leanc.core.workspace import Workspace
+from leanc.specs.loader import spec_to_yaml
+from leanc.specs.model import Spec
+
+log = logging.getLogger("leanc.repair")
+
+
+@dataclass
+class RepairOutcome:
+    status: Status  # final workflow status (success status, REPAIR_EXHAUSTED, or the unrepairable status)
+    final: VerificationResult
+    rounds: list[RepairRound] = field(default_factory=list)
+    written_back: list[str] = field(default_factory=list)
+    message: str = ""
+
+
+def _fingerprints(vr: VerificationResult) -> dict[str, FailureReport]:
+    from leanc.repair.counterexample import fingerprint
+
+    out: dict[str, FailureReport] = {}
+    for f in vr.all_failures():
+        try:
+            fp = fingerprint(f)
+        except Exception:  # fingerprint is best-effort for non-CBMC failures
+            fp = f"{f.kind}:{f.tool}:{f.property_id}:{(f.location.short() if f.location else '')}"
+        out[fp] = f
+    return out
+
+
+def is_improvement(before: VerificationResult, after: VerificationResult) -> bool:
+    """A candidate is kept only if it verifies, or if it is still a *definite*
+    failure that is strictly better (better-ranked definite status, or the
+    same status with strictly fewer failures and no newly introduced ones)."""
+    if is_success(after.status):
+        return True
+    if after.status not in DEFINITE_FAILURES:
+        return False  # UNKNOWN / TIMEOUT / TOOL_ERROR / SPEC_UNAPPROVED are never improvements
+    if rank(after.status) > rank(before.status):
+        return True
+    if rank(after.status) < rank(before.status):
+        return False
+    fb, fa = _fingerprints(before), _fingerprints(after)
+    introduced = set(fa) - set(fb)
+    return len(fa) < len(fb) and not introduced
+
+
+def _history_entry(r: RepairRound) -> dict:
+    return {
+        "round": r.round,
+        "root_cause": r.root_cause,
+        "files_changed": r.files_changed,
+        "policy_allowed": None if r.policy is None else r.policy.allowed,
+        "policy_violations": [] if r.policy is None else [f"{v.rule}: {v.message}" for v in r.policy.violations],
+        "status_after": None if r.status_after is None else r.status_after.value,
+        "fixed": r.fixed_failures,
+        "introduced": r.introduced_failures,
+        "reverted": r.reverted,
+        "note": r.note,
+    }
+
+
+def repair_loop(
+    spec_path: Path,
+    spec: Spec,
+    project_root: Path,
+    provider,
+    initial: VerificationResult,
+    *,
+    run_dir: Path,
+    options: VerifyOptions | None = None,
+    max_rounds: int | None = None,
+    write_back: bool = True,
+) -> RepairOutcome:
+    from leanc.core.controller import verify
+    from leanc.llm.base import RepairRequest
+    from leanc.repair.patch import (
+        candidate_hash,
+        changed_paths,
+        diff_stats,
+        make_unified_diff,
+        proposal_to_contents,
+    )
+    from leanc.repair.policy import check_candidate
+
+    options = options or VerifyOptions()
+    max_rounds = spec.repair.max_rounds if max_rounds is None else max_rounds
+    ws = Workspace(project_root)
+
+    if is_success(initial.status):
+        return RepairOutcome(status=initial.status, final=initial, message="already verified; no repair needed")
+    if initial.status not in REPAIRABLE:
+        return RepairOutcome(
+            status=initial.status,
+            final=initial,
+            message=(
+                f"{initial.status.value} is not repairable by editing the code under test "
+                "(it needs a human decision: approve the spec, adjust bounds in a new spec version, fix the toolchain, ...)"
+            ),
+        )
+    if max_rounds <= 0:
+        return RepairOutcome(status=Status.REPAIR_EXHAUSTED, final=initial, message="max_rounds is 0")
+
+    best_sources = {rel: ws.read_text(rel) for rel in spec.sources.editable if ws.exists(rel)}
+    best_vr = initial
+    seen = {candidate_hash(best_sources)}
+    headers = {h: ws.read_text(h) for h in spec.sources.headers if ws.exists(h)}
+    harness = ws.read_text(spec.verification.harness) if ws.exists(spec.verification.harness) else None
+    tests = ws.read_text(spec.tests.driver) if spec.tests.driver and ws.exists(spec.tests.driver) else None
+    spec_yaml = spec_to_yaml(spec)
+    rounds: list[RepairRound] = []
+    repair_dir = run_dir / "repair"
+    repair_dir.mkdir(parents=True, exist_ok=True)
+
+    for n in range(1, max_rounds + 1):
+        rdir = repair_dir / f"round-{n}"
+        rdir.mkdir(parents=True, exist_ok=True)
+        rr = RepairRound(round=n, provider=provider.info.name, status_before=best_vr.status)
+        diagnostics = [d for s in best_vr.stages for d in s.diagnostics]
+        req = RepairRequest(
+            requirement=spec.requirement,
+            spec=spec,
+            spec_yaml=spec_yaml,
+            round=n,
+            sources=dict(best_sources),
+            headers=headers,
+            harness=harness,
+            tests=tests,
+            diagnostics=diagnostics,
+            failures=best_vr.all_failures(),
+            history=[_history_entry(r) for r in rounds],
+        )
+        try:
+            proposal = provider.propose_patch(req)
+        except ProviderError as exc:
+            rr.note = f"provider error: {exc}"
+            rounds.append(rr)
+            continue
+        rr.root_cause = proposal.root_cause or ""
+        rr.rationale = proposal.rationale or ""
+        (rdir / "proposal.json").write_text(
+            redact(
+                json.dumps(
+                    {
+                        "root_cause": proposal.root_cause,
+                        "rationale": proposal.rationale,
+                        "files": proposal.files,
+                        "patch": proposal.patch,
+                        "note": proposal.note,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            ),
+            encoding="utf-8",
+        )
+        if not proposal.files and not proposal.patch:
+            rr.note = proposal.note or "provider returned no proposal"
+            rounds.append(rr)
+            continue
+        try:
+            candidate = proposal_to_contents(proposal.files, proposal.patch, best_sources)
+        except PatchError as exc:
+            rr.note = f"patch could not be applied: {exc}"
+            rr.policy = PolicyDecision(
+                allowed=False, violations=[PolicyViolation(rule="PATCH_INVALID", message=str(exc))]
+            )
+            rounds.append(rr)
+            continue
+        diff = make_unified_diff(best_sources, candidate)
+        (rdir / "patch.diff").write_text(diff, encoding="utf-8")
+        rr.patch_path = str((rdir / "patch.diff").relative_to(run_dir))
+        rr.files_changed = changed_paths(best_sources, candidate)
+        rr.lines_added, rr.lines_removed = diff_stats(best_sources, candidate)
+        rr.candidate_hash = candidate_hash(candidate)
+
+        decision = check_candidate(spec, best_sources, candidate, max_changed_lines=spec.repair.max_changed_lines)
+        rr.policy = decision
+        if not decision.allowed:
+            rr.note = "rejected by repair policy: " + ", ".join(sorted({v.rule for v in decision.violations}))
+            rounds.append(rr)
+            log.info("round %d rejected by policy: %s", n, rr.note)
+            continue
+        if rr.candidate_hash in seen:
+            rr.note = "cycle detected: candidate identical to an earlier candidate; not re-verified"
+            rounds.append(rr)
+            continue
+        seen.add(rr.candidate_hash)
+
+        vr = verify(
+            spec_path,
+            project_root=project_root,
+            options=options,
+            run_dir=rdir / "verify",
+            run_id=f"{best_vr.run_id}-r{n}",
+            candidate={k: v for k, v in candidate.items() if k in spec.sources.editable},
+            spec=spec,
+        )
+        rr.verification_path = str((rdir / "verify" / "verification.json").relative_to(run_dir))
+        rr.status_after = vr.status
+        fb, fa = _fingerprints(best_vr), _fingerprints(vr)
+        rr.fixed_failures = sorted(set(fb) - set(fa))
+        rr.introduced_failures = sorted(set(fa) - set(fb))
+        if is_improvement(best_vr, vr):
+            best_vr, best_sources = vr, {k: v for k, v in candidate.items() if k in spec.sources.editable}
+            rr.note = "accepted" + (" (verified)" if is_success(vr.status) else " (improvement; continuing)")
+        else:
+            rr.reverted = True
+            rr.note = (
+                f"reverted: {vr.status.value} is not an improvement over {rr.status_before.value}"
+                if rr.status_before
+                else "reverted"
+            )
+        rounds.append(rr)
+        log.info("round %d: %s -> %s (%s)", n, rr.status_before, vr.status, rr.note)
+        if is_success(vr.status):
+            break
+
+    written: list[str] = []
+    if is_success(best_vr.status):
+        final_status = best_vr.status
+        if write_back:
+            backup = run_dir / "backup"
+            for rel, content in best_sources.items():
+                if ws.exists(rel):
+                    b = backup / rel
+                    b.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(ws.resolve(rel, must_exist=True), b)
+                if not ws.exists(rel) or ws.read_text(rel) != content:
+                    ws.write_text(rel, content)
+                    written.append(rel)
+        message = f"verified after {len(rounds)} repair round(s)"
+    else:
+        final_status = Status.REPAIR_EXHAUSTED
+        best_dir = run_dir / "best-candidate"
+        for rel, content in best_sources.items():
+            d = best_dir / rel
+            d.parent.mkdir(parents=True, exist_ok=True)
+            d.write_text(content, encoding="utf-8")
+        message = (
+            f"no verified candidate after {len(rounds)} round(s); best status {best_vr.status.value}; "
+            "workspace left unchanged"
+        )
+    return RepairOutcome(status=final_status, final=best_vr, rounds=rounds, written_back=written, message=message)

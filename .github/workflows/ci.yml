@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libclang-rt-18-dev llvm-18 cbmc bubblewrap
+          # Ubuntu 24.04 runners restrict unprivileged user namespaces via AppArmor;
+          # allow them so bubblewrap can sandbox untrusted test programs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Install Lean C
+        run: pip install -e ".[dev]"
+      - name: leanc doctor
+        run: leanc doctor
+      - name: Unit + integration tests
+        run: python -m pytest -q -ra
+      - name: Reproducible experiments
+        run: python scripts/run_experiments.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: experiment-results
+          path: experiments/results/

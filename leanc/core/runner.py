@@ -211,14 +211,6 @@ def run_command(
             display_argv=display_argv,
         )
 
-    if stdin_data is not None and proc.stdin is not None:
-        try:
-            proc.stdin.write(stdin_data)
-        except BrokenPipeError:
-            pass
-        finally:
-            proc.stdin.close()
-
     bufs: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
     truncated = False
     timed_out = False
@@ -226,6 +218,28 @@ def run_command(
     assert proc.stdout is not None and proc.stderr is not None
     sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
     sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
+    # stdin is fed from the same select loop with non-blocking writes.  A
+    # blocking write would hang forever (defeating the timeout) when the child
+    # never reads its input and the data exceeds the pipe buffer.
+    stdin_view = memoryview(stdin_data) if stdin_data is not None else None
+    stdin_pos = 0
+    if proc.stdin is not None:
+        if stdin_view is not None and len(stdin_view) > 0:
+            os.set_blocking(proc.stdin.fileno(), False)
+            sel.register(proc.stdin, selectors.EVENT_WRITE, "stdin")
+        else:
+            proc.stdin.close()
+
+    def _close_stdin() -> None:
+        if proc.stdin is not None and not proc.stdin.closed:
+            try:
+                sel.unregister(proc.stdin)
+            except (KeyError, ValueError):
+                pass
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
     deadline = start + float(limits.timeout_s)
     open_streams = 2
     while open_streams:
@@ -235,6 +249,18 @@ def run_command(
             _kill_group(proc)
             break
         for key, _ in sel.select(timeout=min(remaining, 0.25)):
+            if key.data == "stdin":
+                assert stdin_view is not None
+                fd = key.fileobj.fileno()  # type: ignore[union-attr]
+                try:
+                    stdin_pos += os.write(fd, stdin_view[stdin_pos : stdin_pos + 65536])
+                except BlockingIOError:
+                    continue
+                except OSError:  # BrokenPipeError: the child closed its stdin
+                    stdin_pos = len(stdin_view)
+                if stdin_pos >= len(stdin_view):
+                    _close_stdin()
+                continue
             chunk = os.read(key.fileobj.fileno(), 65536)  # type: ignore[union-attr]
             if not chunk:
                 sel.unregister(key.fileobj)
@@ -249,6 +275,7 @@ def run_command(
         if truncated:
             _kill_group(proc)
             break
+    _close_stdin()
     sel.close()
     try:
         proc.wait(timeout=max(0.1, deadline - time.monotonic()) if not (timed_out or truncated) else 5)
