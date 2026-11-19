@@ -1,0 +1,73 @@
+# Lean C specification: bounds-checked integer array lookup (Test 2: off-by-one out-of-bounds read).
+leanc_spec: 1
+spec_id: array-oob
+version: 1
+title: Bounds-checked integer array lookup
+requirement: |
+  實作一個整數陣列查詢函式 array_lookup：給定陣列、元素個數 count 與索引 index，
+  當 index 合法（index < count）時把元素寫入 *out 並回傳成功；索引越界時必須回傳錯誤，
+  絕不能讀取陣列範圍以外的記憶體；陣列或輸出指標為 NULL 時回傳錯誤。
+  (Implement an integer-array lookup array_lookup: given an array, its element count and an
+  index, write the element to *out and return success when the index is valid (index < count);
+  an out-of-range index must return an error and must never read memory outside the array;
+  a NULL array or output pointer returns an error.)
+language: {name: c, standard: c17}
+target:
+  function: array_lookup
+  signature: "int array_lookup(const int *values, size_t count, size_t index, int *out)"
+  params:
+    - {name: values, type: "const int *", description: "array of count readable ints, or NULL"}
+    - {name: count, type: size_t, description: "number of elements in values"}
+    - {name: index, type: size_t, description: "index to read (any value, including count and SIZE_MAX)"}
+    - {name: out, type: "int *", description: "where the element is written, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "ARRAY_LOOKUP_OK (0)", meaning: "success, *out == values[index]"}
+      - {value: "ARRAY_LOOKUP_ERR_NULL (-1)", meaning: "values or out is NULL; nothing dereferenced, *out untouched"}
+      - {value: "ARRAY_LOOKUP_ERR_RANGE (-2)", meaning: "index >= count; no memory read, *out untouched"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "if values != NULL then values points to at least count readable ints (explored for count <= MAX_COUNT = 8)", c_expr: "count <= MAX_COUNT"}
+  postconditions:
+    - {id: POST1, text: "values, out non-NULL and index < count => returns 0 and *out == values[index]"}
+    - {id: POST2, text: "values, out non-NULL and index >= count (in particular index == count) => returns -2 and *out is unchanged"}
+    - {id: POST3, text: "values == NULL or out == NULL => returns -1 and nothing is written"}
+    - {id: POST4, text: "the return value is always one of 0, -1, -2"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds memory access (values[count] is outside the array)", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE3, text: "no undefined behaviour", checks: [signed-overflow, pointer-overflow, undefined-shift, unsigned-overflow, conversion]}
+  frame:
+    - "values[0..count) is never modified"
+    - "*out is written only on success"
+sources:
+  editable: [src/array_lookup.c]
+  headers: [include/array_lookup.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_array_lookup.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: index_equals_count, args: [index_equals_count]}
+    - {name: out_of_range, args: [out_of_range]}
+    - {name: "null", args: ["null"]}
+verification:
+  harness: harness/array_lookup_harness.c
+  checks: [unsigned-overflow, conversion]
+  unwind: 9
+  input_bounds:
+    - {name: count, min: "0", max: "8", note: "array sizes up to MAX_COUNT=8; the array object holds exactly count ints"}
+    - {name: index, note: "unconstrained (full size_t range)"}
+    - {name: values, note: "NULL or a valid array of count ints"}
+    - {name: out, note: "NULL or a valid int"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5
