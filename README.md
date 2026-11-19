@@ -106,7 +106,23 @@ leanc run path/to/spec.yaml --provider openai
 
 ## 範例與預期結果
 
-<!-- EXAMPLES-TABLE -->
+| 範例 | 對應測試 | 附帶的程式碼 | `leanc verify` | 偵測工具 | `leanc run --provider mock` |
+|---|---|---|---|---|---|
+| [`safe_array_get`](examples/safe_array_get) | Test 1 正確程式 | 正確 | `VERIFIED_BOUNDED` | — | `VERIFIED_BOUNDED` |
+| [`array_oob`](examples/array_oob) | Test 2 陣列越界 | `index <= count` | `COUNTEREXAMPLE_FOUND`（反例 `count=6, index=6`） | cbmc, asan | 1 回合 → `VERIFIED_BOUNDED` |
+| [`div_by_zero`](examples/div_by_zero) | Test 3 除以零 | 未檢查 `den` | `COUNTEREXAMPLE_FOUND`（`den=0`；`INT_MIN/-1`） | cbmc, ubsan | 2 回合（第 1 回合只修一半）→ `VERIFIED_BOUNDED` |
+| [`int_overflow`](examples/int_overflow) | Test 4 整數溢位 | 先加再檢查 | `COUNTEREXAMPLE_FOUND`（強制 `signed-overflow`） | cbmc, ubsan | 1 回合 → `VERIFIED_BOUNDED` |
+| [`null_deref`](examples/null_deref) | Test 5 指標安全 | 檢查 NULL 但未返回 | `COUNTEREXAMPLE_FOUND` | clang-static-analyzer, cbmc, ubsan | 1 回合 → `VERIFIED_BOUNDED` |
+| [`loop_unwind`](examples/loop_unwind) | Test 6 迴圈展開不足 | 正確，但 unwind 5 < 16 | `UNKNOWN`（unwinding assertion 失敗） | cbmc | `UNKNOWN`（不嘗試「修復」）；變體 unwind 17 → `VERIFIED_BOUNDED` |
+| [`vacuous_harness`](examples/vacuous_harness) | vacuity | 有 off-by-one，harness assume 互相矛盾 | `UNKNOWN`（純 CBMC 會說 SUCCESSFUL） | cbmc（探針） | `UNKNOWN`；修正 harness 的變體 → `COUNTEREXAMPLE_FOUND` |
+| [`runtime_memory`](examples/runtime_memory) | 執行期記憶體 | 錯誤路徑洩漏 | `RUNTIME_TEST_FAILED` | lsan | 1 回合 → `VERIFIED_BOUNDED` |
+| [`ring_buffer`](examples/ring_buffer) | 多檔案專案 | 正確（2 個 .c） | `VERIFIED_BOUNDED` | — | `VERIFIED_BOUNDED` |
+| [`cheating_repair`](examples/cheating_repair) | 修復作弊 | off-by-one | `COUNTEREXAMPLE_FOUND` | cbmc, asan | 第 1–4 回合被政策拒絕（`__CPROVER_assume`、改 harness、掏空函式、刪 assert + `#pragma`），第 5 回合 → `VERIFIED_BOUNDED` |
+| [`repair_exhausted`](examples/repair_exhausted) | 修復耗盡 | `(a+b)/2` 溢位 | `COUNTEREXAMPLE_FOUND` | cbmc, ubsan | `REPAIR_EXHAUSTED`（還原、循環偵測、無提案；工作區不變） |
+| [`cbmc_timeout`](examples/cbmc_timeout) | 超時 | 正確，但 64 位元乘法等價性很難 | `TIMEOUT`（3 s） | — | `TIMEOUT` |
+
+規格竄改（修改 harness / 規格 / 批准紀錄 → `SPEC_UNAPPROVED`）、無沙箱（sanitizer `SKIPPED` → `UNKNOWN`）、
+`--gates` 子集（→ `UNKNOWN`）等情境由 `tests/` 中的測試涵蓋。
 
 每個範例目錄都有 `expected.yaml`；`tests/test_examples_e2e.py` 與 `scripts/run_experiments.py`
 會檢查實際狀態與預期一致。
