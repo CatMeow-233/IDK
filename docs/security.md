@@ -11,7 +11,7 @@ Lean C 分析並執行 AI 生成的程式碼，因此把它當成潛在惡意輸
 | 5 | 符號連結 | `Workspace.resolve` 拒絕任何路徑元件為 symlink；`O_NOFOLLOW` 讀取；寫入以同目錄暫存檔 + `os.replace`；規格與批准紀錄不得為 symlink |
 | 6 | CPU/記憶體/時間/輸出 | `RLIMIT_CPU`、`RLIMIT_AS`（CBMC）、`RLIMIT_FSIZE`、`RLIMIT_NOFILE`、`RLIMIT_CORE=0`；牆鐘逾時後 `killpg(SIGKILL)` 整個 process group；stdout/stderr 增量讀取並設上限，超過即終止並標記 truncated；ASan 改用 `hard_rss_limit_mb`（ASan 需要巨大虛擬位址空間，不能用 `RLIMIT_AS`）；stdin 以非阻塞方式寫入，避免子行程不讀輸入時繞過逾時 |
 | 7 | 測試禁止網路 | bubblewrap `--unshare-all`（net/pid/ipc/uts/cgroup/user namespace），沙箱中只有 `lo` |
-| 8 | 不修改工作區外檔案 | 所有寫入經 `Workspace`；修復只寫 `sources.editable`；沙箱中只有 build/raw 目錄可寫 |
+| 8 | 不修改工作區外檔案 | 所有寫入經 `Workspace`；修復只寫 `sources.editable`；工具（編譯器、CBMC）在沙箱中只能寫 `build/`、`raw/`；**不可信的測試程式**只看得到自己的執行檔目錄（唯讀）與每個案例專屬的空白可寫目錄，看不到快照、`raw/` 或其他關卡的輸出 |
 | 9 | 保護規格與 harness | 雜湊鎖定 + HMAC 簽章；修復政策 `PATH_NOT_EDITABLE`；詳見 [trust-model.md](trust-model.md) |
 | 10 | 不洩漏憑證 | 子行程使用最小環境（不繼承 `OPENAI_API_KEY` 等）；日誌、報告、LLM transcript、run.json 經 `redact()`（已知環境變數值、`sk-…`、`Authorization: Bearer …`、`api_key=…`、GitHub token） |
 | 11 | 補丁政策 | `leanc.repair.policy.check_candidate`：路徑、CPROVER/assume 注入、assert 刪除、警告/sanitizer 抑制、`#include` 逃逸、危險呼叫、inline asm、目標函式被「掏空」、補丁大小 |

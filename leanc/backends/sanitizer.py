@@ -107,7 +107,10 @@ _RSS_HDR_RE = re.compile(
     r"hard rss limit exhausted\s*(?P<rest>.*?)\s*$"
 )
 _UBSAN_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): runtime error: (?P<msg>.*?)\s*$")
-_UBSAN_NOLOC_RE = re.compile(r"^(?P<file><unknown>|[^\s:]+): runtime error: (?P<msg>.*?)\s*$")
+# Location-less forms UBSan prints: "<unknown>", a bare file name, or "(module+0xoff)".
+_UBSAN_NOLOC_RE = re.compile(
+    r"^(?P<file><unknown>|\S+\.(?:c|h|cc|cpp|cxx|hpp|inc)|\([^()]*\+0x[0-9a-fA-F]+\)): runtime error: (?P<msg>.*?)\s*$"
+)
 _SUMMARY_RE = re.compile(
     r"^SUMMARY: (?P<tool>AddressSanitizer|LeakSanitizer|UndefinedBehaviorSanitizer): "
     r"(?P<kind>\S+)(?:\s+(?P<rest>.*?))?\s*$"
@@ -119,13 +122,14 @@ _FRAME_RE = re.compile(r"^\s*#(?P<n>\d+)\s+0x[0-9a-fA-F]+\s*(?P<rest>.*?)\s*$")
 _BUILDID_RE = re.compile(r"\s*\(BuildId: [0-9a-fA-F]+\)\s*$")
 _FILELOC_RE = re.compile(r"^(?P<file>[^\s]+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
 _MODULE_RE = re.compile(r"^(?P<func>.+?)\s+\((?P<module>[^()]*)\)$")
+_SRCFILE_RE = re.compile(r"^(?:/\S+|\S+\.(?:c|h|cc|cpp|cxx|hpp|inc|S|s))$")
 _ACCESS_RE = re.compile(r"^(?P<acc>READ|WRITE) of size (?P<size>\d+) at ")
 _LOCATED_RE = re.compile(r"\bis located (?P<what>.+?)\s*$")
 _SIGCAUSE_RE = re.compile(r"The signal is caused by a (?P<acc>\w+) memory access")
 _HINT_RE = re.compile(r"^==\d+==\s*Hint: (?P<hint>.+?)\s*$")
 _VAR_RE = re.compile(r"\[\d+, \d+\) '(?P<var>[^']+)'.*<== (?P<what>Memory access .+?)\s*$")
 _CUT_RE = re.compile(r"^(?:Shadow bytes around the buggy address|==\d+==\s*Process memory map follows)")
-_ADDR_PAREN_RE = re.compile(r"\s*\(0x[0-9a-fA-F]+\)")
+_ADDR_PAREN_RE = re.compile(r"\s*\(0x[0-9a-fA-F]+\)|\s*\[0x[0-9a-fA-F]+,\s*0x[0-9a-fA-F]+\)")
 _ADDR_RE = re.compile(r"\b0x[0-9a-fA-F]{5,}\b")
 
 #: Signs that the sanitizer *runtime* failed (a tool problem, not a finding).
@@ -262,6 +266,10 @@ def _parse_frame(line: str) -> StackFrame | None:
                 fr.file = fm["file"]
                 fr.line = int(fm["line"])
                 fr.column = int(fm["col"]) if fm["col"] else None
+                return fr
+            if _SRCFILE_RE.match(parts[1]):
+                # symbolised without line info (e.g. an implicit null check)
+                fr.function, fr.file = parts[0], parts[1]
                 return fr
         fr.function = rest or None
         return fr
@@ -425,7 +433,8 @@ def _scan_blocks(lines: list[str]) -> list[_Block]:
             continue
         m = _UBSAN_NOLOC_RE.match(line)
         if m:
-            open_block(_Block("ubsan", i, ub_file=None if m["file"] == "<unknown>" else m["file"], ub_msg=m["msg"]))
+            f = m["file"]
+            open_block(_Block("ubsan", i, ub_file=None if f.startswith(("<", "(")) else f, ub_msg=m["msg"]))
             continue
         if m := _SUMMARY_RE.match(line):
             tool = _TOOL_NAMES[m["tool"]]
@@ -548,10 +557,11 @@ def _ubsan_finding(blk: _Block, raw: str, pf: set[str] | None, base: str | None)
             rel = _display_path(blk.ub_file, base)
         if rel is not None:
             func = None
-            for fr in frames:
-                if fr.line == blk.ub_line and fr.file and (
-                    fr.file == blk.ub_file or fr.file.endswith("/" + blk.ub_file.lstrip("./")) or
-                    _project_rel(fr.file, pf, base) == rel
+            for fr in frames:  # frame #0 is the check site; it may lack line info
+                if fr.file and fr.line in (None, blk.ub_line) and (
+                    fr.file == blk.ub_file
+                    or fr.file.endswith("/" + blk.ub_file.lstrip("./"))
+                    or _project_rel(fr.file, pf, base) == rel
                 ):
                     func = fr.function
                     break

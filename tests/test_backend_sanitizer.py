@@ -857,3 +857,32 @@ def test_scan_sanitizer_control(tmp_path):
     diags = scan_sanitizer_control(tmp_path, ["src/a.c"])
     assert sorted(d.location.line for d in diags) == [3, 4, 5, 6]
     assert all(d.tool == "leanc-policy" and d.rule_id == "sanitizer-control" for d in diags)
+
+
+def test_parse_frame_without_line_info():
+    text = (
+        "src/sensor.c:14:13: runtime error: member access within null pointer of type 'const struct sensor'\n"
+        f"    #0 0x562511d41880 in sensor_read {SNAP}/src/sensor.c\n"
+        f"    #1 0x562511d41c04 in main {SNAP}/tests/driver.c:42:16\n"
+        "SUMMARY: UndefinedBehaviorSanitizer: undefined-behavior src/sensor.c:14:13\n"
+    )
+    f = parse_sanitizer_findings(text, project_files={"src/sensor.c", "tests/driver.c"}, base_dir=SNAP)[0]
+    d = f.diagnostic
+    assert (d.rule_id, d.location.file, d.location.line, d.location.function) == (
+        "null-pointer", "src/sensor.c", 14, "sensor_read"
+    )
+    assert f.call_stack()[:2] == ["#0 sensor_read src/sensor.c", "#1 main tests/driver.c:42:16"]
+    # the same frame shape in an ASan stack still yields a (line-less) project location
+    asan = "==1==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000008\n" \
+           f"    #0 0x1 in sensor_read {SNAP}/src/sensor.c\n"
+    d = parse_sanitizer_output(asan, project_files={"src/sensor.c"}, base_dir=SNAP)[0]
+    assert (d.location.file, d.location.line, d.location.function) == ("src/sensor.c", None, "sensor_read")
+
+
+def test_parse_ubsan_without_location_and_no_false_positive():
+    d = parse_sanitizer_output("<unknown>: runtime error: division by zero\n")
+    assert len(d) == 1 and d[0].rule_id == "division-by-zero" and d[0].location is None
+    d = parse_sanitizer_output("(/w/bin/test_bin+0x1234): runtime error: load of null pointer of type 'int'\n")
+    assert len(d) == 1 and d[0].rule_id == "null-pointer" and d[0].location is None
+    # ordinary program diagnostics that merely contain the words are not findings
+    assert parse_sanitizer_output("mytool: runtime error: config file missing\n") == []
