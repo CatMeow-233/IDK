@@ -1,0 +1,7 @@
+{
+  "root_cause": "The range check uses idx > len, so idx == len reads one element past the end of arr.",
+  "rationale": "Use idx >= len so every index outside [0, len) returns SAFE_ARRAY_ERR_RANGE before any read.",
+  "files": {
+    "src/safe_array.c": "#include \"safe_array.h\"\n\n/* mock \"generated\" code with an off-by-one bug (idx >= len instead of idx >= len) */\nint safe_array_get(const int *arr, size_t len, size_t idx, int *out)\n{\n    if (arr == NULL || out == NULL) {\n        return SAFE_ARRAY_ERR_NULL;\n    }\n    if (idx >= len) {\n        return SAFE_ARRAY_ERR_RANGE;\n    }\n    *out = arr[idx];\n    return SAFE_ARRAY_OK;\n}\n"
+  }
+}

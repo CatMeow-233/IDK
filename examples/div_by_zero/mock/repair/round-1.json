@@ -1,0 +1,7 @@
+{
+  "root_cause": "safe_ratio divides by den without checking it: CBMC reports 'division by zero in num / den' (safe_ratio.division-by-zero.1, src/safe_ratio.c line 8) with den = 0, and UBSan aborts the zero_den test with 'runtime error: division by zero'. The harness postcondition rc == SAFE_RATIO_ERR_DIV_ZERO fails for the same input.",
+  "rationale": "Reject a zero divisor before dividing and report SAFE_RATIO_ERR_DIV_ZERO without writing *out; the NULL-out check keeps precedence. The quotient itself is unchanged. (This mock proposal deliberately addresses only the division-by-zero failure, to demonstrate a multi-round repair.)",
+  "files": {
+    "src/safe_ratio.c": "#include \"safe_ratio.h\"\n\nint safe_ratio(int num, int den, int *out)\n{\n    if (out == NULL || den == 0) {\n        return out == NULL ? SAFE_RATIO_ERR_NULL : SAFE_RATIO_ERR_DIV_ZERO;\n    }\n    *out = num / den;\n    return SAFE_RATIO_OK;\n}\n"
+  }
+}

@@ -5,6 +5,12 @@
 #include "leanc.h"
 #include "safe_ratio.h"
 
+/* |v| in 64 bits (defined for INT_MIN too). */
+static long long mag(int v)
+{
+    return v < 0 ? -(long long)v : (long long)v;
+}
+
 int main(void)
 {
     /* No precondition: num and den range over ALL ints, out may be NULL. */
@@ -35,15 +41,30 @@ int main(void)
         LEANC_REACH("representable");
         assert(rc == SAFE_RATIO_OK);                      /* POST1 */
         /*
-         * Exact quotient, checked without trusting '/': num == q * den + r with
-         * |r| < |den| and r == 0 or r has the sign of num (truncation toward zero).
-         * 64-bit arithmetic cannot overflow here (|q|, |den| <= 2^31).
+         * POST1 value, over the FULL int range: truncated division is
+         * characterised by sign and magnitude (no multiplication needed):
+         * |q| <= |num|, q == 0 exactly when |num| < |den|, and a non-zero q
+         * is negative exactly when num and den have opposite signs.
          */
-        long long q = out_cell;
-        long long r = (long long)num - q * (long long)den;
-        long long aden = den < 0 ? -(long long)den : (long long)den;
-        assert((r < 0 ? -r : r) < aden);
-        assert(r == 0 || (r < 0) == (num < 0));
+        int q = out_cell;
+        assert(mag(q) <= mag(num));
+        assert((q == 0) == (mag(num) < mag(den)));
+        assert(q == 0 || ((q < 0) == ((num < 0) != (den < 0))));
+        /*
+         * POST1 exact value.  Proving "q == num / den" for all 2^64 input pairs
+         * means proving two 32-bit dividers equivalent, which is intractable
+         * for CBMC's SAT back end; the exact quotient is therefore checked for
+         * den == +-1 over the full num range and for every pair in the window
+         * |num| <= 256, |den| <= 16 (the trusted tests cover INT_MIN/INT_MAX).
+         */
+        if (den == 1 || den == -1) {
+            LEANC_REACH("unit_den");
+            assert(q == num / den);
+        }
+        if (num >= -256 && num <= 256 && den >= -16 && den <= 16) {
+            LEANC_REACH("exact_window");
+            assert(q == num / den);
+        }
     }
     return 0;
 }

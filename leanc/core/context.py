@@ -110,10 +110,13 @@ class BackendContext:
         env_extra: dict[str, str] | None = None,
         stdin_data: bytes | None = None,
         sandboxed: bool = True,
+        mounts: SandboxMounts | None = None,
     ) -> ProcResult:
         """Run a tool.  ``sandboxed=True`` uses the sandbox when one is
         available; callers that execute *untrusted programs* must additionally
-        check :meth:`may_execute_untrusted` first."""
+        check :meth:`may_execute_untrusted` first.  ``mounts`` replaces the
+        default bind set (:meth:`mounts`) so untrusted programs can be given
+        less than the tools (e.g. a single writable per-test directory)."""
         env = minimal_env(env_extra, home="/tmp")
         return run_command(
             argv,
@@ -122,7 +125,7 @@ class BackendContext:
             env=env,
             stdin_data=stdin_data,
             sandbox=self.sandbox if (sandboxed and self.sandbox.active) else None,
-            mounts=self.mounts(),
+            mounts=mounts if mounts is not None else self.mounts(),
         )
 
     def may_execute_untrusted(self) -> tuple[bool, str]:

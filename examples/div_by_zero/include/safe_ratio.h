@@ -2,6 +2,7 @@
 #define SAFE_RATIO_H
 
 #include <limits.h>
+#include <stddef.h>
 
 /* Status codes returned by safe_ratio. */
 #define SAFE_RATIO_OK 0

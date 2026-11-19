@@ -217,6 +217,7 @@ def expect_files(
     key: str = "files",
     *,
     required: bool = True,
+    clean: bool = True,
     where: str = "response",
 ) -> dict[str, str] | None:
     """Validate a ``{relative path: full content}`` map.
@@ -224,8 +225,10 @@ def expect_files(
     Paths are normalised (``./src/a.c`` -> ``src/a.c``) when they are valid
     workspace-relative paths; invalid ones (absolute, ``..``) are kept verbatim
     so that the generation/repair policy rejects them visibly instead of the
-    parser silently fixing an attempted escape.  Returns ``None`` when the key
-    is absent/null/empty and not required."""
+    parser silently fixing an attempted escape.  With ``clean`` (model output)
+    a wrapping markdown fence is removed, CRLF normalised and a final newline
+    ensured; fixtures (``clean=False``) are returned byte-for-byte.  Returns
+    ``None`` when the key is absent/null/empty and not required."""
     v = obj.get(key)
     if v is None or v == {}:
         if required:
@@ -245,7 +248,7 @@ def expect_files(
             norm = path
         if norm in out:
             raise ProviderError(f"{where}: file {norm!r} given more than once")
-        out[norm] = _normalise_source(content)
+        out[norm] = _normalise_source(content) if clean else content
     return out
 
 
@@ -261,7 +264,7 @@ REPAIR_OPTIONAL = ("files", "patch", "note")
 def generated_code_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> GeneratedCode:
     where = "code generation response"
     unknown = check_keys(obj, required=CODEGEN_KEYS, optional=CODEGEN_OPTIONAL, strict=strict, where=where)
-    files = expect_files(obj, "files", required=True, where=where) or {}
+    files = expect_files(obj, "files", required=True, clean=not strict, where=where) or {}
     notes = expect_str(obj, "notes", required=False, where=where)
     if unknown:
         notes = (notes + "\n" if notes else "") + f"(ignored unexpected keys: {', '.join(unknown)})"
@@ -283,10 +286,13 @@ def spec_draft_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str =
     notes = expect_str(obj, "notes", required=False, where=where)
     if unknown:
         notes = (notes + "\n" if notes else "") + f"(ignored unexpected keys: {', '.join(unknown)})"
+    if not strict:
+        harness = _normalise_source(harness) if harness else None
+        tests = _normalise_source(tests) if tests else None
     return SpecDraft(
         spec_yaml=spec_yaml,
-        harness_c=_normalise_source(harness) if harness else None,
-        tests_c=_normalise_source(tests) if tests else None,
+        harness_c=harness,
+        tests_c=tests,
         notes=notes,
         raw_response=raw,
     )
@@ -305,17 +311,19 @@ def repair_proposal_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: 
         check_keys(obj, optional=REPAIR_KEYS + REPAIR_OPTIONAL, where=where)
     root_cause = expect_str(obj, "root_cause", required=strict, where=where)
     rationale = expect_str(obj, "rationale", required=strict, where=where)
-    files = expect_files(obj, "files", required=False, where=where)
+    files = expect_files(obj, "files", required=False, clean=not strict, where=where)
     patch_val = obj.get("patch")
     if patch_val is not None and not isinstance(patch_val, str):
         raise ProviderError(f"{where}: 'patch' must be a unified diff string, got {type(patch_val).__name__}")
     patch = patch_val if patch_val and patch_val.strip() else None
-    if patch is not None:
+    if patch is not None and not strict:
         patch = strip_code_fence(patch)
     if files and patch:
         raise ProviderError(f"{where}: give either 'files' or 'patch', not both")
     note = expect_str(obj, "note", required=False, where=where)
     if not files and not patch:
+        if strict:
+            raise ProviderError(f"{where}: must contain a non-empty 'files' object or a non-empty 'patch' string")
         note = note or "provider response contained neither 'files' nor 'patch' (no change proposed)"
     return RepairProposal(root_cause=root_cause, rationale=rationale, files=files, patch=patch, raw_response=raw, note=note)
 

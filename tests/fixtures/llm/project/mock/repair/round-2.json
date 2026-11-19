@@ -1,0 +1,6 @@
+{
+  "root_cause": "Off-by-one in the range check.",
+  "rationale": "Same fix expressed as a unified diff.",
+  "patch": "--- a/src/safe_array.c\n+++ b/src/safe_array.c\n@@ -6,7 +6,7 @@\n     if (arr == NULL || out == NULL) {\n         return SAFE_ARRAY_ERR_NULL;\n     }\n-    if (idx > len) {\n+    if (idx >= len) {\n         return SAFE_ARRAY_ERR_RANGE;\n     }\n     *out = arr[idx];\n",
+  "note": "diff form"
+}

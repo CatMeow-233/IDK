@@ -1,0 +1,5 @@
+{"spec_yaml": "leanc_spec: 1
+spec_id: clamp
+version: 1
+title: Clamp
+", "harness_c": null, "tests_c": "", "notes": "raw newlines inside the JSON string"}

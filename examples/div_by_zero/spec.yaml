@@ -1,0 +1,73 @@
+# Lean C specification: checked integer division (Test 3: division by zero, then INT_MIN / -1).
+leanc_spec: 1
+spec_id: div-by-zero
+version: 1
+title: Checked integer division
+requirement: |
+  實作一個安全的整數除法函式 safe_ratio(num, den, out)：計算 num / den（C 語意，向零截斷）並寫入 *out。
+  除數為 0 時必須回傳錯誤；結果無法以 int 表示時（INT_MIN / -1）也必須回傳錯誤；
+  out 為 NULL 時回傳錯誤。任何情況下都不得發生未定義行為。
+  (Implement a safe integer division safe_ratio(num, den, out): compute num / den (C semantics,
+  truncated toward zero) into *out. A zero divisor must return an error; a result that is not
+  representable as an int (INT_MIN / -1) must also return an error; a NULL out returns an error.
+  No undefined behaviour is allowed in any case.)
+language: {name: c, standard: c17}
+target:
+  function: safe_ratio
+  signature: "int safe_ratio(int num, int den, int *out)"
+  params:
+    - {name: num, type: int, description: "dividend (any int)"}
+    - {name: den, type: int, description: "divisor (any int, including 0 and -1)"}
+    - {name: out, type: "int *", description: "where the quotient is written, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "SAFE_RATIO_OK (0)", meaning: "success, *out == num / den (truncated toward zero)"}
+      - {value: "SAFE_RATIO_ERR_NULL (-1)", meaning: "out is NULL; nothing computed or written"}
+      - {value: "SAFE_RATIO_ERR_DIV_ZERO (-2)", meaning: "den == 0; *out untouched"}
+      - {value: "SAFE_RATIO_ERR_OVERFLOW (-3)", meaning: "num == INT_MIN and den == -1 (quotient not representable); *out untouched"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "none: num and den may be any int, out may be NULL"}
+  postconditions:
+    - {id: POST1, text: "out != NULL, den != 0 and !(num == INT_MIN && den == -1) => returns 0 and *out == num / den, i.e. num == q*den + r with |r| < |den| and r == 0 or sign(r) == sign(num)"}
+    - {id: POST2, text: "out != NULL and den == 0 => returns -2 and *out is unchanged"}
+    - {id: POST3, text: "out != NULL and num == INT_MIN and den == -1 => returns -3 and *out is unchanged"}
+    - {id: POST4, text: "out == NULL => returns -1 (checked first)"}
+    - {id: POST5, text: "the return value is always one of 0, -1, -2, -3"}
+  safety:
+    - {id: SAFE1, text: "no division by zero", checks: [div-by-zero]}
+    - {id: SAFE2, text: "no signed overflow (INT_MIN / -1 is undefined behaviour in C)", checks: [signed-overflow]}
+    - {id: SAFE3, text: "no NULL dereference and no other undefined behaviour", checks: [pointer, pointer-overflow, undefined-shift, conversion]}
+  frame:
+    - "*out is written only on success"
+sources:
+  editable: [src/safe_ratio.c]
+  headers: [include/safe_ratio.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_safe_ratio.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: extremes, args: [extremes]}
+    - {name: zero_den, args: [zero_den]}
+    - {name: int_min_by_minus_one, args: [int_min_by_minus_one]}
+    - {name: null_out, args: [null_out]}
+verification:
+  harness: harness/safe_ratio_harness.c
+  checks: [conversion]
+  unwind: 1
+  input_bounds:
+    - {name: num, note: "unconstrained (full int range)"}
+    - {name: den, note: "unconstrained (full int range, including 0 and -1)"}
+    - {name: out, note: "NULL or a valid int"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5
