@@ -66,7 +66,12 @@ def generate_sources(
     (run_dir / "generation-response.txt").write_text(redact(out.raw_response or ""), encoding="utf-8")
     files = {k: v for k, v in out.files.items()}
     unexpected = sorted(set(files) - set(targets))
-    decision = check_generated(spec, files)
+    # Evaluate the policy on the complete editable set (generated files plus
+    # editable files that already exist and were not regenerated), so that a
+    # target function living in a kept file is not reported as MISSING_TARGET.
+    full = {p: ws.read_text(p) for p in spec.sources.editable if p not in files and ws.exists(p)}
+    full.update(files)
+    decision = check_generated(spec, full)
     if unexpected:
         raise GenerationRejected(f"provider returned files that were not requested: {unexpected}", decision)
     if not decision.allowed:
