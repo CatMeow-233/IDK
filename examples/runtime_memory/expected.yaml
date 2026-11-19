@@ -1,0 +1,12 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: RUNTIME_TEST_FAILED  # only the sanitizer gate fails: LeakSanitizer reports the leak
+run: VERIFIED_BOUNDED        # mock round-1 frees the buffer on the error path
+detected_by: [lsan]
+rejected_rounds: []
+notes: >
+  The shipped join_with_sep stores its malloc'd buffer in res->data and, on the JOIN_ERR_FIELD error
+  path, clears res->data without freeing it. The pointer escapes through the out-parameter, so the
+  Clang Static Analyzer reports nothing; the spec's CBMC checks (no memory-leak check) pass with all
+  probes reachable; the trusted tests separator_in_field and nul_in_field fail under LeakSanitizer
+  ("Direct leak of 6 byte(s) ... allocated from join_with_sep src/join.c:22"). Overall
+  RUNTIME_TEST_FAILED. Mock round-1 adds free(res->data) in the shared error path => VERIFIED_BOUNDED.

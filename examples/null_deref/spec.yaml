@@ -1,0 +1,68 @@
+# Lean C specification: sensor channel read (Test 5: NULL checked, but still dereferenced).
+leanc_spec: 1
+spec_id: null-deref
+version: 1
+title: Sensor channel read with NULL handling
+requirement: |
+  實作 sensor_read(s, out)：讀取感測器通道 s 的目前數值並寫入 *out。
+  s 為 NULL 時必須回傳錯誤、把 *out 設為 0，而且絕不能解參考 s；通道未啟用時回傳錯誤並把 *out 設為 0；
+  out 為 NULL 時回傳錯誤且不寫入任何東西。感測器結構不得被修改。
+  (Implement sensor_read(s, out): read the current value of sensor channel s into *out.
+  If s is NULL it must return an error, set *out to 0 and never dereference s; a disabled
+  channel returns an error and sets *out to 0; a NULL out returns an error and writes nothing.
+  The sensor record must not be modified.)
+language: {name: c, standard: c17}
+target:
+  function: sensor_read
+  signature: "int sensor_read(const struct sensor *s, int *out)"
+  params:
+    - {name: s, type: "const struct sensor *", description: "sensor channel record, or NULL"}
+    - {name: out, type: "int *", description: "where the value is written, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "SENSOR_OK (0)", meaning: "success, *out == s->value"}
+      - {value: "SENSOR_ERR_NULL (-1)", meaning: "out is NULL (nothing written), or s is NULL (s not dereferenced, *out == 0)"}
+      - {value: "SENSOR_ERR_DISABLED (-2)", meaning: "s->enabled == 0; *out == 0"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "if s != NULL then s points to a readable struct sensor (all field values arbitrary)"}
+  postconditions:
+    - {id: POST1, text: "s, out non-NULL and s->enabled != 0 => returns 0 and *out == s->value"}
+    - {id: POST2, text: "out != NULL and s == NULL => returns -1, *out == 0, and s is never dereferenced"}
+    - {id: POST3, text: "out == NULL => returns -1 and nothing is written (checked first)"}
+    - {id: POST4, text: "s, out non-NULL and s->enabled == 0 => returns -2 and *out == 0"}
+    - {id: POST5, text: "the return value is always one of 0, -1, -2"}
+  safety:
+    - {id: SAFE1, text: "no NULL dereference (of s or out)", checks: [pointer]}
+    - {id: SAFE2, text: "no out-of-bounds access and no other undefined behaviour", checks: [bounds, signed-overflow, pointer-overflow, undefined-shift, div-by-zero]}
+  frame:
+    - "*s is never modified"
+sources:
+  editable: [src/sensor.c]
+  headers: [include/sensor.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_sensor_read.c
+  cases:
+    - {name: enabled, args: [enabled]}
+    - {name: disabled, args: [disabled]}
+    - {name: null_sensor, args: [null_sensor]}
+    - {name: null_out, args: [null_out]}
+verification:
+  harness: harness/sensor_read_harness.c
+  checks: []
+  unwind: 1
+  input_bounds:
+    - {name: s, note: "NULL or a struct sensor with arbitrary id / enabled / value"}
+    - {name: out, note: "NULL or a valid int"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

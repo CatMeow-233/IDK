@@ -361,7 +361,7 @@ _PRAGMA_STR_RE = re.compile(r'\(\s*(?:L|u8|u|U)?"((?:[^"\\\n]|\\.)*)"\s*\)')
 _INCLUDE_RE = re.compile(rf"^{_WS}#{_WS}(include_next|include|import|embed)\b", re.M)
 _HEADER_NAME_RE = re.compile(r'^(<[^>\n]*>|"[^"\n]*")')
 _ATTRIBUTE_RE = re.compile(r"\b(__attribute__|__declspec)\s*\(")
-_STD_ATTRIBUTE_RE = re.compile(r"\[\[(.*?)\]\]", re.S)
+_STD_ATTRIBUTE_RE = re.compile(r"\[\s*\[(.*?)\]\s*\]", re.S)
 _ASSUME_ATTR_RE = re.compile(r"\b(?:\w+\s*::\s*)?_*(assume|assume_aligned|nonnull|returns_nonnull)_*\b")
 _ALIAS_ATTR_RE = re.compile(r'\b_*(?:alias|weakref)_*\s*\(\s*"\s*(__CPROVER\w*|LEANC_\w*)')
 _TRIGRAPH_RE = re.compile(r"\?\?[=/'()!<>\-]")
@@ -370,19 +370,25 @@ _ASSERT_RE = re.compile(r"(?<![\w.])(?<!->)\bassert(?=\s*\()")
 _STATIC_ASSERT_RE = re.compile(r"\b(?:static_assert|_Static_assert)(?=\s*\()")
 
 
+def _norm_key(s: str) -> str:
+    """Spacing-insensitive spelling of a construct (``__has_feature ( x )``
+    and ``__has_feature(x)`` are the same construct for counting)."""
+    return re.sub(r"\s*([^\w\s])\s*", r"\1", " ".join(s.split()))
+
+
 def _pragma_hits(body: str) -> list[tuple[str, str]]:
     """Classify the text after ``#pragma``."""
     b = " ".join(body.split())
     out: list[tuple[str, str]] = []
-    m = re.match(r"^CPROVER\b(.*)", b)
+    m = re.match(r"^CPROVER\b\s*(\w*)", b)
     if m:
-        out.append(("CPROVER_BUILTIN", "#pragma CPROVER" + (" " + m.group(1).split()[0] if m.group(1).split() else "")))
+        out.append(("CPROVER_BUILTIN", f"CBMC pragma '{('#pragma CPROVER ' + m.group(1)).strip()}'"))
     m = re.match(r"^(clang|GCC)\s+(diagnostic|system_header)\b", b)
     if m:
-        out.append(("WARNING_SUPPRESSION", f"#pragma {m.group(1)} {m.group(2)}"))
+        out.append(("WARNING_SUPPRESSION", f"diagnostic pragma '#pragma {m.group(1)} {m.group(2)}'"))
     m = re.match(r"^(system_header|warning)\b", b)
     if m:
-        out.append(("WARNING_SUPPRESSION", f"#pragma {m.group(1)}"))
+        out.append(("WARNING_SUPPRESSION", f"diagnostic pragma '#pragma {m.group(1)}'"))
     return out
 
 
@@ -397,8 +403,7 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
 
     for rule, rx, what in _CODE_RULES:
         for m in rx.finditer(code):
-            key = " ".join(m.group().split())
-            add(rule, f"{what}: {key.lstrip()}" if rule != "OBFUSCATION" else f"{what} '##'", m.start() + (len(m.group()) - len(m.group().lstrip())))
+            add(rule, f"{what} '{_norm_key(m.group())}'", m.start() + len(m.group()) - len(m.group().lstrip()))
 
     # dangerous functions: calls, uses as a value, mentions in macro bodies
     for rx in (_DANGER_CALL_RE, _DANGER_VALUE_RE):
@@ -474,10 +479,10 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
     seen: set[tuple[str, str, int]] = set()
     out: list[_Hit] = []
     for h in hits:
-        k = (h.rule, h.key, h.offset if h.offset >= 0 else -h.line)
-        if h.offset >= 0 and k in seen:
-            continue
-        seen.add(k)
+        if h.offset >= 0:
+            if (h.rule, h.key, h.offset) in seen:
+                continue
+            seen.add((h.rule, h.key, h.offset))
         out.append(h)
     return out
 
@@ -500,6 +505,8 @@ _CONST_RE = re.compile(
     r"(?:0[xX][0-9a-fA-F]+|0[bB][01]+|\d+\.?\d*(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?)[uUlLfF]*"
     r"|'[^'\n]*'|(?:L|u8|u|U)?\"[^\"\n]*\"|NULL|nullptr|true|false|[A-Z_][A-Z0-9_]+"
 )
+_VOID_CAST_STMT_RE = re.compile(r"^\s*(?:;|\(\s*void\s*\)\s*\(?\s*[A-Za-z_]\w*\s*\)?\s*;)")
+_DEF_ATTR_RE = re.compile(r"__attribute__\s*\(|__declspec\s*\(")
 _NORETURN_RE = re.compile(
     r"(?:abort|exit|_Exit|quick_exit|__builtin_trap)\s*\([^;]*\)\s*;(?:\s*return\b[^;]*;)?"
 )
@@ -530,8 +537,9 @@ def is_trivial_body(body: str) -> bool:
     semicolons are ignored."""
     s = body
     while True:
-        s2 = re.sub(r"^\s*(?:;|\(\s*void\s*\)\s*\(?\s*[A-Za-z_]\w*\s*\)?\s*;)", "", s)
-        s2 = re.sub(r"^\s*\{(.*)\}\s*$", r"\1", s2, flags=re.S)
+        s2 = _VOID_CAST_STMT_RE.sub("", s, count=1).strip()
+        if s2.startswith("{") and _match_close(s2, 0, "{", "}") == len(s2) - 1:
+            s2 = s2[1:-1]
         if s2 == s:
             break
         s = s2
@@ -575,7 +583,7 @@ def find_function_definitions(src: CSource, name: str, file: str = "") -> list[F
         while True:
             while j < len(code) and code[j].isspace():
                 j += 1
-            am = re.compile(r"__attribute__\s*\(|__declspec\s*\(").match(code, j)
+            am = _DEF_ATTR_RE.match(code, j)
             if am:
                 c2 = _match_close(code, am.end() - 1)
                 if c2 is None:
@@ -802,7 +810,13 @@ def check_candidate(
             continue
         content_paths.append(p)
     limit = spec.repair.max_changed_lines if max_changed_lines is None else max_changed_lines
-    if not oversized and not any(len(new.get(p) or "") > MAX_ANALYZED_CHARS for p in changed):
+    huge = [p for p in changed if max(len(old.get(p) or ""), len(new.get(p) or "")) > MAX_ANALYZED_CHARS]
+    for p in huge:
+        if p not in oversized and p in new:
+            sv = _size_violation(p, new[p])
+            if sv is not None:
+                violations.append(sv)
+    if not huge:  # diffing megabytes of text is pointless: the candidate is rejected anyway
         added, removed = diff_stats(old, new)
         if added + removed > limit:
             violations.append(

@@ -1225,7 +1225,6 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
                         kind="timeout",
                     )
             else:
-                only_leaks = bool(findings) and all(f.tool == "lsan" for f in findings)
                 if not findings and proc.exit_code != case.expect_exit:
                     got = f"exit code {proc.exit_code}" if proc.exit_code is not None else "no exit code"
                     extra = ""
@@ -1242,7 +1241,10 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
                         "The trusted test driver signals a failed check through its exit status; see the "
                         "case's stderr for the failing check.",
                     )
-                if case.expect_stdout is not None and (not findings or only_leaks):
+                # With a sanitizer finding the program died in the sanitizer
+                # runtime (even LeakSanitizer exits via _exit() from its atexit
+                # hook, so buffered stdout is lost): its output is no evidence.
+                if case.expect_stdout is not None and not findings:
                     matches = proc.stdout == case.expect_stdout
                     entry["stdout_matches"] = matches
                     if not matches:

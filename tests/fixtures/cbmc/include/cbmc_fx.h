@@ -27,4 +27,17 @@ size_t count_zeros(const int *a, size_t n);
 /* (a * b) / b, for b != 0. */
 uint64_t mul_div(uint64_t a, uint64_t b);
 
+/* A struct-typed input, used to check how counterexample values are rendered. */
+struct point {
+    int x;
+    int y;
+    char tag[3];
+};
+
+/* p->x / (k - helper_without_body(k)) */
+int point_ratio(const struct point *p, int k);
+
+/* Deliberately never defined: CBMC treats calls as returning arbitrary values. */
+int helper_without_body(int k);
+
 #endif

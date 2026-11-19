@@ -1,0 +1,70 @@
+# Lean C specification: overflow-checked signed addition (Test 4: signed overflow detected too late).
+leanc_spec: 1
+spec_id: int-overflow
+version: 1
+title: Overflow-checked signed addition
+requirement: |
+  實作一個檢查溢位的整數加法函式 checked_add(a, b, out)：若 a + b 可以用 int 表示，
+  把結果寫入 *out 並回傳成功；若會溢位，必須回傳錯誤且不得修改 *out；out 為 NULL 時回傳錯誤。
+  溢位必須在相加「之前」判斷，因為有號整數溢位在 C 中是未定義行為。
+  (Implement an overflow-checked integer addition checked_add(a, b, out): if a + b is representable
+  as an int, write it to *out and return success; if it would overflow, return an error and leave
+  *out unchanged; a NULL out returns an error. Overflow must be detected BEFORE adding, because
+  signed integer overflow is undefined behaviour in C.)
+language: {name: c, standard: c17}
+target:
+  function: checked_add
+  signature: "int checked_add(int a, int b, int *out)"
+  params:
+    - {name: a, type: int, description: "first operand (any int)"}
+    - {name: b, type: int, description: "second operand (any int)"}
+    - {name: out, type: "int *", description: "where the sum is written, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "CHECKED_ADD_OK (0)", meaning: "success, *out == a + b (mathematically exact)"}
+      - {value: "CHECKED_ADD_ERR_NULL (-1)", meaning: "out is NULL; nothing computed or written"}
+      - {value: "CHECKED_ADD_ERR_OVERFLOW (-2)", meaning: "a + b > INT_MAX or a + b < INT_MIN; *out untouched"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "none: a and b may be any int, out may be NULL"}
+  postconditions:
+    - {id: POST1, text: "out != NULL and INT_MIN <= a + b <= INT_MAX (computed exactly) => returns 0 and *out == a + b"}
+    - {id: POST2, text: "out != NULL and a + b outside [INT_MIN, INT_MAX] => returns -2 and *out is unchanged"}
+    - {id: POST3, text: "out == NULL => returns -1 (checked first)"}
+    - {id: POST4, text: "the return value is always one of 0, -1, -2"}
+  safety:
+    - {id: SAFE1, text: "no signed integer overflow, not even transiently before a check", checks: [signed-overflow]}
+    - {id: SAFE2, text: "no NULL dereference and no other undefined behaviour", checks: [pointer, div-by-zero, pointer-overflow, undefined-shift, conversion]}
+  frame:
+    - "*out is written only on success"
+sources:
+  editable: [src/checked_add.c]
+  headers: [include/checked_add.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_checked_add.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: boundaries, args: [boundaries]}
+    - {name: positive_overflow, args: [positive_overflow]}
+    - {name: negative_overflow, args: [negative_overflow]}
+    - {name: null_out, args: [null_out]}
+verification:
+  harness: harness/checked_add_harness.c
+  checks: [conversion]
+  unwind: 1
+  input_bounds:
+    - {name: a, note: "unconstrained (full int range)"}
+    - {name: b, note: "unconstrained (full int range)"}
+    - {name: out, note: "NULL or a valid int"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

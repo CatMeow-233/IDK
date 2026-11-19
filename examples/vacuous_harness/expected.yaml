@@ -1,0 +1,13 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: UNKNOWN              # plain CBMC: VERIFICATION SUCCESSFUL, but every LEANC_REACH probe is unreachable => vacuous
+run: UNKNOWN                 # UNKNOWN is not repairable: no repair rounds (the harness, not the code, must be fixed by a human)
+detected_by: []              # the shipped off-by-one is NOT detected under the vacuous harness -- that is the point
+variants:
+  spec_fixed_harness.yaml: {verify: COUNTEREXAMPLE_FOUND}   # same code, corrected harness: idx == len is found
+notes: >
+  The shipped array_read accepts idx == len (reads one past the end). The approved harness contains two
+  assumptions that contradict each other (len >= 8 and len <= 4), so no execution reaches the call and
+  plain `cbmc` prints "VERIFICATION SUCCESSFUL". Lean C re-runs CBMC with -DLEANC_VACUITY_CHECK: the
+  probes after_call / null_input / out_of_range / in_range all "hold" (= unreachable), so the result is
+  UNKNOWN (vacuous), never VERIFIED_BOUNDED. With the corrected harness (spec_fixed_harness.yaml) CBMC
+  finds the counterexample len=4, idx=4 (pointer outside object bounds in arr[idx], src/array_read.c:11).
