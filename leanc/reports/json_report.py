@@ -34,7 +34,7 @@ from pydantic import BaseModel, ValidationError
 
 from leanc.core.errors import LeanCError
 from leanc.core.models import Diagnostic, FailureReport, RunRecord, StageResult, VerificationResult
-from leanc.core.redact import redact
+from leanc.core.redact import REDACTED, redact
 from leanc.core.status import exit_code, is_success
 
 log = logging.getLogger("leanc.reports")
@@ -123,24 +123,48 @@ def redact_data(obj: Any) -> Any:
     return obj
 
 
+def _redact_numbers(obj: Any) -> Any:
+    """Replace numbers whose JSON text is (part of) a secret by the redaction
+    marker.  Only reached when a secret value happens to be numeric."""
+    if isinstance(obj, dict):
+        return {k: _redact_numbers(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_numbers(v) for v in obj]
+    if isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        text = json.dumps(obj)
+        return REDACTED if redact(text) != text else obj
+    return obj
+
+
+def _serialise(data: Any) -> str:
+    return json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+
+
+def _valid_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
 def dumps(model: BaseModel | dict | Any) -> str:
     """Serialise ``model`` as pretty, redacted UTF-8 JSON text (with a trailing
     newline).  Field order is the model's declaration order, so the output is
     deterministic for equal inputs."""
     data = redact_data(_jsonable(model))
-    text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    text = _serialise(data)
     red = redact(text)
-    if red != text:
-        # A secret matched outside a JSON string (e.g. a numeric token).  Only
-        # accept the text-level redaction if it keeps the document valid JSON;
-        # every string has already been redacted above, so the fallback still
-        # contains no string-borne secret.
-        try:
-            json.loads(red)
-        except ValueError:
-            log.warning("text-level redaction would corrupt the JSON document; keeping string-level redaction")
-        else:
-            text = red
+    if red == text or _valid_json(red):
+        return red
+    # A secret matched outside any JSON string (a numeric secret value).  Redact
+    # the offending numbers as data so the document stays valid JSON.
+    data = _redact_numbers(data)
+    text = _serialise(data)
+    red = redact(text)
+    if red == text or _valid_json(red):
+        return red
+    log.warning("text-level redaction would corrupt the JSON document; keeping per-value redaction")
     return text
 
 
