@@ -195,6 +195,34 @@ def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
     checks.append(
         Check("llm-provider", configured, False, detail, "" if configured else "set LEANC_API_KEY and LEANC_MODEL (optional)")
     )
+    # ---------------------------------------------------- V2 (optional) tools
+    from leanc.backends.cxx import find_clangxx
+    from leanc.backends.lean import INSTALL_HINT as LEAN_HINT
+    from leanc.backends.lean import find_lean
+    from leanc.backends.wp import INSTALL_HINT as WP_HINT
+    from leanc.backends.wp import find_framac
+
+    cxx = find_clangxx(clang)
+    checks.append(
+        Check("clang++ (C++20 specs)", bool(cxx), False, f"{cxx}: {tool_version(cxx)}" if cxx else "not found",
+              "" if cxx else "install clang++ (same version as clang) or set LEANC_CLANGXX")
+    )
+    fc = find_framac()
+    if fc:
+        detail = f"{fc.frama_c}: {tool_version(fc.frama_c)}" + (f"; why3 {fc.why3}" if fc.why3 else "; why3 missing")
+        checks.append(Check("frama-c-wp (wp gate)", bool(fc.why3), False, detail, "" if fc.why3 else WP_HINT))
+    else:
+        checks.append(Check("frama-c-wp (wp gate)", False, False, "not found", WP_HINT))
+    lt = find_lean()
+    if lt:
+        ok = bool(lt.leanchecker)
+        checks.append(
+            Check("lean (lean gate)", ok, False,
+                  f"{lt.lean}: {lt.version_line or lt.version}" + ("; leanchecker ok" if ok else "; leanchecker MISSING"),
+                  "" if ok else "the lean gate requires leanchecker (ships with Lean 4 release toolchains)")
+        )
+    else:
+        checks.append(Check("lean (lean gate)", False, False, "not found", LEAN_HINT))
     kp = leanc_home() / "approval.key"
     checks.append(
         Check(
