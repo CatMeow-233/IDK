@@ -1,0 +1,7 @@
+{
+  "root_cause": "Off-by-one bound check: the guard `index <= count` accepts index == count, so values[count] (one element past the end of the array) is read. CBMC reports a pointer-outside-object-bounds dereference in values[index] with count == index (e.g. count = 6, index = 6), and ASan reports a heap-buffer-overflow in the index_equals_count test.",
+  "rationale": "Valid indices are 0 .. count-1, so the guard must be the strict comparison `index < count`. Every other index (including index == count and SIZE_MAX) falls through to ARRAY_LOOKUP_ERR_RANGE without touching memory or *out. The NULL checks are unchanged.",
+  "files": {
+    "src/array_lookup.c": "#include \"array_lookup.h\"\n\nint array_lookup(const int *values, size_t count, size_t index, int *out)\n{\n    if (values == NULL || out == NULL) {\n        return ARRAY_LOOKUP_ERR_NULL;\n    }\n    if (index < count) {\n        *out = values[index];\n        return ARRAY_LOOKUP_OK;\n    }\n    return ARRAY_LOOKUP_ERR_RANGE;\n}\n"
+  }
+}

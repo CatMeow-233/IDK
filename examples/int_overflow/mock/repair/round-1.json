@@ -1,0 +1,7 @@
+{
+  "root_cause": "checked_add computes `sum = a + b` first and only then tests the result for wrap-around. Signed overflow is undefined behaviour in C, so the overflow has already happened (and an optimising compiler may delete the after-the-fact test). CBMC reports 'arithmetic overflow on signed + in a + b' (checked_add.overflow.1, src/checked_add.c line 10), e.g. with a = INT_MAX and b > 0, and UBSan aborts the positive_overflow / negative_overflow tests with 'signed integer overflow: 2147483647 + 1 cannot be represented in type int'.",
+  "rationale": "Test the operands, not the result: for b > 0 the sum overflows exactly when a > INT_MAX - b, and for b < 0 exactly when a < INT_MIN - b. Both subtractions are always representable (INT_MAX - b with b > 0, INT_MIN - b with b < 0), so no intermediate overflow is possible, and a + b is only evaluated once it is known to fit. *out is written only on success; the NULL check keeps precedence.",
+  "files": {
+    "src/checked_add.c": "#include \"checked_add.h\"\n\nint checked_add(int a, int b, int *out)\n{\n    if (out == NULL) {\n        return CHECKED_ADD_ERR_NULL;\n    }\n    /* Decide BEFORE adding: a + b > INT_MAX  <=>  a > INT_MAX - b (b > 0),\n     * a + b < INT_MIN  <=>  a < INT_MIN - b (b < 0); neither subtraction can overflow. */\n    if ((b > 0 && a > INT_MAX - b) || (b < 0 && a < INT_MIN - b)) {\n        return CHECKED_ADD_ERR_OVERFLOW;\n    }\n    *out = a + b;\n    return CHECKED_ADD_OK;\n}\n"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "root_cause": "After round 1, CBMC still reports 'arithmetic overflow on signed division in num / den' (safe_ratio.overflow.1, src/safe_ratio.c line 8) with num = INT_MIN (-2147483648) and den = -1: the mathematical quotient 2147483648 is not representable as an int, which is undefined behaviour in C. UBSan confirms it in the int_min_by_minus_one test ('division of -2147483648 by -1 cannot be represented in type int').",
+  "rationale": "INT_MIN / -1 is the only int division that overflows, so check exactly that pair before dividing and return SAFE_RATIO_ERR_OVERFLOW without writing *out (POST3). The checks are written out in the order the contract specifies: out == NULL, then den == 0, then INT_MIN / -1; every remaining pair has a representable quotient.",
+  "files": {
+    "src/safe_ratio.c": "#include \"safe_ratio.h\"\n\nint safe_ratio(int num, int den, int *out)\n{\n    if (out == NULL) {\n        return SAFE_RATIO_ERR_NULL;\n    }\n    if (den == 0) {\n        return SAFE_RATIO_ERR_DIV_ZERO;\n    }\n    if (num == INT_MIN && den == -1) {\n        return SAFE_RATIO_ERR_OVERFLOW;\n    }\n    *out = num / den;\n    return SAFE_RATIO_OK;\n}\n"
+  }
+}

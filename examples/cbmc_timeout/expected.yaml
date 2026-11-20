@@ -1,0 +1,11 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: TIMEOUT              # the code is correct and all other gates pass, but CBMC cannot finish within 3 s
+run: TIMEOUT                 # TIMEOUT is not repairable: no repair rounds
+detected_by: []              # no defect; the formal gate is inconclusive
+notes: >
+  mul_u64_checked is correct: it compiles cleanly, has no analyzer findings and passes the trusted
+  tests under ASan/UBSan/LSan. The harness compares it with the exact 128-bit product for two
+  unconstrained uint64_t inputs; deciding that the 64-bit division UINT64_MAX / a agrees with a 128-bit
+  multiplication is a very hard SAT problem: raw `timeout 25 cbmc ...` (same flags as Lean C) is killed
+  after 25 s without a verdict. With verification.timeout_s: 3 Lean C reports TIMEOUT -- passing tests
+  are not promoted to a verification result, and the repair agent is not invoked.

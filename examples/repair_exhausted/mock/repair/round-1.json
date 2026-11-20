@@ -1,0 +1,7 @@
+{
+  "root_cause": "The intermediate variable name 'sum' is ambiguous and the computation is hard to follow.",
+  "rationale": "Rename the accumulator to 'total' and document the computation (cosmetic change only; the arithmetic is unchanged).",
+  "files": {
+    "src/midpoint.c": "#include \"midpoint.h\"\n\nint midpoint(int a, int b)\n{\n    /* Average of the two values. */\n    int total = a + b;\n    return total / 2;\n}\n"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "root_cause": "The s == NULL branch only records the error code (rc = SENSOR_ERR_NULL) and then falls through to `if (!s->enabled)`, so a NULL sensor is dereferenced on exactly the path that detected it. The Clang Static Analyzer reports core.NullDereference ('Access to field enabled results in a dereference of a null pointer (loaded from variable s)', src/sensor.c line 14) and CBMC reports 'dereference failure: pointer NULL in s->enabled' with s == NULL and out != NULL.",
+  "rationale": "Return SENSOR_ERR_NULL immediately once s is known to be NULL (after *out has been set to the defined value 0, as the contract requires). With the early return the local rc variable is no longer needed, so every exit returns its status code directly; the out == NULL and disabled paths are unchanged.",
+  "files": {
+    "src/sensor.c": "#include \"sensor.h\"\n\nint sensor_read(const struct sensor *s, int *out)\n{\n    if (out == NULL) {\n        return SENSOR_ERR_NULL;\n    }\n    *out = 0;\n    if (s == NULL) {\n        return SENSOR_ERR_NULL;\n    }\n    if (!s->enabled) {\n        return SENSOR_ERR_DISABLED;\n    }\n    *out = s->value;\n    return SENSOR_OK;\n}\n"
+  }
+}

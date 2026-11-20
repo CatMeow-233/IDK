@@ -1,0 +1,8 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: VERIFIED_BOUNDED     # shipped src/ is correct
+run: VERIFIED_BOUNDED        # mock "generation" reproduces the correct code; no repair needed
+detected_by: []
+notes: >
+  Test 1 (correct program): compiles cleanly, no analyzer findings, trusted tests pass under
+  ASan/UBSan/LSan, CBMC finds no violation for len <= 8 and any idx (all loops unwound, all
+  LEANC_REACH probes reachable) => VERIFIED_BOUNDED (never PROVED).

@@ -1,0 +1,83 @@
+# Lean C specification: join two fields with a separator (memory leak on an error path).
+leanc_spec: 1
+spec_id: runtime-memory
+version: 1
+title: Join two fields with a separator into a heap string
+requirement: |
+  實作一個函式，把兩個欄位以分隔字元串接成新配置的字串（呼叫者負責釋放）。若欄位含有分隔字元或
+  NUL 字元、參數為 NULL 或欄位過長，必須回傳錯誤、輸出清空，且不得遺留任何已配置的記憶體。
+  (Implement a function that joins two fields with a separator character into a newly
+  allocated string owned by the caller. If a field contains the separator or a NUL byte, an
+  argument is NULL or a field is too long, it must return an error, clear the result and leave
+  no memory allocated.)
+language: {name: c, standard: c17}
+target:
+  function: join_with_sep
+  signature: "int join_with_sep(struct joined *res, const char *a, size_t a_len, const char *b, size_t b_len, char sep)"
+  params:
+    - {name: res, type: "struct joined *", description: "where the result is stored, or NULL"}
+    - {name: a, type: "const char *", description: "first field: a_len readable bytes (not NUL-terminated), or NULL"}
+    - {name: a_len, type: size_t, description: "length of the first field"}
+    - {name: b, type: "const char *", description: "second field: b_len readable bytes, or NULL"}
+    - {name: b_len, type: size_t, description: "length of the second field"}
+    - {name: sep, type: char, description: "separator character (must not be '\\0')"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "JOIN_OK (0)", meaning: "res->data = a sep b NUL-terminated (caller frees), res->len = a_len + 1 + b_len"}
+      - {value: "JOIN_ERR_NULL (-1)", meaning: "res, a or b is NULL, or sep == '\\0'"}
+      - {value: "JOIN_ERR_TOO_LONG (-2)", meaning: "a_len or b_len > JOIN_MAX_FIELD (4096); that field is not read"}
+      - {value: "JOIN_ERR_NOMEM (-3)", meaning: "malloc failed"}
+      - {value: "JOIN_ERR_FIELD (-4)", meaning: "a field contains sep or '\\0'"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "if a != NULL and a_len <= JOIN_MAX_FIELD then a points to a_len readable bytes (same for b)", c_expr: "a_len <= MAX_FIELD || a_len > JOIN_MAX_FIELD"}
+  postconditions:
+    - {id: POST1, text: "valid fields without sep/NUL => JOIN_OK, res->data == a ++ sep ++ b ++ '\\0', res->len == a_len + 1 + b_len"}
+    - {id: POST2, text: "res == NULL, a == NULL, b == NULL or sep == '\\0' => JOIN_ERR_NULL"}
+    - {id: POST3, text: "a field longer than JOIN_MAX_FIELD => JOIN_ERR_TOO_LONG"}
+    - {id: POST4, text: "a field containing sep or '\\0' => JOIN_ERR_FIELD"}
+    - {id: POST5, text: "any error with res != NULL => res->data == NULL and res->len == 0"}
+    - {id: POST6, text: "any error => no memory allocated by the call remains allocated (no leak)"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds read of a/b or write of res->data", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE3, text: "no use-after-free / double free", checks: [pointer]}
+    - {id: SAFE4, text: "no memory leak on any path (checked at runtime by LeakSanitizer; CBMC memory-leak check not enabled)", checks: []}
+  frame:
+    - "a[0..a_len) and b[0..b_len) are never modified"
+sources:
+  editable: [src/join.c]
+  headers: [include/join.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_join.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: empty_fields, args: [empty_fields]}
+    - {name: null_args, args: [null_args]}
+    - {name: too_long, args: [too_long]}
+    - {name: separator_in_field, args: [separator_in_field]}
+    - {name: nul_in_field, args: [nul_in_field]}
+  sanitizers: [address, undefined, leak]
+verification:
+  harness: harness/join_harness.c
+  # memory-leak is deliberately NOT requested: leak freedom (POST6/SAFE4) is
+  # established by the sanitizer gate, not by the bounded model check.
+  checks: [unsigned-overflow]
+  unwind: 4
+  input_bounds:
+    - {name: a_len, note: "0..3 (symbolic contents) or > JOIN_MAX_FIELD (never read)"}
+    - {name: b_len, note: "0..3 (symbolic contents) or > JOIN_MAX_FIELD (never read)"}
+    - {name: sep, note: "unconstrained char"}
+  malloc_may_fail: false
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

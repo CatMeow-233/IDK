@@ -1,0 +1,12 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: COUNTEREXAMPLE_FOUND   # shipped src/ divides without checking den == 0 or INT_MIN / -1
+run: VERIFIED_BOUNDED          # two repair rounds: round 1 fixes den == 0 only (improvement), round 2 fixes INT_MIN / -1
+detected_by: [cbmc, ubsan]
+notes: >
+  Test 3 (division by zero, then a NEW counterexample): on the shipped code CBMC reports both
+  safe_ratio.division-by-zero (den = 0) and safe_ratio.overflow "arithmetic overflow on signed division"
+  (num = INT_MIN, den = -1) on the same division (src/safe_ratio.c:8); UBSan aborts the zero_den and
+  int_min_by_minus_one tests. Mock round 1 adds only the den == 0 check: the division-by-zero failures
+  disappear while the overflow failure (same property, same line) remains, so the round is a strict
+  improvement and is accepted. Mock round 2 also rejects INT_MIN / -1 and the result is VERIFIED_BOUNDED.
+  No Clang Static Analyzer finding (den is not known to be 0 on any path).

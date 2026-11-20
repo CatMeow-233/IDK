@@ -1,0 +1,11 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: VERIFIED_BOUNDED     # correct two-file implementation
+run: VERIFIED_BOUNDED        # mock generation reproduces both files; no repair needed
+detected_by: []
+notes: >
+  Multi-file project: two editable sources (src/ring.c, src/ring_stats.c) sharing one protected header.
+  Both files compile cleanly and have no analyzer findings; the trusted tests (incl. many wraparounds on
+  exactly-sized heap storage) pass under ASan/UBSan/LSan; CBMC explores every sequence of 5
+  nondeterministic push/pop operations on capacities 1..3 (plus rejected capacities 0 and
+  > RING_MAX_CAPACITY), checking the representation invariant, FIFO order and all observers against a
+  model, with all 8 probes reachable (incl. "wrapped" and "push_full") => VERIFIED_BOUNDED.

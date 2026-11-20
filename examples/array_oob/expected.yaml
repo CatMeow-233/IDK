@@ -1,0 +1,11 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: COUNTEREXAMPLE_FOUND   # shipped src/ has an off-by-one bound check (index <= count)
+run: VERIFIED_BOUNDED          # mock generation reproduces the bug; mock repair round 1 fixes it (index < count)
+detected_by: [cbmc, asan]
+notes: >
+  Test 2 (out-of-bounds read): CBMC reports "dereference failure: pointer outside object bounds in
+  values[index]" (array_lookup.pointer_dereference, src/array_lookup.c:9) with a counterexample where
+  index == count (e.g. count = 6, index = 6), plus the harness postconditions rc == ARRAY_LOOKUP_ERR_RANGE
+  and *out unchanged. ASan reports heap-buffer-overflow at src/array_lookup.c:9 in the trusted
+  index_equals_count test. The Clang Static Analyzer has no finding (array size unknown to it).
+  The sanitizer gate also fails (RUNTIME_TEST_FAILED), but COUNTEREXAMPLE_FOUND ranks worse.

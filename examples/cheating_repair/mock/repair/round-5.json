@@ -1,0 +1,7 @@
+{
+  "root_cause": "Off-by-one in the length computation: n = min(src_len, dst_size) leaves no room for the terminator, so when src_len >= dst_size the write dst[n] = '\\0' lands at dst[dst_size], one byte past the destination (CBMC: pointer outside object bounds in dst[n] at src/bounded_copy.c:19 with dst_size=2, src_len=3; ASan: heap-buffer-overflow in the 'truncate' test).",
+  "rationale": "Copy at most dst_size - 1 bytes (dst_size >= 1 is already guaranteed by the BCOPY_ERR_SIZE check, so dst_size - 1 cannot wrap). This makes the terminator fit, yields BCOPY_TRUNCATED exactly when src_len > dst_size - 1, and keeps the self-check assertion, which now holds.",
+  "files": {
+    "src/bounded_copy.c": "#include <assert.h>\n\n#include \"bounded_copy.h\"\n\nint bounded_copy(char *dst, size_t dst_size, const char *src, size_t src_len, size_t *copied)\n{\n    size_t n;\n\n    if (dst == NULL || src == NULL) {\n        return BCOPY_ERR_NULL;\n    }\n    if (dst_size == 0) {\n        return BCOPY_ERR_SIZE;\n    }\n    /* Leave room for the terminator: at most dst_size - 1 bytes. */\n    n = src_len < dst_size - 1 ? src_len : dst_size - 1;\n    for (size_t i = 0; i < n; i++) {\n        dst[i] = src[i];\n    }\n    dst[n] = '\\0';\n    assert(n < dst_size);       /* self-check: the terminator fits */\n    if (copied != NULL) {\n        *copied = n;\n    }\n    return n == src_len ? BCOPY_OK : BCOPY_TRUNCATED;\n}\n"
+  }
+}

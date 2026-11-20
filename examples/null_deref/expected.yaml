@@ -1,0 +1,10 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: COUNTEREXAMPLE_FOUND   # shipped src/ checks s == NULL but still dereferences s on that path
+run: VERIFIED_BOUNDED          # mock repair round 1 returns immediately when s == NULL
+detected_by: [clang-static-analyzer, cbmc, ubsan]
+notes: >
+  Test 5 (NULL dereference): the Clang Static Analyzer reports core.NullDereference "Access to field
+  'enabled' results in a dereference of a null pointer (loaded from variable 's')" (src/sensor.c:14,
+  STATIC_ANALYSIS_WARNING, policy=block); CBMC reports "dereference failure: pointer NULL in s->enabled"
+  (and s->value) with s == NULL, out != NULL; UBSan aborts the null_sensor test with "member access within
+  null pointer of type 'const struct sensor'". Overall status is the worst gate: COUNTEREXAMPLE_FOUND.

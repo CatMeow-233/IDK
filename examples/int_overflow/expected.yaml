@@ -1,0 +1,10 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: COUNTEREXAMPLE_FOUND   # shipped src/ computes a + b first and tests the wrapped result afterwards
+run: VERIFIED_BOUNDED          # mock repair round 1 checks the operands before adding
+detected_by: [cbmc, ubsan]
+notes: >
+  Test 4 (signed overflow): CBMC's mandatory --signed-overflow-check reports "arithmetic overflow on
+  signed + in a + b" (checked_add.overflow, src/checked_add.c:10). All harness postconditions hold under
+  CBMC's wrap-around model, so ONLY the UB check catches the defect: the after-the-fact test is too late.
+  UBSan aborts the positive_overflow / negative_overflow tests ("signed integer overflow: 2147483647 + 1").
+  No Clang Static Analyzer finding.

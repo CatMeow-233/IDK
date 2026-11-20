@@ -1,0 +1,69 @@
+# Lean C specification: array sum with an INSUFFICIENT unwind bound (Test 6).
+leanc_spec: 1
+spec_id: loop-unwind
+version: 1
+title: Integer array sum (unwind bound too small)
+requirement: |
+  實作一個函式，計算整數陣列中所有元素的總和，並以 long long 回傳，不得發生溢位；
+  陣列為 NULL 或長度為 0 時回傳 0。
+  (Implement a function that returns the sum of all elements of an int array as a
+  long long without overflow; return 0 for a NULL array or a length of 0.)
+language: {name: c, standard: c17}
+target:
+  function: sum_array
+  signature: "long long sum_array(const int *a, size_t n)"
+  params:
+    - {name: a, type: "const int *", description: "array of n readable ints, or NULL"}
+    - {name: n, type: size_t, description: "number of elements (<= SUM_ARRAY_MAX_N)"}
+  returns:
+    type: long long
+    description: exact sum of a[0..n)
+    values:
+      - {value: "a[0] + ... + a[n-1]", meaning: "a != NULL and n > 0"}
+      - {value: "0", meaning: "a == NULL (nothing dereferenced) or n == 0"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "if a != NULL then a points to at least n readable ints", c_expr: "n <= MAX_LEN"}
+    - {id: PRE2, text: "n <= SUM_ARRAY_MAX_N (2^20), so the long long accumulator cannot overflow"}
+  postconditions:
+    - {id: POST1, text: "a != NULL => result == a[0] + ... + a[n-1] computed exactly (no int overflow)"}
+    - {id: POST2, text: "a == NULL or n == 0 => result == 0"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds read", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE3, text: "no signed overflow in the accumulator", checks: [signed-overflow]}
+  frame:
+    - "a[0..n) is never modified"
+sources:
+  editable: [src/sum_array.c]
+  headers: [include/sum_array.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_sum_array.c
+  cases:
+    - {name: normal, args: [normal]}
+    - {name: long, args: [long]}
+    - {name: empty, args: [empty]}
+    - {name: "null", args: ["null"]}
+verification:
+  harness: harness/sum_array_harness.c
+  checks: [unsigned-overflow, conversion]
+  # DELIBERATELY TOO SMALL: the harness explores n <= 16, so the loop in
+  # sum_array needs 17 unwindings.  With unwind 5 the unwinding assertion
+  # sum_array.unwind.0 fails and no verdict is possible (UNKNOWN).
+  # The harness's own loops (main.0-2) get their exact bound via unwindset.
+  # See spec_full_unwind.yaml for the corrected (separately approved) spec.
+  unwind: 5
+  unwindset: {main.0: 17, main.1: 17, main.2: 17}
+  input_bounds:
+    - {name: n, min: "0", max: "16", note: "array lengths up to MAX_LEN=16 are explored"}
+    - {name: "a[k]", note: "unconstrained int values"}
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc]
+repair:
+  max_rounds: 5

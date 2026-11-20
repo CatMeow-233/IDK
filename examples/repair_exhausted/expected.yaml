@@ -1,0 +1,16 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: COUNTEREXAMPLE_FOUND # a + b overflows (CBMC) -- also caught by UBSan in the 'extremes' test
+run: REPAIR_EXHAUSTED        # 5 rounds, none verifies; the workspace is left unchanged
+detected_by: [cbmc, ubsan]
+rejected_rounds: []          # no round is rejected by the POLICY; they fail for other reasons
+notes: >
+  Shipped midpoint computes (a + b) / 2 in int: signed overflow for large operands of the same sign
+  (CBMC midpoint.overflow.1 at src/midpoint.c:5 with a=-1103143402, b=-1103118345, plus the harness
+  postconditions; UBSan: 2147483647 + 2147483647 in test 'extremes'). Mock rounds:
+  1 = cosmetic rename (sum -> total), still overflows => verified, not an improvement, reverted;
+  2 = byte-for-byte identical to round 1 => cycle detected, not re-verified;
+  3 = a / 2 + b / 2 (no overflow, but wrong rounding: midpoint(1, 1) == 0; POST1 and POST2 fail)
+      => reverted;
+  4, 5 = no fixture => "no proposal" rounds.
+  After max_rounds 5 the result is REPAIR_EXHAUSTED; a genuine fix such as
+  (int)(((long long)a + b) / 2) exists and verifies (the harness is satisfiable).
