@@ -368,6 +368,8 @@ def parse_console(text: str) -> ConsoleSummary:
 
 
 _MISSING_SPEC_RE = re.compile(r"Neither code nor specification for function (\w+)")
+# "found two contracts (old location: include/x.h:22-46). Merging them"
+_CONTRACT_MERGE_RE = re.compile(r"[^\n]*\n?[^\n]*found two contracts[^\n]*", re.I)
 _GENERATED_CLAUSES_RE = re.compile(r"Neither code nor explicit [\w ,]+? for function (\w+)")
 _MEM_HYP_RE = re.compile(r"Memory model hypotheses for function '(\w+)':\s*(.*)$")
 
@@ -701,6 +703,18 @@ def run_wp(ctx: BackendContext) -> StageResult:
     if proc.output_truncated:
         return result(Outcome.ERROR, f"Frama-C output exceeded {limits.max_output_bytes} bytes and was truncated")
     con = parse_console(console_text)
+    merged = _CONTRACT_MERGE_RE.search(console_text)
+    if merged:
+        # Frama-C attached a second contract to a function and MERGED it with the
+        # approved one: editable code changed the trusted contract (e.g. via a
+        # macro-hidden re-declaration of the target).  Never a verdict.
+        details["contract_merge"] = merged.group(0)[:300]
+        return result(
+            Outcome.ERROR,
+            "Frama-C merged a second ACSL contract into an approved one ("
+            + merged.group(0).strip()[:200]
+            + "): editable code must not add contracts to the target or to header functions; no verdict",
+        )
     details["console"] = {"proved": con.proved, "total": con.total, "categories": con.categories,
                           "smoke": list(con.smoke) if con.smoke else None}
     details["warnings"] = con.warnings[:100]

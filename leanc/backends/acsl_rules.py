@@ -318,6 +318,9 @@ def _last_ident(tokens: list[str]) -> str | None:
 
 
 # =========================================================================== rules
+_DEFINE_BODY_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(.*)$", re.M)
+
+
 def acsl_violations(spec: Spec, src: CSource, headers: dict[str, str] | None = None) -> list[tuple[str, str, int]]:
     """``(rule, message, offset)`` triples for one editable C file (offsets
     into ``src.text``, as :func:`leanc.backends.integrity.source_violations`
@@ -343,6 +346,14 @@ def acsl_violations(spec: Spec, src: CSource, headers: dict[str, str] | None = N
             what = "an ACSL type name" if name in ACSL_TYPE_WORDS else "an identifier of the approved ACSL contract"
             found.append(("ACSL_MACRO", (f"#{m.group(1)} {name}: '{name}' is {what}; Frama-C expands macros inside "
                           "annotations, so this could change the meaning of the approved contract"), m.start()))
+    # A macro whose body names the target can (re)declare it out of sight of
+    # this lexical analysis; Frama-C then attaches the next annotation to the
+    # TARGET and merges it with the approved contract.  Forbid it outright.
+    for dm in _DEFINE_BODY_RE.finditer(src.code):
+        if re.search(rf"\b{re.escape(target)}\b", dm.group(2)):
+            found.append(("ACSL_CONTRACT", (f"#define {dm.group(1)}: a macro mentioning the target function "
+                          f"'{target}' could re-declare it and attach a contract that Frama-C merges with the "
+                          "approved one"), dm.start()))
     if not annots:
         return found
 
