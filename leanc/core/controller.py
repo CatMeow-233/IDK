@@ -312,6 +312,18 @@ def verify(
             f"{', '.join(spec.tests.sanitizers)} sanitizer(s)"
         )
     limitations = list(STANDARD_LIMITATIONS)
+    if "wp" in spec.gates:
+        limitations.append(
+            "Frama-C/WP results are deductive and not bounded by an unwind limit, but hold only for the approved "
+            "ACSL contract, under WP's Typed memory model, Frama-C's x86_64 machine model, the Frama-C libc "
+            "specifications (assumed, not proved) and the listed provers; partial correctness unless the spec "
+            "requires termination."
+        )
+    if "lean" in spec.gates:
+        limitations.append(
+            "Lean 4 proofs are about the trusted MODEL; the model is linked to the C code only by differential "
+            "test vectors, so they never make the C verdict PROVED."
+        )
     if not ctx.sandbox.active:
         limitations.append(f"no sandbox available: {ctx.sandbox.note}")
     if not approval.approved:

@@ -38,7 +38,34 @@ def _tools(payload: dict) -> set[str]:
 
 @pytest.mark.slow
 @pytest.mark.parametrize("name", CASES)
+def _skip_without_v2_tools(name: str) -> None:
+    """V2 gates need optional tools; skip (never fail) when they are absent."""
+    from leanc.specs.loader import load_spec
+
+    spec = load_spec(EXAMPLES / name / "spec.yaml")
+    if "wp" in spec.gates:
+        from leanc.backends.wp import MIN_FRAMAC_MAJOR, find_framac, framac_version_key
+        from leanc.backends.tools import tool_version
+
+        fc = find_framac()
+        if fc is None or framac_version_key(tool_version(fc.real, "-version"))[0] < MIN_FRAMAC_MAJOR:
+            pytest.skip("Frama-C/WP (>= 27) not available")
+    if "lean" in spec.gates:
+        from leanc.backends.lean import find_lean
+
+        lt = find_lean()
+        if lt is None or not lt.leanchecker:
+            pytest.skip("Lean 4 toolchain with leanchecker not available")
+    if spec.language.is_cpp:
+        from leanc.backends.cxx import find_clangxx
+        from leanc.backends.tools import find_clang
+
+        if find_clangxx(find_clang()) is None:
+            pytest.skip("clang++ not available")
+
+
 def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
+    _skip_without_v2_tools(name)
     exp = yaml.safe_load((EXAMPLES / name / "expected.yaml").read_text())
 
     proj = _fresh(name, tmp_path / "verify" / name)

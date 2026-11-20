@@ -38,6 +38,9 @@ C 原始碼 ──► I. Verification Controller ──────────�
 | H. Repair Agent | `leanc/repair/loop.py`、`patch.py`、`policy.py`、`leanc/llm/*` | 提案 → 補丁 → 政策 → 去重 → 快照驗證 → 改善判定 / 還原 |
 | I. Verification Controller | `leanc/core/controller.py` | 關卡順序、略過規則、狀態彙總 |
 | J. Report Generator | `leanc/reports/json_report.py`、`markdown.py` | JSON 摘要、Markdown 報告（依偵測工具分組） |
+| F'. Deductive Verification（V2） | `leanc/backends/wp.py`、`acsl_rules.py` | Frama-C/WP：受保護標頭中的 ACSL 契約 + `-wp-rte` + smoke test；唯一能產生 `PROVED` 的關卡 |
+| F''. Model Proofs（V2，可選） | `leanc/backends/lean.py`、`leanc/repair/lean_policy.py` | Lean 4 kernel + `leanchecker` 檢查 AI 撰寫的模型證明；差分測試向量連結模型與 C |
+| C++20（V2） | `leanc/backends/cxx.py`、`cpp_integrity.py`、`leanc/llm/cpp_prompts.py` | clang++ 編譯/分析/sanitizer；C++ 完整性規則；沒有形式化關卡 |
 | 基礎設施 | `leanc/core/runner.py`、`sandbox.py`、`workspace.py`、`redact.py` | 無 shell 執行、rlimit、輸出上限、bwrap 沙箱、路徑穿越/符號連結防護、憑證遮蔽 |
 
 ## 資料流與快照

@@ -54,6 +54,16 @@ Lean C 把所有產物分成三類：
 | 反覆提交同一個補丁 | 候選雜湊去重（cycle detection），不重新驗證、計入回合 |
 | 讓結果變成 UNKNOWN/TIMEOUT 以「消除」反例 | `is_improvement` 規則：不確定結果永遠不算改善，會被還原 |
 
+## V2：契約、模型與證明的信任邊界
+
+| 產物 | 信任 | 規則 |
+|---|---|---|
+| ACSL 契約（受保護標頭中目標函式原型前） | 可信（批准、雜湊鎖定） | WP 只對它證明；可編輯檔中目標函式的任何契約都被拒絕（Frama-C 會合併契約，`requires \false` 會讓一切 vacuous） |
+| 可編輯 C 中的 ACSL | 不受信任 | 只允許 loop invariant/assigns/variant、assert/check、static helper 契約、非遞迴有本體的 predicate/logic、lemma；`admit`、`axiom`、`ghost`、`inductive`、巨集展開技巧一律拒絕 |
+| Lean 模型與定理敘述 | 可信（批准、雜湊鎖定） | 由產生的可信 checker 確認證明常數的型別**正好**是批准的敘述 |
+| Lean 證明 | 不受信任（AI 撰寫） | kernel 檢查 + `leanchecker` replay；只接受 `propext`/`Classical.choice`/`Quot.sound`；禁止 `sorry`、`axiom`、`unsafe`、`native_decide`、`set_option`（少數除外）、metaprogramming、新 instance/notation/macro；在沙箱中編譯（Lean 編譯期可以執行程式碼） |
+| C++ 原始碼 | 不受信任 | C++ 完整性規則：禁止例外、RTTI、coroutine、全域建構子、`[[noreturn]]`、取代 `operator new/delete`、寫入 `std`、`#include` 前的 `#define`；外部符號必須由受保護標頭宣告 |
+
 ## AI 生成的規格與 harness
 
 `leanc spec draft` 產出的檔案一律寫在 `drafts/<id>/`，並標記 `provenance.origin: ai-draft` 與

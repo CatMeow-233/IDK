@@ -447,11 +447,15 @@ def _include_problem(spec: Spec, name: str, quoted: bool) -> str | None:
 
 
 def _directive_violations(
-    spec: Spec, rel: str, src: CSource, header_macros: set[str]
+    spec: Spec, rel: str, src: CSource, header_macros: set[str], header_idents: set[str] | None = None
 ) -> list[tuple[str, str, int]]:
     code, noc = src.code, src.nocomment
     out: list[tuple[str, str, int]] = []
-    override_names = LIBC_NAMES | C_KEYWORDS | header_macros | {spec.target.function}
+    # Any identifier of the protected interface (types like size_t, parameter
+    # and type names, macros): a #define before the protected #include would
+    # silently change the approved prototype / contract for every gate.
+    header_idents = set(header_idents or ())
+    override_names = LIBC_NAMES | C_KEYWORDS | header_macros | header_idents | {spec.target.function}
     for m in _DIRECTIVE_RE.finditer(code):
         name, rest = m.group(1), m.group(2)
         at = m.start()
@@ -499,6 +503,7 @@ def _directive_violations(
                     "the target function" if macro == spec.target.function
                     else "a macro of the protected interface" if macro in header_macros
                     else "a C keyword" if macro in C_KEYWORDS
+                    else "an identifier used by the protected interface" if macro in header_idents
                     else "a C library name"
                 )
                 out.append(("SYMBOL_OVERRIDE", f"#{name} {macro}: redefining {what} is not allowed", at))
@@ -542,9 +547,9 @@ def source_violations(
 
         return cpp_source_violations(spec, rel, text, headers=headers)
     src = CSource(text)
-    _, header_macros = _header_facts(headers)
+    header_idents, header_macros = _header_facts(headers)
     found: list[tuple[str, str, int]] = []
-    found += _directive_violations(spec, rel, src, header_macros)
+    found += _directive_violations(spec, rel, src, header_macros, header_idents)
     found += _pragma_operator_violations(src)
     found += _token_violations(src)
     # divergent predefined macros used in ordinary code (directives were checked above)

@@ -95,12 +95,35 @@ def toolchain(preferred_compiler: str = "clang") -> Toolchain:
     )
 
 
+def _v2_tool_infos() -> list[ToolInfo]:
+    """Optional V2 tools (Frama-C/WP, Lean 4), reported for reproducibility."""
+    out: list[ToolInfo] = []
+    try:
+        from leanc.backends.wp import find_framac
+
+        fc = find_framac()
+        out.append(ToolInfo(name="frama-c", path=fc.frama_c if fc else None,
+                            version=tool_version(fc.real, "-version") if fc else None, available=bool(fc)))
+    except Exception:  # pragma: no cover - reporting only
+        pass
+    try:
+        from leanc.backends.lean import find_lean
+
+        lt = find_lean()
+        out.append(ToolInfo(name="lean", path=lt.lean if lt else None, version=lt.version if lt else None,
+                            available=bool(lt and lt.leanchecker)))
+    except Exception:  # pragma: no cover - reporting only
+        pass
+    return out
+
+
 def environment_info(sandbox: Sandbox, tc: Toolchain | None = None) -> EnvironmentInfo:
     tc = tc or toolchain()
     tools = [
         ToolInfo(name="clang", path=tc.clang, version=tc.clang_version, available=bool(tc.clang)),
         ToolInfo(name="cbmc", path=tc.cbmc, version=tc.cbmc_version, available=bool(tc.cbmc)),
         ToolInfo(name="clang++", path=tc.clangxx, version=tc.clangxx_version, available=bool(tc.clangxx)),
+        *_v2_tool_infos(),
     ]
     bw = shutil.which("bwrap")
     tools.append(

@@ -1,14 +1,15 @@
 # Lean C
 
 **規格優先、由獨立驗證器裁決的 AI C 程式碼生成研究原型**
-*(Spec-first, verifier-checked AI code generation for C17 — research prototype)*
+*(Spec-first, verifier-checked AI code generation for C17 / C++20 — research prototype)*
 
 傳統流程：`需求 → AI 生成程式碼 → 編譯 → 輸出`。Lean C 的流程：
 
 ```
 自然語言需求 → 形式化規格草案（不受信任）→ 人工確認（雜湊鎖定 + 簽章）
   → 程式碼生成 → Clang 編譯 → 原始碼完整性關卡 → Clang Static Analyzer → ASan/UBSan/LSan 可信測試
-  → CBMC 有界模型檢查 → 反例分析 → AI 自動修復（政策檢查）→ 重新驗證
+  → CBMC 有界模型檢查 →（V2）Frama-C/WP 演繹證明 →（V2，可選）Lean 4 模型證明
+  → 反例分析 → AI 自動修復 / 證明修復（政策檢查）→ 重新驗證
   → 程式碼 + JSON / Markdown 驗證報告
 ```
 
@@ -17,7 +18,9 @@ Sanitizers 與 CBMC 依照人工批准、雜湊鎖定的規格與 harness 判斷
 而是建立在成熟工具之上，並且對結果的範圍誠實：
 
 * `VERIFIED_BOUNDED` 只代表「在已批准的 harness、輸入限制、unwind 界限與檢查類別下沒有找到違反，
-  所有迴圈已完全展開，且 harness 非 vacuous」——**永遠不會被升級成 `PROVED`**（V1 沒有無界證明器）。
+  所有迴圈已完全展開，且 harness 非 vacuous」——CBMC 的結果**永遠不會被升級成 `PROVED`**。
+* `PROVED` 只有一個來源：V2 的 `wp` 關卡（Frama-C/WP）證明了**已批准**的 ACSL 契約與所有執行期錯誤守衛，
+  且 smoke test 沒有發現矛盾的前置條件。它只相對於該契約成立；Lean 4 模型證明也不會讓 C 的判決變成 `PROVED`。
 * 沒有找到反例 ≠ 成功：unwind 不足、vacuous harness、超時、工具錯誤、沒有沙箱而略過的測試，
   都會得到 `UNKNOWN` / `TIMEOUT` / `TOOL_ERROR`。
 * 沒有已批准的規格時，唯一可能的結果是 `SPEC_UNAPPROVED`。
@@ -31,6 +34,9 @@ Sanitizers 與 CBMC 依照人工批准、雜湊鎖定的規格與 harness 判斷
 ```bash
 sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap
 pip install -e ".[dev]"        # Python 3.11+；相依：pydantic、PyYAML
+# V2（可選）：Frama-C/WP + provers、Lean 4
+#   sudo apt-get install -y opam z3 cvc5 && opam init -y && opam install -y frama-c alt-ergo
+#   Lean 4 release toolchain（含 leanchecker）解壓到 /opt/lean/<版本>，或設定 LEANC_LEAN
 leanc doctor                   # 實際測試 clang、分析器、sanitizers、CBMC、沙箱（含網路隔離）
 ```
 
@@ -135,6 +141,20 @@ exit code，若成功的執行之後原始碼、受保護檔或規格已被修�
 | [`repair_exhausted`](examples/repair_exhausted) | 修復耗盡 | `(a+b)/2` 溢位 | `COUNTEREXAMPLE_FOUND` | cbmc, ubsan | `REPAIR_EXHAUSTED`（還原、循環偵測、無提案；工作區不變） |
 | [`cbmc_timeout`](examples/cbmc_timeout) | 超時 | 正確，但 64 位元乘法等價性很難 | `TIMEOUT`（3 s） | — | `TIMEOUT` |
 
+### V2 範例（Frama-C/WP、Lean 4、C++20）
+
+| 範例 | 內容 | `leanc verify` | `leanc run --provider mock` |
+|---|---|---|---|
+| [`wp_safe_array_get`](examples/wp_safe_array_get) | ACSL 契約在受保護標頭；正確程式 | `PROVED`（36/36 目標 + 7 smoke test，含 termination） | `PROVED` |
+| [`wp_proof_repair`](examples/wp_proof_repair) | 正確但沒有 loop invariant | `UNKNOWN`（9 個 WP 目標未證明；其他關卡全 PASS） | 證明修復 2 回合（9 → 3 → 0）→ `PROVED` |
+| [`wp_contract_violation`](examples/wp_contract_violation) | 違反後置條件的 off-by-one | `COUNTEREXAMPLE_FOUND`（CBMC；WP 4 個目標未證明） | 1 回合 → `PROVED` |
+| [`lean_clamp`](examples/lean_clamp) | Lean 模型 + 6 個定理（證明為 `sorry`）+ 1331 個差分測試向量 | `UNKNOWN`（Lean 定理未證明） | 證明修復 2 回合 → `VERIFIED_BOUNDED`（Lean 是模型層級，不會變成 `PROVED`） |
+| [`cpp_ring_buffer`](examples/cpp_ring_buffer) | C++20 class template | `UNKNOWN`（全部關卡 PASS，但沒有可用的 C++ 形式化關卡） | `UNKNOWN` |
+| [`cpp_bounds_bug`](examples/cpp_bounds_bug) | C++ 成員函式 off-by-one | `RUNTIME_TEST_FAILED`（asan） | 1 回合修復並寫回 → `UNKNOWN`（未形式化驗證） |
+
+V2 工具是可選的：`leanc doctor` 會報告 clang++、Frama-C（需 ≥ 27，含 WP；Ubuntu 的 `frama-c-base` 套件不含 WP，
+請用 `opam install frama-c alt-ergo`）與 Lean 4（含 `leanchecker`）。缺少時，對應範例的測試會被略過而不是失敗。
+
 規格竄改（修改 harness / 規格 / 批准紀錄 → `SPEC_UNAPPROVED`）、無沙箱（sanitizer `SKIPPED` → `UNKNOWN`）、
 `--gates` 子集（→ `UNKNOWN`）等情境由 `tests/` 中的測試涵蓋。
 
@@ -207,7 +227,7 @@ leanc/
   core/                  狀態、資料模型、控制器、安全執行、沙箱、工作區、設定、doctor、生成
   specs/                 規格 schema、載入/雜湊、批准（信任邊界）
   llm/                   Provider 抽象、OpenAI 相容 provider、Mock provider、prompts
-  backends/              clang、analyzer（SARIF）、sanitizer、cbmc、工具偵測
+  backends/              clang、analyzer（SARIF）、sanitizer、cbmc、integrity、wp（Frama-C）、lean、cxx（C++）
   repair/                反例解析、補丁、修復政策、修復迴圈
   reports/               JSON 與 Markdown 報告
   data/include/leanc.h   harness 巨集（LEANC_ASSUME / LEANC_REACH / nondet_*）
@@ -224,7 +244,9 @@ docker/Dockerfile        可重現環境
 * `VERIFIED_BOUNDED` 是有界結果；harness 是否忠實表達需求，仍需人工審查。
 * Sanitizer 只涵蓋可信測試實際執行到的路徑。
 * 修復政策是縱深防禦（文字規則），真正的防線是受保護的 harness 與獨立驗證器。
-* V2（C++20、Frama-C/ACSL、Lean 4）尚未實作，見 [docs/roadmap.md](docs/roadmap.md)。
+* `PROVED` 只相對於已批准的 ACSL 契約（弱契約證明的東西很少），且在 WP 的記憶體/機器模型與 Frama-C libc 規格之下。
+* C++20 沒有可用的形式化關卡（CBMC 無法解析現代 C++；執行下載的 ESBMC 在本環境中未獲許可），最佳狀態為 `UNKNOWN`。
+* Lean 4 證明的是模型；模型與 C 程式碼之間只以差分測試向量連結。見 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 授權
 
