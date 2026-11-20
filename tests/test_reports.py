@@ -389,7 +389,10 @@ def test_meanings_are_honest():
     for phrase in ("harness", "input constraints", "unwind bound", "checked property classes", "not", "PROVED"):
         assert phrase in vb
     assert "never equal to PROVED" in vb
-    assert "No V1 backend" in STATUS_MEANING[Status.PROVED]
+    proved = STATUS_MEANING[Status.PROVED]
+    for phrase in ("Frama-C/WP", "APPROVED ACSL contract", "runtime-error", "smoke tests", "partial correctness",
+                   "CBMC never produces"):
+        assert phrase in proved
     unk = STATUS_MEANING[Status.UNKNOWN]
     assert "unwinding" in unk and "vacuous" in unk and "skipped" in unk and "NOT evidence of correctness" in unk
     assert "Nothing was formally verified against a trusted spec" in STATUS_MEANING[Status.SPEC_UNAPPROVED]

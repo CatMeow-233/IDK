@@ -53,8 +53,13 @@ STATUS_MEANING: dict[Status, str] = {
         "(it is never equal to PROVED)."
     ),
     Status.PROVED: (
-        "Reserved for unbounded deductive proofs (planned for V2: Frama-C/WP, Lean 4). No V1 backend "
-        "produces this status; a V1 report claiming PROVED indicates a bug and must not be trusted."
+        "Frama-C/WP (the `wp` gate) discharged every proof obligation of the APPROVED ACSL contract and every "
+        "runtime-error guard (-wp-rte), its smoke tests found no inconsistent precondition or dead code, and every "
+        "other required gate passed. This is a deductive result for ALL inputs satisfying the contract's "
+        "preconditions - not bounded by an unwind limit - but it holds only for that contract (a weak contract "
+        "proves little), under WP's memory and machine model, the Frama-C libc specifications and the listed "
+        "provers, and it is partial correctness unless the spec required termination. CBMC never produces "
+        "PROVED, and Lean model proofs never upgrade a C verdict to PROVED."
     ),
     Status.COMPILE_ERROR: (
         "The sources did not compile (or could not be linked with the trusted test driver, or a required "
@@ -249,7 +254,10 @@ def _verdict(status: Status, reasons: list[str], *, label: str = "Status") -> li
     if status is Status.SPEC_UNAPPROVED:
         out += ["**No result in this report is a verification result against a trusted specification.**", ""]
     if status is Status.PROVED:
-        out += ["**Warning: no V1 backend can produce PROVED; treat this report as invalid.**", ""]
+        out += [
+            "**PROVED is relative to the approved ACSL contract: review that the contract states what you need.**",
+            "",
+        ]
     if reasons:
         out.append("Reasons:")
         out.append("")
