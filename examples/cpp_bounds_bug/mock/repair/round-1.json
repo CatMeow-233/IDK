@@ -1,0 +1,7 @@
+{
+  "root_cause": "SampleBuffer::append checks `size_ > capacity_` before writing data_[size_]. When the buffer is exactly full (size_ == capacity_) the check passes and the sample is written one element past the end of the heap storage of capacity_ ints: AddressSanitizer reports a heap-buffer-overflow WRITE of size 4 at src/sample_buffer.cpp:14 in lc::SampleBuffer::append(int) for the fill_to_capacity and capacity_one test cases.",
+  "rationale": "Reject the append when size_ >= capacity_ (the buffer is full), which is exactly the documented contract (false and contents unchanged when size() == capacity()). The write data_[size_] then only happens for size_ < capacity_, i.e. inside the allocation. No other behaviour changes.",
+  "files": {
+    "src/sample_buffer.cpp": "#include \"sample_buffer.hpp\"\n\nnamespace lc {\n\nSampleBuffer::SampleBuffer(std::size_t capacity)\n    : data_(new int[capacity]()), size_(0), capacity_(capacity) {}\n\nSampleBuffer::~SampleBuffer() { delete[] data_; }\n\nbool SampleBuffer::append(int sample) noexcept {\n    if (size_ >= capacity_) {\n        return false;\n    }\n    data_[size_] = sample;\n    ++size_;\n    return true;\n}\n\nconst int* SampleBuffer::at(std::size_t i) const noexcept {\n    return i < size_ ? &data_[i] : nullptr;\n}\n\nlong long SampleBuffer::sum() const noexcept {\n    long long total = 0;\n    for (std::size_t i = 0; i < size_; ++i) {\n        total += data_[i];\n    }\n    return total;\n}\n\n}  // namespace lc\n"
+  }
+}

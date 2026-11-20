@@ -23,6 +23,9 @@ class Toolchain:
     cbmc: str | None
     clang_version: str | None
     cbmc_version: str | None
+    #: clang++ matching ``clang`` (used for C++ specs; see leanc.backends.cxx)
+    clangxx: str | None = None
+    clangxx_version: str | None = None
 
 
 def _first_line(s: str) -> str:
@@ -77,13 +80,18 @@ def clang_major(version_line: str | None) -> int | None:
 
 
 def toolchain(preferred_compiler: str = "clang") -> Toolchain:
+    from leanc.backends.cxx import find_clangxx
+
     clang = find_clang(preferred_compiler)
     cbmc = find_cbmc()
+    clangxx = find_clangxx(clang)
     return Toolchain(
         clang=clang,
         cbmc=cbmc,
         clang_version=tool_version(clang) if clang else None,
         cbmc_version=tool_version(cbmc) if cbmc else None,
+        clangxx=clangxx,
+        clangxx_version=tool_version(clangxx) if clangxx else None,
     )
 
 
@@ -92,6 +100,7 @@ def environment_info(sandbox: Sandbox, tc: Toolchain | None = None) -> Environme
     tools = [
         ToolInfo(name="clang", path=tc.clang, version=tc.clang_version, available=bool(tc.clang)),
         ToolInfo(name="cbmc", path=tc.cbmc, version=tc.cbmc_version, available=bool(tc.cbmc)),
+        ToolInfo(name="clang++", path=tc.clangxx, version=tc.clangxx_version, available=bool(tc.clangxx)),
     ]
     bw = shutil.which("bwrap")
     tools.append(

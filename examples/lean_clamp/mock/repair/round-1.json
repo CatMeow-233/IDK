@@ -1,0 +1,7 @@
+{
+  "root_cause": "The Lean proof file still contains `sorry` placeholders: no theorem about the model is proved.",
+  "rationale": "Prove the three basic properties (bounds, error condition, identity on [lo, hi]) by unfolding `clamp` and closing the arithmetic goals with omega/simp. The remaining placeholders are left for the next round; nothing in the C code or the trusted model changes.",
+  "files": {
+    "lean/Proofs.lean": "import Spec\n\n/-!\nEditable Lean proofs (may be written / repaired by the AI).  Each `*_proof`\nconstant must prove the statement of the same name in `lean/Spec.lean`.\nShipped with `sorry` placeholders: the `lean` gate reports every theorem as\nunproved until real proofs are supplied.\n-/\n\nnamespace LeanClamp.Proofs\nopen LeanClamp\n\ntheorem result_in_bounds_proof : result_in_bounds := by\n  intro x lo hi r h\n  unfold clamp at h\n  split at h\n  · contradiction\n  · cases h; omega\n\ntheorem error_iff_empty_range_proof : error_iff_empty_range := by\n  intro x lo hi\n  unfold clamp\n  split <;> simp_all\n\ntheorem identity_in_range_proof : identity_in_range := by\n  intro x lo hi h1 h2\n  unfold clamp\n  split\n  · omega\n  · congr 1; omega\n\ntheorem idempotent_proof : idempotent := by\n  sorry\n\ntheorem monotone_proof : monotone := by\n  sorry\n\ntheorem result_fits_int32_proof : result_fits_int32 := by\n  sorry\n\nend LeanClamp.Proofs\n"
+  }
+}

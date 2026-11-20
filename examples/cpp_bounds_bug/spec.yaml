@@ -1,0 +1,61 @@
+# Lean C specification: heap-backed C++ sample buffer (off-by-one in a member function).
+leanc_spec: 1
+spec_id: cpp-bounds-bug
+version: 1
+title: Heap-backed sample buffer with fixed capacity (C++20)
+requirement: |
+  以 C++20 實作類別 lc::SampleBuffer：建構時在 heap 上配置恰好 capacity 個 int 的儲存區（RAII，
+  解構時釋放，不可複製）；append(sample) 在已滿時必須回傳 false 且不改變內容，否則附加樣本；
+  at(i) 在 i >= size() 時回傳 nullptr；sum() 回傳所有樣本的總和。任何操作都不得越界存取。
+  (Implement the C++20 class lc::SampleBuffer: the constructor allocates storage for exactly
+  capacity ints on the heap (RAII, freed by the destructor, non-copyable); append(sample) returns
+  false and leaves the contents unchanged when the buffer is full, otherwise appends the sample;
+  at(i) returns nullptr for i >= size(); sum() returns the sum of all samples. No operation may
+  access memory out of bounds.)
+language: {name: cpp, standard: c++20}
+target:
+  function: append
+  signature: "bool lc::SampleBuffer::append(int sample) noexcept"
+  params:
+    - {name: sample, type: int, description: "value to append"}
+  returns:
+    type: bool
+    description: "whether the sample was appended (constructor, destructor, at and sum are in src/sample_buffer.cpp; see include/sample_buffer.hpp)"
+    values:
+      - {value: "true", meaning: "sample stored at index size() (before the call); size() incremented"}
+      - {value: "false", meaning: "size() == capacity(); contents unchanged"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "SampleBuffer(capacity) is called with capacity >= 1"}
+  postconditions:
+    - {id: POST1, text: "append on a full buffer (size() == capacity()) => false and contents unchanged; otherwise true, at(old size()) == sample"}
+    - {id: POST2, text: "at(i) == nullptr for i >= size(), else a pointer to the i-th appended sample"}
+    - {id: POST3, text: "sum() == sum of at(0..size()-1)"}
+    - {id: POST4, text: "invariant: 0 <= size() <= capacity(); data_ points to exactly capacity() ints"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds access of the heap storage (checked at runtime by AddressSanitizer on the trusted tests)"}
+    - {id: SAFE2, text: "the storage is released exactly once (checked by LeakSanitizer / ASan double-free detection)"}
+  frame:
+    - "append writes only data_[size()] and size_"
+sources:
+  editable: [src/sample_buffer.cpp]
+  headers: [include/sample_buffer.hpp]
+  include_dirs: [include]
+compile:
+  compiler: clang++
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: block
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_sample_buffer.cpp
+  cases:
+    - {name: basic, args: [basic], expect_stdout: "ok\n"}
+    - {name: fill_to_capacity, args: [fill_to_capacity], expect_stdout: "ok\n"}
+    - {name: capacity_one, args: [capacity_one], expect_stdout: "ok\n"}
+  sanitizers: [address, undefined, leak]
+# No formal gate: no C++20-capable model checker is configured (CBMC and WP
+# are C-only), so the best possible verdict is UNKNOWN ("no formal gate").
+gates: [compile, static_analysis, sanitizer]
+repair:
+  max_rounds: 3

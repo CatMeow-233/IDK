@@ -1,0 +1,15 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: UNKNOWN  # every required gate passes, but the spec has no formal gate (no C++ model checker)
+run: UNKNOWN     # mock generation = the shipped sources; nothing to repair; still no formal gate
+detected_by: []
+rejected_rounds: []
+notes: >
+  C++20 class template lc::RingBuffer<T, N> (constrained with std::copyable, constexpr/[[nodiscard]]/noexcept
+  members, std::array storage) declared in the protected header include/ring_buffer.hpp; the editable
+  src/ring_buffer.cpp defines push/pop/front/at out of line and provides the explicit instantiation
+  RingBuffer<int, 4> that the header declares extern. clang++ compiles it (-std=c++20, warnings block), the
+  C++ integrity gate accepts the weak (COMDAT) symbols of the header template instantiation and of the
+  std::array<int, 4>::operator[] library instantiation, the Clang Static Analyzer reports nothing, and the
+  four trusted C++ test cases (fifo, full, empty, wrap_around against a reference model) pass under
+  ASan+UBSan+LSan. Gates are compile, static_analysis, sanitizer only - CBMC and WP do not support C++ - so
+  the honest overall status is UNKNOWN ("no formal verification gate"), never VERIFIED_BOUNDED.

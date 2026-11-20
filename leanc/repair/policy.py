@@ -45,7 +45,7 @@ from leanc.core.errors import WorkspaceError
 from leanc.core.models import PolicyDecision, PolicyViolation
 from leanc.core.workspace import normalize_relpath
 from leanc.repair.patch import changed_paths, diff_stats
-from leanc.specs.model import Spec
+from leanc.specs.model import CPP_SUFFIXES, Spec
 
 __all__ = [
     "MAX_ANALYZED_CHARS",
@@ -94,7 +94,15 @@ RULES: dict[str, str] = {
     "CONSTRUCTOR": "constructor/destructor/section attributes (code running outside the function under test)",
     "TERMINATION": "process termination or non-local control flow (exit, _exit, abort, atexit, longjmp, raise, ...)",
     "DANGEROUS_IMPORT": "process/network/loader/thread/sanitizer-control APIs",
+    # ACSL trust rules for the wp gate (leanc.backends.acsl_rules, applied via source_violations)
+    "ACSL_FORBIDDEN": "ACSL that could add unproved assumptions (admit, axiom, inductive, recursive logic, ghost, ...)",
+    "ACSL_CONTRACT": "an ACSL contract on the target, or one not attached to a static helper definition",
+    "ACSL_MACRO": "a macro used inside ACSL, or a #define of an identifier of the approved ACSL contract",
 }
+# Lean proof files (spec.lean.proofs) get Lean rules instead of the C rules.
+from leanc.repair.lean_policy import LEAN_RULES, check_lean_file, is_lean_path
+
+RULES.update(LEAN_RULES)
 
 #: Files larger than this are not lexed (TOO_LARGE); real sources are far smaller.
 MAX_ANALYZED_CHARS = 1_000_000
@@ -721,7 +729,7 @@ def _path_problem(spec: Spec, p: str) -> PolicyViolation | None:
         return PolicyViolation(
             rule="PATH_INVALID", message=f"path {p!r} is not in canonical form (use {norm!r})", file=p
         )
-    editable = spec.sources.editable
+    editable = spec.editable_paths()
     if norm in editable:
         return None
     if spec.verification is not None and norm == spec.verification.harness:
@@ -730,6 +738,8 @@ def _path_problem(spec: Spec, p: str) -> PolicyViolation | None:
         what = "the trusted test driver"
     elif norm in spec.sources.headers:
         what = "a protected interface header"
+    elif norm in spec.protected_paths():
+        what = "a protected specification file (Lean model / vectors)"
     elif norm == ".leanc" or norm.startswith(".leanc/"):
         what = "Lean C state (approval records)"
     elif norm.endswith((".yaml", ".yml", ".json")):
@@ -820,7 +830,12 @@ class _Sources:
         if path not in self.files:
             return None
         if path not in self._cache:
-            self._cache[path] = CSource(self.files[path])
+            if path.endswith(CPP_SUFFIXES):  # C++ lexing (digit separators, raw strings)
+                from leanc.backends.cpp_integrity import CppSource
+
+                self._cache[path] = CppSource(self.files[path])
+            else:
+                self._cache[path] = CSource(self.files[path])
         return self._cache[path]
 
 
@@ -828,7 +843,11 @@ def _definitions(spec: Spec, srcs: _Sources, paths: list[str]) -> list[FunctionD
     out: list[FunctionDefinition] = []
     for p in paths:
         s = srcs.get(p)
-        if s is not None:
+        if s is not None and spec.language.is_cpp:  # namespaces, out-of-line members, noexcept, ...
+            from leanc.backends.cpp_integrity import find_cpp_function_definitions
+
+            out.extend(find_cpp_function_definitions(s, spec.target.function, p))
+        elif s is not None:
             out.extend(find_function_definitions(s, spec.target.function, p))
     return out
 
@@ -944,6 +963,9 @@ def check_candidate(
     old_srcs, new_srcs = _Sources(old), _Sources(new)
     target = spec.target.function
     for p in content_paths:
+        if is_lean_path(p):
+            violations.extend(check_lean_file(spec, p, old.get(p), new[p]))
+            continue
         violations.extend(_content_violations(p, old_srcs.get(p), new_srcs.get(p), target))  # type: ignore[arg-type]
         violations.extend(_integrity_violations(spec, p, new[p]))
     editable = set(spec.sources.editable)
@@ -974,7 +996,10 @@ def check_generated(spec: Spec, files: dict[str, str]) -> PolicyDecision:
     srcs = _Sources(files)
     target = spec.target.function
     for p in content_paths:
+        if is_lean_path(p):
+            violations.extend(check_lean_file(spec, p, None, files[p]))
+            continue
         violations.extend(_content_violations(p, None, srcs.get(p), target))  # type: ignore[arg-type]
         violations.extend(_integrity_violations(spec, p, files[p]))
-    violations.extend(_target_violations(spec, None, srcs, [], content_paths))
+    violations.extend(_target_violations(spec, None, srcs, [], [p for p in content_paths if not is_lean_path(p)]))
     return _decision(violations)

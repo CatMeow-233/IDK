@@ -213,6 +213,15 @@ def repair_loop(
 
     if is_success(initial.status):
         return RepairOutcome(status=initial.status, final=initial, message="already verified; no repair needed")
+    if all_gates_pass(initial):
+        return RepairOutcome(
+            status=initial.status,
+            final=initial,
+            message=(
+                "every required gate passes; the spec has no formal verification gate, so the status is "
+                f"{initial.status.value} (nothing to repair; add a formal gate to the spec for a verified result)"
+            ),
+        )
     if initial.status not in REPAIRABLE and not proof_repairable(initial):
         return RepairOutcome(
             status=initial.status,

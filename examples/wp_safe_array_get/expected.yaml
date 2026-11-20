@@ -1,0 +1,11 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: PROVED               # shipped src/ is correct and Frama-C/WP proves the approved ACSL contract
+run: PROVED                  # mock "generation" reproduces the correct code; no repair needed
+detected_by: []
+notes: >
+  V2 'wp' gate (Frama-C/WP).  Same code as examples/safe_array_get, but the protected header carries an
+  ACSL contract (behaviours null_input / out_of_range / in_range, complete and disjoint; assigns *out;
+  *out unchanged on error; arr never modified, out separated from arr).  compile, integrity, static
+  analysis, sanitizer tests and CBMC (len <= 8, any idx) pass; WP proves every functional, frame and
+  runtime-error goal for ALL len / idx (no bound), all smoke tests pass, termination is required and
+  proved => PROVED (deductive, within WP's Typed memory model and the x86_64 machine model).

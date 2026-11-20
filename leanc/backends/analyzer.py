@@ -37,6 +37,7 @@ from leanc.backends.clang import (
     safe_name,
     unique_id,
 )
+from leanc.backends.cxx import compiler, compiler_missing, compiler_version
 from leanc.core.context import BackendContext
 from leanc.core.models import Diagnostic, FailureReport, Location, PathStep, StageResult
 from leanc.core.redact import redact
@@ -255,7 +256,7 @@ def analyzer_command(
     ``output_format="sarif"`` writes SARIF to ``output_path``;
     ``"text"`` prints the findings and their bug paths on stderr.
     """
-    clang = ctx.tools.clang
+    clang = compiler(ctx)  # clang++ for C++ specs
     if not clang:
         raise ValueError("no clang available (ctx.tools.clang is None)")
     spec = ctx.spec
@@ -330,8 +331,8 @@ def run_static_analysis(ctx: BackendContext) -> StageResult:
     sa = spec.static_analysis
     policy = sa.policy
     details: dict = {
-        "clang": ctx.tools.clang,
-        "clang_version": ctx.tools.clang_version,
+        "clang": compiler(ctx),
+        "clang_version": compiler_version(ctx),
         "policy": policy,
         "checkers": {"default": "clang default checker set", "extra": list(sa.extra_checkers)},
         "format": None,
@@ -352,15 +353,15 @@ def run_static_analysis(ctx: BackendContext) -> StageResult:
             **kw,
         )
 
-    if not ctx.tools.clang:
+    if not compiler(ctx):
         return result(
             Outcome.ERROR,
-            f"clang not found (spec.compile.compiler={spec.compile.compiler!r}); the static analyzer "
-            "is part of clang -- install clang or point LEANC_CLANG at it",
+            compiler_missing(spec, f"clang not found (spec.compile.compiler={spec.compile.compiler!r}); the static "
+                             "analyzer is part of clang -- install clang or point LEANC_CLANG at it"),
         )
-    version = ctx.tools.clang_version
+    version = compiler_version(ctx)
     if version and "clang" not in version.lower():
-        return result(Outcome.ERROR, f"{ctx.tools.clang} does not identify as clang ({version!r}); cannot run the Clang Static Analyzer")
+        return result(Outcome.ERROR, f"{compiler(ctx)} does not identify as clang ({version!r}); cannot run the Clang Static Analyzer")
     bad = [c for c in sa.extra_checkers if not _CHECKER_NAME_RE.match(c)]
     if bad:
         return result(Outcome.ERROR, f"invalid static_analysis.extra_checkers name(s): {bad}")

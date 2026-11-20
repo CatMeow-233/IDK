@@ -282,7 +282,7 @@ def test_spec_draft_round_trip(fake, make):
     assert d.spec_yaml == FEW_SHOT_SPEC_YAML and d.harness_c.endswith("\n") and d.tests_c is None
     system, user = (m["content"] for m in fake.requests[0]["body"]["messages"])
     assert "UNTRUSTED" in system and "leanc spec approve" in system
-    assert "verification: object (required)" in system  # schema summary derived from the model
+    assert "verification: object" in system  # schema summary derived from the model (optional since V2)
     assert '"spec_yaml"' in system and '"harness_c"' in system and '"tests_c"' in system
     assert "spec_id: safe-array-get" in user and "clamp an int" in user and "UNTRUSTED" in user
 

@@ -1,0 +1,7 @@
+{
+  "root_cause": "Off-by-one in the loop bound: `for (size_t i = 0; i + 1 < n; i++)` stops before the last element, so a key that occurs ONLY at a[n-1] is never found. CBMC reports a violation of the harness assertion `rc == 1` (behavior found) with e.g. n = 1, a[0] == key (find_first returns 0). Frama-C/WP agrees from the other side: the post-condition `\\result == 1` of behavior found cannot be proved (the loop invariants only cover a[0..i) and the loop exits at i == n - 1).",
+  "rationale": "Iterate over the whole range: `i < n`. With the same invariants (0 <= i <= n; no a[k] == key for k < i) the loop exits with i == n, so 'not found' really means that no element equals key, and an early return happens at the first matching index. *pos is still written only when the key is found. i < n <= SIZE_MAX, so i++ cannot wrap.",
+  "files": {
+    "src/find_first.c": "#include \"find_first.h\"\n\nint find_first(const int *a, size_t n, int key, size_t *pos)\n{\n    /*@ loop invariant 0 <= i <= n;\n        loop invariant \\forall integer k; 0 <= k < i ==> a[k] != key;\n        loop assigns i;\n        loop variant n - i;\n    */\n    for (size_t i = 0; i < n; i++) {\n        if (a[i] == key) {\n            *pos = i;\n            return 1;\n        }\n    }\n    return 0;\n}\n"
+  }
+}

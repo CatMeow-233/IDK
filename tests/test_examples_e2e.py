@@ -64,5 +64,10 @@ def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
         assert [r["round"] for r in rounds if r["policy_allowed"] is False] == list(exp["rejected_rounds"])
     if exp["run"] == "VERIFIED_BOUNDED" and exp["verify"] != "VERIFIED_BOUNDED":
         assert rounds, "a repaired example must have repair rounds"
-    if exp["run"] in ("UNKNOWN", "TIMEOUT"):
+    if exp.get("repaired"):
+        # no formal gate (e.g. C++): repair reaches "every required gate passes" and is written back,
+        # while the status honestly stays UNKNOWN
+        assert rounds and rounds[-1]["policy_allowed"] and not rounds[-1]["reverted"], rounds
+        assert data["status"] == "UNKNOWN"
+    elif exp["run"] in ("UNKNOWN", "TIMEOUT"):
         assert not rounds, "inconclusive results must not be 'repaired'"

@@ -40,7 +40,7 @@ class Location(_Model):
                 parts.append(str(self.column))
         s = ":".join(parts)
         if self.function:
-            s += f" in {self.function}()"
+            s += f" in {self.function}" + ("" if "(" in self.function else "()")
         return s
 
 
@@ -106,6 +106,7 @@ FailureKind = Literal[
     "timeout",
     "tool",
     "test-oracle",
+    "unproved",
 ]
 
 

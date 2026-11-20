@@ -33,6 +33,7 @@ import re
 import time
 from pathlib import Path
 
+from leanc.backends.cxx import compiler, compiler_missing, compiler_version
 from leanc.core.context import BackendContext
 from leanc.core.models import Diagnostic, FailureReport, Location, PathStep, StageResult, TraceStep
 from leanc.core.redact import redact
@@ -334,7 +335,7 @@ def compile_command(ctx: BackendContext, source_rel: str, obj_path: Path) -> lis
     because the sandbox binds the build directory at its *real* path: a
     symlinked run directory would otherwise be invisible to the compiler.
     """
-    clang = ctx.tools.clang
+    clang = compiler(ctx)  # clang++ for C++ specs
     if not clang:
         raise ValueError("no C compiler available (ctx.tools.clang is None)")
     spec = ctx.spec
@@ -455,8 +456,8 @@ def run_compile(ctx: BackendContext) -> StageResult:
     spec = ctx.spec
     policy = spec.compile.warnings_policy
     details: dict = {
-        "compiler": ctx.tools.clang,
-        "compiler_version": ctx.tools.clang_version,
+        "compiler": compiler(ctx),
+        "compiler_version": compiler_version(ctx),
         "requested_compiler": spec.compile.compiler,
         "standard": spec.language.standard,
         "flags": list(spec.compile.flags),
@@ -479,17 +480,17 @@ def run_compile(ctx: BackendContext) -> StageResult:
             **kw,
         )
 
-    if not ctx.tools.clang:
+    if not compiler(ctx):
         return result(
             Outcome.ERROR,
-            f"C compiler not found (spec.compile.compiler={spec.compile.compiler!r}); "
-            "install clang or point LEANC_CLANG at it",
+            compiler_missing(spec, f"C compiler not found (spec.compile.compiler={spec.compile.compiler!r}); "
+                             "install clang or point LEANC_CLANG at it"),
         )
-    version = ctx.tools.clang_version
+    version = compiler_version(ctx)
     if version and "clang" not in version.lower():
         return result(
             Outcome.ERROR,
-            f"compiler {ctx.tools.clang} does not identify as clang ({version!r}); "
+            f"compiler {compiler(ctx)} does not identify as clang ({version!r}); "
             "Lean C's compile gate requires clang",
         )
 

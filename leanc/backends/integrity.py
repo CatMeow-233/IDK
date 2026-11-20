@@ -50,6 +50,7 @@ import re
 import time
 from pathlib import Path
 
+from leanc.backends.acsl_rules import ACSL_RULES, acsl_violations
 from leanc.backends.tools import find_tool
 from leanc.core.context import BackendContext
 from leanc.core.models import (
@@ -109,6 +110,7 @@ RULES: dict[str, str] = {
     "UNBOUNDED_STACK": "variable-length arrays or alloca: CBMC has no model of stack limits, so an input-sized "
     "stack allocation verifies while crashing natively",
 }
+RULES.update(ACSL_RULES)  # ACSL trust rules for the wp gate (leanc.backends.acsl_rules)
 
 # =========================================================================== name sets
 #: Library functions (and data) an editable object may import: CBMC ships a
@@ -535,6 +537,10 @@ def source_violations(
     ``headers`` (protected header texts) enables the "redefines an interface
     macro" check.  Used by :func:`run_integrity` and by the repair /
     generation policy."""
+    if spec.language.is_cpp:  # C++ variant of these rules (leanc.backends.cpp_integrity)
+        from leanc.backends.cpp_integrity import cpp_source_violations
+
+        return cpp_source_violations(spec, rel, text, headers=headers)
     src = CSource(text)
     _, header_macros = _header_facts(headers)
     found: list[tuple[str, str, int]] = []
@@ -549,6 +555,7 @@ def source_violations(
         why = _forbidden_definition(name)
         if why:
             found.append(("SYMBOL_OVERRIDE", f"defines function {name}(): {why}", off))
+    found += acsl_violations(spec, src, headers)  # ACSL trust rules (wp gate only), leanc.backends.acsl_rules
     return _to_violations(src, rel, found)
 
 
@@ -715,6 +722,10 @@ _STACK_DIAG_RE = re.compile(
 
 def run_integrity(ctx: BackendContext) -> StageResult:
     """Mandatory source-integrity gate; see the module docstring."""
+    if ctx.spec.language.is_cpp:  # mangled symbols, C++ runtime, C++ source rules
+        from leanc.backends.cpp_integrity import run_cpp_integrity
+
+        return run_cpp_integrity(ctx)
     t0 = time.monotonic()
     spec = ctx.spec
     snap = Path(os.path.realpath(ctx.snapshot_dir))

@@ -33,6 +33,7 @@ from typing import Any, Literal, get_args, get_origin
 from pydantic import BaseModel
 
 from leanc.core.redact import redact
+from leanc.llm.cpp_prompts import cpp_system
 from leanc.specs.model import ALL_GATES, MANDATORY_CHECKS, SPEC_ID_RE, Spec
 
 if typing.TYPE_CHECKING:
@@ -104,6 +105,8 @@ def fence(content: str, lang: str = "") -> str:
 def _lang_for(path: str) -> str:
     if path.endswith((".c", ".h")):
         return "c"
+    if path.endswith((".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx")):
+        return "cpp"
     if path.endswith((".yaml", ".yml")):
         return "yaml"
     if path.endswith(".json"):
@@ -702,7 +705,7 @@ C standard: {spec.language.standard}; include directories: {", ".join(spec.sourc
 
 Answer with ONLY the JSON object {{"files": {{...}}, "notes": "..."}}.
 """
-    return _finish(CODEGEN_SYSTEM, user, limits)
+    return _finish(cpp_system(spec, "codegen", CODEGEN_SYSTEM), user, limits)
 
 
 # ------------------------------------------------------------------ repair
@@ -739,7 +742,7 @@ against the current files>"}}."""
 
 def build_repair_prompt(req: RepairRequest, limits: PromptLimits = DEFAULT_LIMITS) -> Prompt:
     spec = req.spec
-    editable = list(spec.sources.editable)
+    editable = spec.editable_paths()  # C sources and Lean proof files
     sources, truncated = _render_files(
         {k: v for k, v in req.sources.items()}, limits.max_file_chars, limits.max_total_source_chars, label="source"
     )
@@ -777,13 +780,17 @@ def build_repair_prompt(req: RepairRequest, limits: PromptLimits = DEFAULT_LIMIT
         "## Trusted test driver (protected, read-only)\n" + tests,
         "## Protected headers (read-only)\n" + headers,
     ]
+    from leanc.llm.wp_prompts import wp_repair_note  # V2 wp gate: ACSL trust rules, proof repair
+
+    if wp_note := wp_repair_note(spec):
+        parts.append(wp_note)
     if truncated:
         parts.append(PATCH_FALLBACK_NOTE.format(paths=", ".join(truncated)))
     parts.append(
         "Fix the root cause with a minimal change, obeying the hard rules. Answer with ONLY the JSON object "
         '{"root_cause", "rationale", "files": {path: full new content}}.'
     )
-    return _finish(REPAIR_SYSTEM, "\n\n".join(parts), limits)
+    return _finish(cpp_system(spec, "repair", REPAIR_SYSTEM), "\n\n".join(parts), limits)
 
 
 # ------------------------------------------------------------------ counterexample analysis
@@ -812,7 +819,7 @@ def build_analyze_prompt(
 
 Explain the root cause of this failure.
 """
-    return _finish(ANALYZE_SYSTEM, user, limits)
+    return _finish(cpp_system(spec, "analyze", ANALYZE_SYSTEM), user, limits)
 
 
 # ------------------------------------------------------------------ explanation

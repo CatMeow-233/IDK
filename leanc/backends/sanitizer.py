@@ -54,6 +54,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from leanc.backends.cxx import compiler, compiler_missing, compiler_version
 from leanc.core.context import BackendContext
 from leanc.core.models import (
     CounterexampleInput,
@@ -636,7 +637,7 @@ _LD_REF_RE = re.compile(
 )
 _LD_WHERE_RE = re.compile(r"^(?P<file>[^:(]+?)(?::(?P<line>\d+))?:\(")
 _DRIVER_RE = re.compile(
-    rf"^(?P<prog>(?:\S*/)?clang(?:-\d+)?|{_LD_PROG}):\s*(?:(?P<sev>fatal error|error|warning):\s*)?(?P<msg>.+?)\s*$"
+    rf"^(?P<prog>(?:\S*/)?clang(?:\+\+)?(?:-\d+)?|{_LD_PROG}):\s*(?:(?P<sev>fatal error|error|warning):\s*)?(?P<msg>.+?)\s*$"
 )
 _CRASH_RE = re.compile(
     r"PLEASE submit a bug report|clang frontend command failed due to signal|unable to execute command|^Stack dump:",
@@ -798,10 +799,10 @@ def find_llvm_symbolizer(clang: str | None = None, clang_version: str | None = N
 def build_command(ctx: BackendContext, binary: Path, plan: SanitizerPlan) -> list[str]:
     """argv building the sanitized test binary (cwd = snapshot, relative sources)."""
     spec = ctx.spec
-    assert ctx.tools.clang and spec.tests.driver
+    assert compiler(ctx) and spec.tests.driver
     defines = [d if d.startswith("-D") else f"-D{d}" for d in spec.compile.defines]
     return [
-        ctx.tools.clang,
+        compiler(ctx),  # clang++ for C++ specs (also links the C++ and UBSan C++ runtimes)
         f"-std={spec.language.standard}",
         *BASE_FLAGS,
         *plan.compile_flags,
@@ -1103,8 +1104,8 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
         "sanitizers": list(plan.effective),
         "requested_sanitizers": list(plan.requested),
         "fsanitize": list(plan.fsanitize),
-        "compiler": ctx.tools.clang,
-        "compiler_version": ctx.tools.clang_version,
+        "compiler": compiler(ctx),
+        "compiler_version": compiler_version(ctx),
         "sandbox": ctx.sandbox.kind,
         "limitation": LIMITATION,
         "cases": [],
@@ -1127,10 +1128,10 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
 
     if not tests.driver or not tests.cases:
         return result(Outcome.SKIPPED, "no trusted test driver / test cases configured (tests.driver, tests.cases)")
-    if not ctx.tools.clang:
+    if not compiler(ctx):
         return result(
             Outcome.ERROR,
-            f"C compiler not found (spec.compile.compiler={spec.compile.compiler!r}); install clang or set LEANC_CLANG",
+            compiler_missing(spec, f"C compiler not found (spec.compile.compiler={spec.compile.compiler!r}); install clang or set LEANC_CLANG"),
         )
 
     snap = Path(os.path.realpath(ctx.snapshot_dir))
@@ -1226,7 +1227,7 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
     if not ctx.sandbox.active:
         details["sandbox_warning"] = reason
 
-    symbolizer = find_llvm_symbolizer(ctx.tools.clang, ctx.tools.clang_version)
+    symbolizer = find_llvm_symbolizer(compiler(ctx), compiler_version(ctx))
     details["symbolizer"] = symbolizer
     if not symbolizer:
         details["symbolizer_warning"] = "llvm-symbolizer not found under /usr: stack frames lack file:line"
