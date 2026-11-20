@@ -780,6 +780,21 @@ def build_repair_prompt(req: RepairRequest, limits: PromptLimits = DEFAULT_LIMIT
         "## Trusted test driver (protected, read-only)\n" + tests,
         "## Protected headers (read-only)\n" + headers,
     ]
+    if req.protected_context:
+        ctx_text, _ = _render_files(
+            req.protected_context, limits.max_context_file_chars, limits.max_context_file_chars * 4, label="protected"
+        )
+        parts.append("## Other protected files (read-only; never change them)\n" + ctx_text)
+    if spec.lean is not None:
+        parts.append(
+            "## Lean proof rules\n"
+            "The Lean files listed as editable must prove the theorem STATEMENTS defined in the protected Lean spec "
+            "file (each `def <name> : Prop`), under exactly the proof names given in the spec. Use only core Lean 4 "
+            "/ Std tactics (omega, simp, decide, induction, cases ...). Forbidden: sorry, admit, axiom, unsafe, "
+            "partial, opaque, extern/implemented_by, native_decide or other native evaluation, set_option (except "
+            "maxHeartbeats/maxRecDepth), #eval/run_cmd and other metaprogramming, new instances/notation/macros, "
+            "imports other than Init, Std, the spec module and other proof modules. Never redefine model functions."
+        )
     from leanc.llm.wp_prompts import wp_repair_note  # V2 wp gate: ACSL trust rules, proof repair
 
     if wp_note := wp_repair_note(spec):

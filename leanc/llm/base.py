@@ -20,7 +20,7 @@ whole; prompt builders in :mod:`leanc.llm.prompts` decide what is sent.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # imported lazily: keeps ``leanc.llm.base`` cheap to import
@@ -96,6 +96,9 @@ class RepairRequest:
     diagnostics: list[Diagnostic]
     failures: list[FailureReport]
     history: list[dict]
+    #: other protected files the agent must read but never change (e.g. the
+    #: trusted Lean model + theorem statements), rel path -> text
+    protected_context: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

@@ -257,7 +257,7 @@ def verify(
             if blocked_reason:
                 stages.append(_skipped(g, blocked_reason))
                 continue
-            if g == "sanitizer" and dynamic_blocked:
+            if dynamic_blocked and (g == "sanitizer" or (g == "lean" and spec.lean and spec.lean.vectors)):
                 stages.append(_skipped(g, dynamic_blocked))
                 continue
             if g in ("cbmc", "wp", "lean") and approval.approved:

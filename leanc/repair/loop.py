@@ -242,6 +242,10 @@ def repair_loop(
         hpath = spec.verification.harness if spec.verification is not None else None
         harness = ws.read_text(hpath) if hpath and ws.exists(hpath) else None
         tests = ws.read_text(spec.tests.driver) if spec.tests.driver and ws.exists(spec.tests.driver) else None
+        known = {*spec.sources.headers, spec.tests.driver, hpath}
+        protected_context = {
+            p: ws.read_text(p) for p in spec.protected_paths() if p not in known and ws.exists(p)
+        }
     except LeanCError as exc:
         return RepairOutcome(status=initial.status, final=initial, message=f"cannot start repair: {exc}")
     best_vr = initial
@@ -269,6 +273,7 @@ def repair_loop(
             diagnostics=diagnostics,
             failures=best_vr.all_failures(),
             history=[_history_entry(r) for r in rounds],
+            protected_context=protected_context,
         )
         try:
             proposal = provider.propose_patch(req)
