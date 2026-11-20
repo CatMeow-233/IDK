@@ -440,7 +440,9 @@ def cmd_spec_show(args) -> int:
     out.emit({"spec_hash": spec_hash(spec), "spec": spec_canonical_dict(spec), "protected_files": spec.protected_paths()})
     out.info(f"# sha256 {spec_hash(spec)}")
     out.info(f"# protected files: {', '.join(spec.protected_paths())}")
-    out.info(f"# effective CBMC checks: {', '.join(spec.verification.effective_checks())}")
+    if spec.verification is not None:
+        out.info(f"# effective CBMC checks: {', '.join(spec.verification.effective_checks())}")
+    out.info(f"# gates: {', '.join(spec.gates)} (+ mandatory integrity gate after compile)")
     out.info(spec_to_yaml(spec))
     return 0
 
@@ -525,9 +527,9 @@ def cmd_verify(args) -> int:
 
 def _repair_and_record(args, rec: RunRecord, spec_path: Path, spec, root: Path, run_dir: Path, initial) -> None:
     from leanc.core.status import REPAIRABLE
-    from leanc.repair.loop import repair_loop
+    from leanc.repair.loop import proof_repairable, repair_loop
 
-    if is_success(initial.status) or initial.status not in REPAIRABLE:
+    if is_success(initial.status) or (initial.status not in REPAIRABLE and not proof_repairable(initial)):
         provider = None  # no LLM needed (and none is constructed)
     else:
         try:

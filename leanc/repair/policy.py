@@ -724,7 +724,7 @@ def _path_problem(spec: Spec, p: str) -> PolicyViolation | None:
     editable = spec.sources.editable
     if norm in editable:
         return None
-    if norm == spec.verification.harness:
+    if spec.verification is not None and norm == spec.verification.harness:
         what = "the trusted verification harness"
     elif spec.tests.driver and norm == spec.tests.driver:
         what = "the trusted test driver"

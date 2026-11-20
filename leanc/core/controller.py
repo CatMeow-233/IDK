@@ -77,6 +77,14 @@ def _gate_runner(name: str) -> Callable[[BackendContext], StageResult]:
         from leanc.backends.integrity import run_integrity
 
         return run_integrity
+    if name == "wp":
+        from leanc.backends.wp import run_wp
+
+        return run_wp
+    if name == "lean":
+        from leanc.backends.lean import run_lean
+
+        return run_lean
     raise ValueError(f"unknown gate {name!r}")
 
 
@@ -164,9 +172,15 @@ def aggregate(stages: list[StageResult], approved: bool) -> tuple[Status, list[s
         reasons.append(f"[{s.stage}] {s.outcome.value}: {s.summary}")
     if contributed:
         return worst(contributed), reasons
+    wp = next((s for s in stages if s.stage == "wp" and s.required), None)
+    if wp is not None and wp.outcome is Outcome.PASS:
+        return Status.PROVED, [
+            "all required gates passed; Frama-C/WP discharged every proof obligation of the approved contract "
+            "and every runtime-error guard"
+        ]
     formal = next((s for s in stages if s.stage == "cbmc"), None)
     if formal is None:
-        return Status.UNKNOWN, ["no formal verification gate (cbmc) is required by the spec; "
+        return Status.UNKNOWN, ["no formal verification gate (cbmc or wp) is required by the spec; "
                                 "dynamic and static checks alone cannot establish VERIFIED_BOUNDED"]
     if formal.outcome is Outcome.PASS:
         return Status.VERIFIED_BOUNDED, ["all required gates passed; CBMC found no violation within the approved bounds"]
@@ -201,7 +215,7 @@ def verify(
     if candidate:
         for rel, content in candidate.items():
             norm = normalize_relpath(rel)
-            if norm not in spec.sources.editable:
+            if norm not in spec.editable_paths():
                 raise LeanCError(f"candidate file {rel} is not an editable source of the spec")
             dest = ctx.snapshot_dir / norm
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -225,7 +239,9 @@ def verify(
     )
     stages: list[StageResult] = [spec_stage]
 
-    gates = list(spec.gates)
+    from leanc.specs.model import GATE_ORDER
+
+    gates = sorted(spec.gates, key=GATE_ORDER.index)
     if options.gates is not None:
         unknown = set(options.gates) - set(spec.gates)
         if unknown:
@@ -244,8 +260,8 @@ def verify(
             if g == "sanitizer" and dynamic_blocked:
                 stages.append(_skipped(g, dynamic_blocked))
                 continue
-            if g == "cbmc" and approval.approved:
-                tampered = _recheck_protected(spec, ws, ctx, "before the cbmc gate")
+            if g in ("cbmc", "wp", "lean") and approval.approved:
+                tampered = _recheck_protected(spec, ws, ctx, f"before the {g} gate")
                 if tampered is not None:
                     stages.append(tampered)
                     approval = approval.model_copy(update={"approved": False, "reasons": tampered.details["reasons"]})
@@ -285,9 +301,10 @@ def verify(
     assumptions = [
         f"approved spec {spec.spec_id} version {spec.version} (sha256 {approval.spec_hash})",
     ]
-    cbmc_stage = next((s for s in stages if s.stage == "cbmc"), None)
-    if cbmc_stage is not None:
-        assumptions.extend(str(a) for a in cbmc_stage.details.get("assumptions", []))
+    for formal_name in ("cbmc", "wp", "lean"):
+        fst = next((s for s in stages if s.stage == formal_name), None)
+        if fst is not None:
+            assumptions.extend(str(a) for a in fst.details.get("assumptions", []))
     san_stage = next((s for s in stages if s.stage == "sanitizer"), None)
     if san_stage is not None and san_stage.outcome is Outcome.PASS:
         assumptions.append(

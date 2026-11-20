@@ -6,8 +6,13 @@ The statuses are deliberately explicit.  In particular:
   found by CBMC for the approved harness, input constraints and unwind bound,
   every loop was fully unwound (unwinding assertions passed) and the harness was
   shown to be non-vacuous".  It is never promoted to ``PROVED`` automatically.
-* ``PROVED`` is reserved for engines that produce unbounded proofs (planned for
-  V2: Frama-C/WP, Lean 4).  No V1 backend emits it.
+* ``PROVED`` is produced only by the V2 ``wp`` gate: Frama-C/WP discharged
+  every proof obligation of the approved ACSL contract *and* every runtime-
+  error guard (``-wp-rte``), the smoke tests found no inconsistent
+  precondition, and every other required gate passed.  It is a deductive,
+  unbounded result within WP's memory and machine model (partial correctness
+  unless the spec requires termination).  CBMC never produces it, and Lean
+  model proofs never upgrade a C verdict to it.
 * "No counterexample found" is not success by itself: timeouts, insufficient
   unwinding, vacuous harnesses, skipped gates and tool failures all map to
   non-success statuses.
@@ -147,5 +152,11 @@ def outcome_to_status(stage: str, outcome: Outcome) -> Status | None:
         "integrity": Status.STATIC_ANALYSIS_WARNING,
         "sanitizer": Status.RUNTIME_TEST_FAILED,
         "cbmc": Status.COUNTEREXAMPLE_FOUND,
+        # WP never "disproves" (unproved goals are INCONCLUSIVE); a FAIL means a
+        # goal was refuted by a prover / an RTE guard is definitely violated.
+        "wp": Status.COUNTEREXAMPLE_FOUND,
+        # Lean FAIL = the C implementation disagrees with the proved model on a
+        # concrete test vector.
+        "lean": Status.RUNTIME_TEST_FAILED,
         "policy": Status.TOOL_ERROR,
     }.get(stage, Status.UNKNOWN)

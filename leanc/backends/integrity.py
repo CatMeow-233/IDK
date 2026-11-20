@@ -420,7 +420,9 @@ def _include_problem(spec: Spec, name: str, quoted: bool) -> str | None:
     norm = "/".join(parts)
     if parts and parts[-1] == "leanc.h":
         return "leanc.h is for the trusted harness only"
-    others = [spec.verification.harness, *spec.sources.editable] + ([spec.tests.driver] if spec.tests.driver else [])
+    others = [*([spec.verification.harness] if spec.verification else []), *spec.sources.editable] + (
+        [spec.tests.driver] if spec.tests.driver else []
+    )
     for p in others:
         if norm == p or posixpath.basename(p) == parts[-1] or p.endswith("/" + norm):
             return f"{name!r} names a harness, test or source file, not a header"

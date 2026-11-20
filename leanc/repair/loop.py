@@ -113,13 +113,48 @@ def stage_regressions(before: VerificationResult, after: VerificationResult) -> 
     return out
 
 
+PROOF_GATES = ("wp", "lean")
+
+
+def all_gates_pass(vr: VerificationResult) -> bool:
+    """Every required gate passed.  For specs without a formal gate this is the
+    best achievable outcome (status stays UNKNOWN: nothing was formally
+    verified), so the repair loop treats it as its goal - without ever
+    reporting it as a success status."""
+    if vr.approval is not None and not vr.approval.approved:
+        return False
+    req = [s for s in vr.stages if s.required and s.stage != "spec"]
+    return bool(req) and all(s.outcome is Outcome.PASS for s in req)
+
+
+def _goal_reached(vr: VerificationResult) -> bool:
+    return is_success(vr.status) or all_gates_pass(vr)
+
+
+def proof_repairable(vr: VerificationResult) -> bool:
+    """UNKNOWN only because proof obligations are not yet discharged (WP goals
+    unproved, Lean theorems unproved) while every other required gate passed.
+    The repair agent may then add *proof annotations* (loop invariants, helper
+    contracts, Lean proofs); the code under test must keep passing everything."""
+    if vr.status is not Status.UNKNOWN:
+        return False
+    open_ = [s for s in vr.stages if s.required and s.stage != "spec" and s.outcome is not Outcome.PASS]
+    return bool(open_) and all(s.stage in PROOF_GATES and s.outcome is Outcome.INCONCLUSIVE for s in open_)
+
+
 def is_improvement(before: VerificationResult, after: VerificationResult) -> bool:
     """A candidate is kept only if it verifies, or if it is still a *definite*
     failure that is strictly better (better-ranked definite status, or the
     same status with strictly fewer failures and no newly introduced ones),
     and no required gate lost its definite verdict."""
-    if is_success(after.status):
+    if _goal_reached(after):
         return True
+    if proof_repairable(before):
+        # proof repair: strictly fewer open obligations, nothing else may change
+        if not proof_repairable(after):
+            return False
+        fixed, introduced = _diff_failures(before, after)
+        return bool(fixed) and not introduced
     if after.status not in DEFINITE_FAILURES:
         return False  # UNKNOWN / TIMEOUT / TOOL_ERROR / SPEC_UNAPPROVED are never improvements
     if stage_regressions(before, after):
@@ -178,7 +213,7 @@ def repair_loop(
 
     if is_success(initial.status):
         return RepairOutcome(status=initial.status, final=initial, message="already verified; no repair needed")
-    if initial.status not in REPAIRABLE:
+    if initial.status not in REPAIRABLE and not proof_repairable(initial):
         return RepairOutcome(
             status=initial.status,
             final=initial,
@@ -193,9 +228,10 @@ def repair_loop(
         )
 
     try:
-        best_sources = {rel: ws.read_text(rel) for rel in spec.sources.editable if ws.exists(rel)}
+        best_sources = {rel: ws.read_text(rel) for rel in spec.editable_paths() if ws.exists(rel)}
         headers = {h: ws.read_text(h) for h in spec.sources.headers if ws.exists(h)}
-        harness = ws.read_text(spec.verification.harness) if ws.exists(spec.verification.harness) else None
+        hpath = spec.verification.harness if spec.verification is not None else None
+        harness = ws.read_text(hpath) if hpath and ws.exists(hpath) else None
         tests = ws.read_text(spec.tests.driver) if spec.tests.driver and ws.exists(spec.tests.driver) else None
     except LeanCError as exc:
         return RepairOutcome(status=initial.status, final=initial, message=f"cannot start repair: {exc}")
@@ -299,7 +335,7 @@ def repair_loop(
             options=options,
             run_dir=rdir / "verify",
             run_id=f"{base_run_id}-r{n}",
-            candidate={k: v for k, v in candidate.items() if k in spec.sources.editable},
+            candidate={k: v for k, v in candidate.items() if k in spec.editable_paths()},
             spec=spec,
         )
         rr.verification_path = str((rdir / "verify" / "verification.json").relative_to(run_dir))
@@ -307,8 +343,12 @@ def repair_loop(
         rr.fixed_failures, rr.introduced_failures = _diff_failures(best_vr, vr)
         regressions = stage_regressions(best_vr, vr) if not is_success(vr.status) else []
         if is_improvement(best_vr, vr):
-            best_vr, best_sources = vr, {k: v for k, v in candidate.items() if k in spec.sources.editable}
-            rr.note = "accepted" + (" (verified)" if is_success(vr.status) else " (improvement; continuing)")
+            best_vr, best_sources = vr, {k: v for k, v in candidate.items() if k in spec.editable_paths()}
+            rr.note = "accepted" + (
+                " (verified)"
+                if is_success(vr.status)
+                else " (all required gates pass; no formal gate)" if all_gates_pass(vr) else " (improvement; continuing)"
+            )
         else:
             rr.reverted = True
             rr.note = (
@@ -320,12 +360,12 @@ def repair_loop(
                 rr.note += " (gate regression: " + "; ".join(regressions) + ")"
         rounds.append(rr)
         log.info("round %d: %s -> %s (%s)", n, rr.status_before, vr.status, rr.note)
-        if is_success(vr.status):
+        if _goal_reached(vr):
             break
 
     written: list[str] = []
-    if is_success(best_vr.status):
-        final_status = best_vr.status
+    if _goal_reached(best_vr):
+        final_status = best_vr.status  # UNKNOWN when the spec has no formal gate: never upgraded
         vdir = run_dir / "verified-candidate"
         for rel, content in best_sources.items():
             d = vdir / rel
@@ -341,7 +381,12 @@ def repair_loop(
                 if not ws.exists(rel) or ws.read_text(rel) != content:
                     ws.write_text(rel, content)
                     written.append(rel)
-        message = f"verified after {len(rounds)} repair round(s); verified sources saved in {vdir}"
+        message = (
+            f"verified after {len(rounds)} repair round(s); verified sources saved in {vdir}"
+            if is_success(best_vr.status)
+            else f"all required gates pass after {len(rounds)} repair round(s), but the spec has no formal gate: "
+            f"status remains {best_vr.status.value}; sources saved in {vdir}"
+        )
     else:
         final_status = Status.REPAIR_EXHAUSTED
         best_dir = run_dir / "best-candidate"

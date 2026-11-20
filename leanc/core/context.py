@@ -163,7 +163,7 @@ def make_context(
     raw = run_dir / "raw"
     for d in (snapshot, build, raw, run_dir / "logs"):
         d.mkdir(parents=True, exist_ok=True)
-    files = list(dict.fromkeys([*spec.sources.editable, *spec.protected_paths()]))
+    files = list(dict.fromkeys([*spec.editable_paths(), *spec.protected_paths()]))
     existing = [f for f in files if ws.exists(f)]
     ws.copy_into(existing, snapshot)
     return BackendContext(

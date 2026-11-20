@@ -765,7 +765,8 @@ def build_repair_prompt(req: RepairRequest, limits: PromptLimits = DEFAULT_LIMIT
     # in the trusted harness / tests (an assertion failure points at the harness).
     excerpt_files = dict(req.sources)
     if req.harness:
-        excerpt_files.setdefault(spec.verification.harness, req.harness)
+        if spec.verification is not None:
+            excerpt_files.setdefault(spec.verification.harness, req.harness)
     if req.tests and spec.tests.driver:
         excerpt_files.setdefault(spec.tests.driver, req.tests)
     parts += [
