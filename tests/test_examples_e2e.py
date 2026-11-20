@@ -36,8 +36,6 @@ def _tools(payload: dict) -> set[str]:
     return {f["tool"] for f in payload.get("verification", {}).get("failures", [])}
 
 
-@pytest.mark.slow
-@pytest.mark.parametrize("name", CASES)
 def _skip_without_v2_tools(name: str) -> None:
     """V2 gates need optional tools; skip (never fail) when they are absent."""
     from leanc.specs.loader import load_spec
@@ -64,6 +62,8 @@ def _skip_without_v2_tools(name: str) -> None:
             pytest.skip("clang++ not available")
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("name", CASES)
 def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
     _skip_without_v2_tools(name)
     exp = yaml.safe_load((EXAMPLES / name / "expected.yaml").read_text())

@@ -1,9 +1,9 @@
 {
   "meta": {
-    "date": "2026-11-19T14:13:04Z",
+    "date": "2026-11-20T10:17:47Z",
     "leanc_version": "0.1.0",
     "python": "3.13.18",
-    "platform": "Linux 6.18.44-fc-v653 x86_64",
+    "platform": "Linux 6.18.44-fc-v726 x86_64",
     "tools": "Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)"
   },
   "results": [
@@ -21,7 +21,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 4.51,
+        "seconds": 3.88,
         "detected_by": [
           "asan",
           "cbmc"
@@ -57,7 +57,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 10.75,
+        "seconds": 8.57,
         "repair_rounds": 1,
         "rejected_rounds": [],
         "violations": []
@@ -75,7 +75,7 @@
       "verify": {
         "status": "TIMEOUT",
         "exit_code": 21,
-        "seconds": 4.24,
+        "seconds": 4.06,
         "detected_by": [],
         "stages": [
           {
@@ -108,7 +108,7 @@
       "run": {
         "status": "TIMEOUT",
         "exit_code": 21,
-        "seconds": 4.39,
+        "seconds": 4.21,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -135,7 +135,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 3.31,
+        "seconds": 2.71,
         "detected_by": [
           "asan",
           "cbmc"
@@ -171,7 +171,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 5.33,
+        "seconds": 4.58,
         "repair_rounds": 5,
         "rejected_rounds": [
           1,
@@ -191,6 +191,107 @@
       "match": true
     },
     {
+      "example": "cpp_bounds_bug",
+      "expected": {
+        "verify": "RUNTIME_TEST_FAILED",
+        "run": "UNKNOWN",
+        "repaired": true,
+        "detected_by": [
+          "asan"
+        ],
+        "rejected_rounds": [],
+        "notes": "lc::SampleBuffer (protected header include/sample_buffer.hpp) owns a heap array of exactly capacity ints. The shipped member function append() checks `size_ > capacity_` instead of `size_ >= capacity_`, so appending to a full buffer writes one int past the allocation. It compiles cleanly with clang++ -std=c++20, passes the C++ integrity gate, and the Clang Static Analyzer reports nothing (it does not relate size_ to the allocation size); the trusted C++ tests fill_to_capacity and capacity_one fail under AddressSanitizer (\"heap-buffer-overflow ... WRITE of size 4 ... src/sample_buffer.cpp:14 in lc::SampleBuffer::append(int)\"), so verify is RUNTIME_TEST_FAILED. Mock round 1 changes the check to `>=`; every required gate then passes and the repaired source is written back, but the spec has no formal gate (no C++20-capable model checker is available), so the final status is honestly UNKNOWN, not VERIFIED_BOUNDED.\n"
+      },
+      "verify": {
+        "status": "RUNTIME_TEST_FAILED",
+        "exit_code": 12,
+        "seconds": 1.33,
+        "detected_by": [
+          "asan"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "FAIL"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 2.03,
+        "repair_rounds": 1,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "cpp_ring_buffer",
+      "expected": {
+        "verify": "UNKNOWN",
+        "run": "UNKNOWN",
+        "detected_by": [],
+        "rejected_rounds": [],
+        "notes": "C++20 class template lc::RingBuffer<T, N> (constrained with std::copyable, constexpr/[[nodiscard]]/noexcept members, std::array storage) declared in the protected header include/ring_buffer.hpp; the editable src/ring_buffer.cpp defines push/pop/front/at out of line and provides the explicit instantiation RingBuffer<int, 4> that the header declares extern. clang++ compiles it (-std=c++20, warnings block), the C++ integrity gate accepts the weak (COMDAT) symbols of the header template instantiation and of the std::array<int, 4>::operator[] library instantiation, the Clang Static Analyzer reports nothing, and the four trusted C++ test cases (fifo, full, empty, wrap_around against a reference model) pass under ASan+UBSan+LSan. Gates are compile, static_analysis, sanitizer only - CBMC and WP do not support C++ - so the honest overall status is UNKNOWN (\"no formal verification gate\"), never VERIFIED_BOUNDED.\n"
+      },
+      "verify": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 1.47,
+        "detected_by": [],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 1.58,
+        "repair_rounds": 0,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
       "example": "div_by_zero",
       "expected": {
         "verify": "COUNTEREXAMPLE_FOUND",
@@ -204,7 +305,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 3.74,
+        "seconds": 3.25,
         "detected_by": [
           "cbmc",
           "ubsan"
@@ -240,7 +341,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 11.18,
+        "seconds": 9.36,
         "repair_rounds": 2,
         "rejected_rounds": [],
         "violations": []
@@ -261,7 +362,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 1.64,
+        "seconds": 1.38,
         "detected_by": [
           "cbmc",
           "ubsan"
@@ -297,8 +398,67 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 2.64,
+        "seconds": 2.38,
         "repair_rounds": 1,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "lean_clamp",
+      "expected": {
+        "verify": "UNKNOWN",
+        "run": "VERIFIED_BOUNDED",
+        "detected_by": [
+          "lean"
+        ],
+        "notes": "V2 'lean' gate.  The C code is correct: compile, integrity, static analysis, sanitizer tests and CBMC (every int x, lo, hi; NULL / non-NULL out; 6 reachable probes) all pass, and the C implementation agrees with the Lean model on all 1331 boundary vectors generated by lean/Vectors.lean.  The shipped proof file proves nothing (6 x sorry => sorryAx), so the lean gate is INCONCLUSIVE and the status is UNKNOWN; this is proof-repairable.  Mock round 1 proves 3 theorems (fewer open obligations: accepted), round 2 the other 3 => lean PASS.  The final status is VERIFIED_BOUNDED, NOT PROVED: Lean proves facts about the MODEL only, the model is linked to the C code by differential test vectors, and the formal C gate is (bounded) CBMC.\n"
+      },
+      "verify": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 3.56,
+        "detected_by": [
+          "lean"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "lean",
+            "outcome": "INCONCLUSIVE"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "VERIFIED_BOUNDED",
+        "exit_code": 0,
+        "seconds": 10.05,
+        "repair_rounds": 2,
         "rejected_rounds": [],
         "violations": []
       },
@@ -320,7 +480,7 @@
       "verify": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 1.77,
+        "seconds": 1.58,
         "detected_by": [
           "cbmc"
         ],
@@ -355,13 +515,13 @@
         "spec_full_unwind.yaml": {
           "status": "VERIFIED_BOUNDED",
           "expected": "VERIFIED_BOUNDED",
-          "seconds": 14.94
+          "seconds": 12.1
         }
       },
       "run": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 2.24,
+        "seconds": 1.87,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -383,7 +543,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 2.9,
+        "seconds": 2.57,
         "detected_by": [
           "cbmc",
           "clang-static-analyzer",
@@ -420,7 +580,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 3.9,
+        "seconds": 3.23,
         "repair_rounds": 1,
         "rejected_rounds": [],
         "violations": []
@@ -442,7 +602,7 @@
       "verify": {
         "status": "COUNTEREXAMPLE_FOUND",
         "exit_code": 13,
-        "seconds": 1.53,
+        "seconds": 1.73,
         "detected_by": [
           "cbmc",
           "ubsan"
@@ -478,7 +638,7 @@
       "run": {
         "status": "REPAIR_EXHAUSTED",
         "exit_code": 50,
-        "seconds": 3.93,
+        "seconds": 3.2,
         "repair_rounds": 5,
         "rejected_rounds": [],
         "violations": []
@@ -496,7 +656,7 @@
       "verify": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 10.95,
+        "seconds": 8.45,
         "detected_by": [],
         "stages": [
           {
@@ -529,7 +689,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 10.95,
+        "seconds": 8.58,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -550,7 +710,7 @@
       "verify": {
         "status": "RUNTIME_TEST_FAILED",
         "exit_code": 12,
-        "seconds": 3.83,
+        "seconds": 2.92,
         "detected_by": [
           "lsan"
         ],
@@ -585,7 +745,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 7.3,
+        "seconds": 5.36,
         "repair_rounds": 1,
         "rejected_rounds": [],
         "violations": []
@@ -603,7 +763,7 @@
       "verify": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 1.54,
+        "seconds": 1.18,
         "detected_by": [],
         "stages": [
           {
@@ -636,7 +796,7 @@
       "run": {
         "status": "VERIFIED_BOUNDED",
         "exit_code": 0,
-        "seconds": 1.66,
+        "seconds": 1.39,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []
@@ -659,7 +819,7 @@
       "verify": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 1.21,
+        "seconds": 1.04,
         "detected_by": [
           "cbmc"
         ],
@@ -686,13 +846,188 @@
         "spec_fixed_harness.yaml": {
           "status": "COUNTEREXAMPLE_FOUND",
           "expected": "COUNTEREXAMPLE_FOUND",
-          "seconds": 1.51
+          "seconds": 1.26
         }
       },
       "run": {
         "status": "UNKNOWN",
         "exit_code": 20,
-        "seconds": 1.19,
+        "seconds": 1.14,
+        "repair_rounds": 0,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "wp_contract_violation",
+      "expected": {
+        "verify": "COUNTEREXAMPLE_FOUND",
+        "run": "PROVED",
+        "detected_by": [
+          "cbmc",
+          "frama-c-wp"
+        ],
+        "notes": "V2 contract violation.  The shipped find_first never examines a[n-1], violating the ACSL post-condition of behavior found (\\result == 1) whenever the key occurs only in the last element.  The trusted tests miss it (no test puts the key last) and so does the static analyzer; CBMC finds a counterexample for the harness assertion that mirrors the contract (e.g. n = 1, a[0] == key), and Frama-C/WP leaves the same post-condition unproved (WP never claims a counterexample: unproved goals are INCONCLUSIVE).  The worst status wins: COUNTEREXAMPLE_FOUND.  Mock repair round 1 changes the bound to i < n (the loop invariants stay as they are) => CBMC passes and WP proves every goal including termination => PROVED.\n"
+      },
+      "verify": {
+        "status": "COUNTEREXAMPLE_FOUND",
+        "exit_code": 13,
+        "seconds": 14.93,
+        "detected_by": [
+          "cbmc",
+          "frama-c-wp"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "FAIL"
+          },
+          {
+            "stage": "wp",
+            "outcome": "INCONCLUSIVE"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "PROVED",
+        "exit_code": 0,
+        "seconds": 20.19,
+        "repair_rounds": 1,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "wp_proof_repair",
+      "expected": {
+        "verify": "UNKNOWN",
+        "run": "PROVED",
+        "detected_by": [
+          "frama-c-wp"
+        ],
+        "notes": "V2 proof repair.  The shipped index_of_max is CORRECT: compile, integrity, static analysis, sanitizer tests and CBMC (n = 1..5, arbitrary values) all pass, so the status is UNKNOWN only because Frama-C/WP cannot prove the loop without invariants (9 goals open: in_bounds, is_max, is_first, 4 RTE guards, assigns \\nothing, termination).  This is proof-repairable.  Mock round 1 adds bounds invariants and 'loop assigns' (3 goals left: is_max, is_first, termination - strictly fewer, none introduced: accepted); round 2 adds the functional invariants and 'loop variant n - i' => every goal proved, termination included => PROVED.  The executable code never changes: only proof annotations are added.\n"
+      },
+      "verify": {
+        "status": "UNKNOWN",
+        "exit_code": 20,
+        "seconds": 14.47,
+        "detected_by": [
+          "frama-c-wp"
+        ],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "wp",
+            "outcome": "INCONCLUSIVE"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "PROVED",
+        "exit_code": 0,
+        "seconds": 36.5,
+        "repair_rounds": 2,
+        "rejected_rounds": [],
+        "violations": []
+      },
+      "match": true
+    },
+    {
+      "example": "wp_safe_array_get",
+      "expected": {
+        "verify": "PROVED",
+        "run": "PROVED",
+        "detected_by": [],
+        "notes": "V2 'wp' gate (Frama-C/WP).  Same code as examples/safe_array_get, but the protected header carries an ACSL contract (behaviours null_input / out_of_range / in_range, complete and disjoint; assigns *out; *out unchanged on error; arr never modified, out separated from arr).  compile, integrity, static analysis, sanitizer tests and CBMC (len <= 8, any idx) pass; WP proves every functional, frame and runtime-error goal for ALL len / idx (no bound), all smoke tests pass, termination is required and proved => PROVED (deductive, within WP's Typed memory model and the x86_64 machine model).\n"
+      },
+      "verify": {
+        "status": "PROVED",
+        "exit_code": 0,
+        "seconds": 8.14,
+        "detected_by": [],
+        "stages": [
+          {
+            "stage": "spec",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "compile",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "integrity",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "static_analysis",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "sanitizer",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "cbmc",
+            "outcome": "PASS"
+          },
+          {
+            "stage": "wp",
+            "outcome": "PASS"
+          }
+        ]
+      },
+      "variants": {},
+      "run": {
+        "status": "PROVED",
+        "exit_code": 0,
+        "seconds": 8.4,
         "repair_rounds": 0,
         "rejected_rounds": [],
         "violations": []

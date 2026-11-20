@@ -167,15 +167,18 @@ V2 工具是可選的：`leanc doctor` 會報告 clang++、Frama-C（需 ≥ 27�
 python scripts/run_experiments.py        # 結果寫入 experiments/results/results.{json,md}
 ```
 
-最近一次執行（2026-11-19T14:13:04Z，Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)，Python 3.13.18，`run` 使用 **mock** provider——固定 fixture，**不是** LLM 表現）：
+最近一次執行（2026-11-20T10:17:47Z，Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)，Python 3.13.18，`run` 使用 **mock** provider——固定 fixture，**不是** LLM 表現）：
 
 | example | verify (expected) | detected by | run --provider mock (expected) | rounds | rejected rounds | match |
 |---|---|---|---|---|---|---|
 | array_oob | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | asan, cbmc | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
 | cbmc_timeout | TIMEOUT (TIMEOUT) | - | TIMEOUT (TIMEOUT) | 0 | - | yes |
 | cheating_repair | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | asan, cbmc | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 5 | 1, 2, 3, 4 | yes |
+| cpp_bounds_bug | RUNTIME_TEST_FAILED (RUNTIME_TEST_FAILED) | asan | UNKNOWN (UNKNOWN) | 1 | - | yes |
+| cpp_ring_buffer | UNKNOWN (UNKNOWN) | - | UNKNOWN (UNKNOWN) | 0 | - | yes |
 | div_by_zero | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 2 | - | yes |
 | int_overflow | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
+| lean_clamp | UNKNOWN (UNKNOWN) | lean | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 2 | - | yes |
 | loop_unwind | UNKNOWN (UNKNOWN) | cbmc | UNKNOWN (UNKNOWN) | 0 | - | yes |
 | ↳ loop_unwind/spec_full_unwind.yaml | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | | | | | |
 | null_deref | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, clang-static-analyzer, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
@@ -185,8 +188,11 @@ python scripts/run_experiments.py        # 結果寫入 experiments/results/resu
 | safe_array_get | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | - | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 0 | - | yes |
 | vacuous_harness | UNKNOWN (UNKNOWN) | cbmc | UNKNOWN (UNKNOWN) | 0 | - | yes |
 | ↳ vacuous_harness/spec_fixed_harness.yaml | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | | | | | |
+| wp_contract_violation | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, frama-c-wp | PROVED (PROVED) | 1 | - | yes |
+| wp_proof_repair | UNKNOWN (UNKNOWN) | frama-c-wp | PROVED (PROVED) | 2 | - | yes |
+| wp_safe_array_get | PROVED (PROVED) | - | PROVED (PROVED) | 0 | - | yes |
 
-**12/12 範例符合預期。** 全部 `verify` 合計 41 s、全部 `run` 合計 65 s（4 核心容器）。
+**18/18 範例符合預期。** 全部 `verify` 合計 79 s、全部 `run` 合計 133 s（4 核心容器）。
 原始資料：[`experiments/results/results.json`](experiments/results/results.json)。
 
 另外，`tests/test_attacks_e2e.py` 收錄了兩輪對抗式審查中發現的 20 種「讓錯誤程式得到 `VERIFIED_BOUNDED`」的攻擊
