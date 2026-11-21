@@ -15,6 +15,10 @@ foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < p
 - shared code -> move DOWN. MUST NOT: upward import, lazy import, cross-package re-export shim.
 - allowed: package `__init__` re-exporting its OWN submodules (split modules keep their import path).
 
+## constraints
+- leanc/cli.py: single module (argparse + main). command bodies -> leanc/pipeline/commands/*.
+- leanc/repair/patch: fuzz 0; DEFAULT_MAX_OFFSET <= 50 (wider window mis-matches repetitive C lines).
+
 ## errors
 - MUST NOT: bare except, except Exception, except BaseException. sole exception: leanc/cli.py main() -> print traceback, return 70.
 - MUST NOT: swallow (body only pass/continue/return/return None) except ProcessLookupError FileNotFoundError FileExistsError BlockingIOError BrokenPipeError.
