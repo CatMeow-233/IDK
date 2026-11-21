@@ -208,7 +208,7 @@ class VectorCheck:
         spec, ctx = self.spec, self.ctx
         defines = [define if define.startswith("-D") else f"-D{define}" for define in spec.compile.defines]
         return [
-            self.cc, f"-std={spec.language.standard}", *BASE_FLAGS, *self.plan.compile_flags, *spec.compile.flags,
+            self.cc, f"-std={spec.language.standard}", *BASE_FLAGS, *spec.compile.flags, *self.plan.compile_flags,
             *defines, *ctx.include_args(), f"-I{os.path.realpath(ctx.include_dir)}", *DIAGNOSTIC_FLAGS,
             *spec.sources.editable, self.vectors.driver, "-o", str(self.binary),
         ]

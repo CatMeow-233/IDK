@@ -47,7 +47,7 @@ def test_build_command_order(tmp_path, needs_clang):
     argv = build_command(ctx, Path("/x/test_bin"), sanitizer_plan(spec.tests.sanitizers))
     assert argv[1:5] == ["-std=c17", "-g", "-O1", "-fno-omit-frame-pointer"]
     i = argv.index
-    assert i("-fsanitize=address,undefined") < i("-Wall") < i("-DFOO=1") < i("-Iinclude") < i("src/f.c")
+    assert i("-Wall") < i("-fsanitize=address,undefined") < i("-DFOO=1") < i("-Iinclude") < i("src/f.c")
     assert argv[-4:] == ["src/f.c", "tests/driver.c", "-o", "/x/test_bin"]
 
 

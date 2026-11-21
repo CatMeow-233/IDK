@@ -147,7 +147,7 @@ def cmd_spec_show(args) -> int:
     console.info(f"# sha256 {spec_hash(spec)}")
     console.info(f"# protected files: {', '.join(spec.protected_paths())}")
     if spec.verification is not None:
-        console.info(f"# effective CBMC checks: {', '.join(spec.verification.effective_checks())}")
+        console.info(f"# effective CBMC checks: {', '.join(spec.effective_cbmc_checks())}")
     console.info(f"# gates: {', '.join(spec.gates)} (+ mandatory integrity gate after compile)")
     console.info(spec_to_yaml(spec))
     return 0

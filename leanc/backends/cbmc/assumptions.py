@@ -59,7 +59,7 @@ def scope_assumptions(
     statements = [
         _unwinding_statement(ctx, version),
         "checked property classes: "
-        + ", ".join(verification.effective_checks())
+        + ", ".join(ctx.spec.effective_cbmc_checks())
         + " - plus every assertion of the approved harness; other properties are not checked",
         (
             f"inputs as constrained by the approved harness {verification.harness} (its LEANC_ASSUME preconditions) "

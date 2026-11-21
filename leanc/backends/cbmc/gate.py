@@ -70,7 +70,7 @@ def _initial_details(ctx: BackendContext) -> dict[str, Any]:
         "sandbox": ctx.sandbox.kind,
         "argv": {},
         "raw": {},
-        "checks": verification.effective_checks(),
+        "checks": ctx.spec.effective_cbmc_checks(),
         "unwind": verification.unwind,
         "unwindset": dict(verification.unwindset),
         "malloc_may_fail": verification.malloc_may_fail,
@@ -399,7 +399,7 @@ def _pass_summary(gate: _Gate, tally: PropertyTally) -> str:
     return (
         f"CBMC: all {tally.checked} properties hold for the approved harness within unwind {verification.unwind} "
         f"(all loops fully unwound; all {probe_count} vacuity probe(s) reachable; "
-        f"checks: {', '.join(verification.effective_checks())})"
+        f"checks: {', '.join(gate.ctx.spec.effective_cbmc_checks())})"
     )
 
 
