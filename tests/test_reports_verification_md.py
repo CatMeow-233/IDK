@@ -15,7 +15,7 @@ from reports_support import (
     _vr,
 )
 
-from leanc.foundation.models import TraceStep
+from leanc.foundation.models import Diagnostic, TraceStep
 from leanc.foundation.status import EXIT_CODES, Outcome, Status
 from leanc.reports.markdown import (
     ALWAYS_LIMITATIONS,
@@ -122,6 +122,15 @@ def test_findings_grouped_by_detecting_tool():
     assert "**runtime** at `src/safe_array_get.c:12:9 in safe_array_get()`: heap-buffer-overflow READ of size 4" in asan
     assert "property `heap-buffer-overflow`" in asan and "raw output `raw/sanitizer-case-oob.txt`" in asan
     assert "(optional)" in _section(md, "Gates")
+
+
+def test_diagnostics_of_a_gate_without_verdict_are_not_called_non_blocking():
+    vr = _vr(Status.UNKNOWN)
+    unmodelled = Diagnostic(tool="cbmc", severity="warning", message="no body for function memchr", rule_id="no-body")
+    vr.stages.append(_stage("cbmc-extra", Outcome.INCONCLUSIVE, diagnostics=[unmodelled], required=False))
+    findings = _section(render_verification_md(vr), "Findings by detecting tool")
+    cbmc = findings.split("### `cbmc` ")[1].split("###")[0]
+    assert "warning (stage INCONCLUSIVE) at" in cbmc and "non-blocking" not in cbmc
 
 
 def test_static_failure_not_duplicated_by_its_diagnostic():

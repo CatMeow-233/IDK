@@ -11,19 +11,23 @@ from leanc.pipeline import controller
 from leanc.pipeline.controller import (
     CBMC_MEMORY_MODEL_LIMITATION,
     INTEGRITY_FAILED,
+    INTEGRITY_NOT_RUN,
     LEAK_SANITIZER_LIMITATION,
     NO_LEAK_CHECK_LIMITATION,
     TEST_PATHS_ONLY_LEAK_LIMITATION,
+    memory_limitations,
     verify,
 )
 from leanc.specs.loader import load_spec
 
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 CANDIDATE_GATES = ("sanitizer", "cbmc", "wp", "lean")
 SPURIOUS = "spurious finding on rejected code"
 WP_EXAMPLE = "wp_safe_array_get"
 LEAN_EXAMPLE = "lean_clamp"
 PLAIN_EXAMPLE = "safe_array_get"
 SAFE_ARRAY_CHECKS = "checks: [unsigned-overflow, conversion]"
+SAFE_ARRAY_GATES = "gates: [compile, static_analysis, sanitizer, cbmc]"
 TESTS_SECTION = "tests:\n"
 
 
@@ -159,3 +163,29 @@ def test_skipped_gates_contribute_no_coverage_limitations(example_copy, tmp_path
     assert NO_LEAK_CHECK_LIMITATION in result.limitations
     assert LEAK_SANITIZER_LIMITATION not in result.limitations
     assert CBMC_MEMORY_MODEL_LIMITATION not in result.limitations
+
+
+@pytest.mark.parametrize("undecided", [Outcome.ERROR, Outcome.TIMEOUT, Outcome.INCONCLUSIVE])
+def test_leak_checks_without_a_verdict_are_not_counted(undecided):
+    spec = load_spec(EXAMPLES / PLAIN_EXAMPLE / "spec.yaml")
+    spec.verification.checks.append("memory-leak")
+    stages = [StageResult(stage="sanitizer", outcome=undecided), StageResult(stage="cbmc", outcome=undecided)]
+    assert memory_limitations(spec, stages) == [NO_LEAK_CHECK_LIMITATION]
+
+
+def test_cbmc_leak_verdict_without_lsan_verdict_keeps_only_the_cbmc_limits():
+    spec = load_spec(EXAMPLES / PLAIN_EXAMPLE / "spec.yaml")
+    spec.verification.checks.append("memory-leak")
+    stages = [StageResult(stage="sanitizer", outcome=Outcome.ERROR), StageResult(stage="cbmc", outcome=Outcome.PASS)]
+    assert memory_limitations(spec, stages) == [CBMC_MEMORY_MODEL_LIMITATION]
+
+
+
+def test_candidate_gates_never_run_when_compile_and_integrity_are_absent(example_copy, tmp_path, monkeypatch, capsys):
+    root = _approved(example_copy, PLAIN_EXAMPLE, {SAFE_ARRAY_GATES: "gates: [cbmc]"})
+    stub = _all_pass(monkeypatch)
+    result = _verify(root, tmp_path)
+    assert "cbmc" not in stub.called
+    cbmc = _stages(result)["cbmc"]
+    assert cbmc.outcome is Outcome.SKIPPED and INTEGRITY_NOT_RUN in cbmc.summary
+    assert result.status is Status.UNKNOWN

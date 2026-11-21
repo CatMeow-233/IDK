@@ -131,8 +131,24 @@ def _passes(vr: VerificationResult, stage: str) -> bool:
     return result is not None and result.outcome is Outcome.PASS
 
 
+def _stage_failure_counter(vr: VerificationResult, stages: frozenset[str]) -> Counter:
+    return Counter(_compare_key(f) for s in vr.stages if s.stage in stages for f in s.failures)
+
+
+def _gates_run_despite_integrity(vr: VerificationResult) -> frozenset[str]:
+    return frozenset(s.stage for s in vr.stages if s.stage != INTEGRITY_STAGE and s.outcome is not Outcome.SKIPPED)
+
+
+def _holds_ground(before: VerificationResult, after: VerificationResult, stages: frozenset[str]) -> bool:
+    if any(_passes(before, stage) and not _passes(after, stage) for stage in stages):
+        return False
+    return not _stage_failure_counter(after, stages) - _stage_failure_counter(before, stages)
+
+
 def _unblocks_integrity(before: VerificationResult, after: VerificationResult) -> bool:
-    return not _passes(before, INTEGRITY_STAGE) and _passes(after, INTEGRITY_STAGE)
+    if _passes(before, INTEGRITY_STAGE) or not _passes(after, INTEGRITY_STAGE):
+        return False
+    return _holds_ground(before, after, _gates_run_despite_integrity(before))
 
 
 def is_improvement(before: VerificationResult, after: VerificationResult) -> bool:

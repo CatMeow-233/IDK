@@ -12,6 +12,7 @@ from leanc.foundation.models import (
     TraceStep,
     VerificationResult,
 )
+from leanc.foundation.status import Outcome
 from leanc.reports.json_report import detecting_tools, is_finding, sort_tools
 from leanc.reports.markdown.markup import (
     LIMITS,
@@ -31,6 +32,9 @@ from leanc.reports.markdown.markup import (
 
 GATE_TABLE_HEADER = ["stage", "outcome", "status", "detecting tools", "duration", "summary"]
 DYNAMIC_FAILURE_KINDS = ("runtime", "test-oracle")
+
+
+NON_BLOCKING_ROLE = "non-blocking"
 
 
 class FindingKind(Enum):
@@ -98,12 +102,18 @@ def _failure_lines(stage: StageResult, f: FailureReport) -> list[str]:
     ]
 
 
+def _diagnostic_role(stage: StageResult) -> str:
+    if stage.outcome is Outcome.PASS or stage.failures:
+        return NON_BLOCKING_ROLE
+    return f"stage {stage.outcome.value}"
+
+
 def _diagnostic_lines(stage: StageResult, d: Diagnostic) -> list[str]:
     meta = [f"stage {code_span(stage.stage)}"]
     if d.rule_id:
         meta.append(f"rule {code_span(d.rule_id)}")
     return [
-        f"- {escape_inline(d.severity)} (non-blocking) at {location_span(d.location)}: "
+        f"- {escape_inline(d.severity)} ({_diagnostic_role(stage)}) at {location_span(d.location)}: "
         f"{escape_inline(d.message, LIMITS.detail_chars)}",
         "  - " + "; ".join(meta),
     ]
@@ -112,7 +122,7 @@ def _diagnostic_lines(stage: StageResult, d: Diagnostic) -> list[str]:
 def _tool_findings(tool: str, items: list[Finding]) -> list[str]:
     failures = sum(1 for finding in items if finding.kind is FindingKind.FAILURE)
     diagnostics = len(items) - failures
-    counts = [plural(failures, "failure")] + ([plural(diagnostics, "non-blocking diagnostic")] if diagnostics else [])
+    counts = [plural(failures, "failure")] + ([plural(diagnostics, "diagnostic")] if diagnostics else [])
     out = [f"### {tool_heading(tool)}: {', '.join(counts)}", ""]
     for finding in items[: LIMITS.findings_per_tool]:
         if isinstance(finding.item, FailureReport):

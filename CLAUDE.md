@@ -47,15 +47,17 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 - success only if every required gate ran and passed. timeout/unparsable/skipped/tool error != success.
 - VERIFIED_BOUNDED never -> PROVED. PROVED only from required wp gate PASS on approved ACSL contract.
 - protected files (spec, harness, tests driver, headers, lean spec/vectors) never written by generation/repair.
-- integrity non-PASS -> sanitizer cbmc wp lean SKIPPED (rejected code never executed/model-checked/proved); repair_loop counts integrity non-PASS -> PASS as progress.
-- cbmc: body-less callee outside bodiless.MODELLED_BODILESS_* -> gate never PASS; violation whose trace touches it -> diagnostic, never counterexample.
-- integrity macro check: gcc dumps mirror each verifier's own preprocessing (backends/verifier_macros.py); change together with cbmc/compile_flags.py and wp/argv.py.
+- sanitizer cbmc wp lean run only after integrity PASS; integrity absent or non-PASS -> SKIPPED (unchecked code never executed/model-checked/proved). repair_loop: integrity non-PASS -> PASS is progress only if every gate that ran before keeps its PASS and gains no failure.
+- cbmc: body-less callee outside bodiless.MODELLED_BODILESS_* -> gate never PASS; violation whose trace assigns its return value (return_value_<f>) -> diagnostic, never counterexample; other violations stay counterexamples.
+- integrity macro check: gcc dumps mirror each verifier's own preprocessing (backends/verifier_macros.py); CBMC mirror pinned to cbmc --preprocess, Frama-C mirror (-undef -nostdinc -imacros of -print-machdep-builtin-macros) pinned to a frama-c -cpp-command capture; change together with cbmc/compile_flags.py and wp/argv.py.
+- integrity frame check reads clang -fstack-usage output; no .su file or an unparsed row -> ERROR, never PASS.
+- known gaps (not detected): divergent macro names built by ##; header-defined macros that differ between tools (M_PI); frame size measured per function at -O0.
 - every instrumented build (sanitizer test, ownership trace project+driver, lean vectors) uses build.instrumented_compile_flags: BUILD_FIDELITY_FLAGS after compile.flags.
-- compile.flags MUST NOT carry -fsanitize*/-fno-sanitize* (spec validator); cbmc checks = spec.effective_cbmc_checks() (contract.safety included).
+- compile.flags MUST NOT carry -fsanitize*/-fno-sanitize* or tool-control options (specs/compile_options.TOOL_CONTROL_PREFIXES; spec validator); cbmc checks = spec.effective_cbmc_checks() (contract.safety included).
 
 ## check
 - `python -m scripts.constraints` MUST exit 0 (run from repo root; rules from constraints.toml; `--fix` removes comments/docstrings only when the AST is unchanged and no encoding cookie, rewrites the layer block; `--json`).
 - after a change: `python scripts/affected_tests.py --run` (import-graph selection vs HEAD; `--base <rev>` for a branch). MUST pass.
 - before creating or merging a PR: commit everything, then `python -m scripts.merge_gate` MUST exit 0. it tests a fresh worktree of the pinned HEAD with PYTEST_*/PYTHON* env stripped. order: fetch base (explicit refspec) -> committed + base != HEAD + base ancestor -> worktree + leanc resolves into it -> constraints -> full suite (junit: tests>0, 0 failed/errors/skipped) -> experiments N/N (N>0) -> approvals made by base code valid under HEAD code -> worktree unchanged. stops at first failure; no skip.
 - merge only after `MERGE GATE PASS head=<h> base=<b>`: fetch, confirm origin/main == <b> (else rerun the gate), then merge_pull_request expectedHeadSha=<h>, merge_method=merge. new commit after the gate -> rerun.
-- gate needs clang-18 cbmc bwrap; wp: frama-c>=27 at /opt/opam/*/bin; lean: /opt/lean/*/bin. ~20 min.
+- gate needs clang-18 gcc cbmc bwrap, x86-64 CPU with AVX2; wp: frama-c>=27 with -print-machdep-builtin-macros at /opt/opam/*/bin; lean: /opt/lean/*/bin. ~20 min.

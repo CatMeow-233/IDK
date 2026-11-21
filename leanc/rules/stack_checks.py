@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import os
 import posixpath
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from leanc.foundation.models import PolicyViolation
 from leanc.rules.findings import violation
+from leanc.specs.compile_options import is_diagnostic_option
 
 __all__ = [
     "MAX_STACK_FRAME_BYTES",
@@ -13,8 +15,10 @@ __all__ = [
     "STACK_FRAME_RULE",
     "UNBOUNDED_STACK_CHECK_FLAGS",
     "UNBOUNDED_STACK_RULE",
+    "StackUsage",
     "codegen_flags",
-    "stack_frame_violations",
+    "stack_usage_findings",
+    "stack_usage_path",
     "unbounded_stack_violations",
 ]
 
@@ -24,66 +28,47 @@ STACK_FRAME_RULE = "STACK_FRAME_TOO_LARGE"
 STACK_FRAME_CONSEQUENCE = (
     "a stack frame this large overflows the native stack, while CBMC has no stack limit and only runs out of memory"
 )
-UNKNOWN_FUNCTION = "?"
-UNKNOWN_SIZE = "?"
+STACK_USAGE_SUFFIX = ".su"
 
-UNBOUNDED_STACK_CHECK_FLAGS: tuple[str, ...] = (
-    "-fsyntax-only",
+DIAGNOSTIC_LAYOUT_FLAGS: tuple[str, ...] = (
     "-fno-color-diagnostics",
     "-fno-caret-diagnostics",
+    "-fdiagnostics-show-option",
+    "-fshow-column",
+    "-fshow-source-location",
+    "-fdiagnostics-format=clang",
+    "-fmessage-length=0",
+)
+UNBOUNDED_STACK_CHECK_FLAGS: tuple[str, ...] = (
+    "-fsyntax-only",
+    *DIAGNOSTIC_LAYOUT_FLAGS,
     "-Wno-everything",
     "-Wvla",
     "-Walloca",
     "-Werror=vla",
     "-Werror=alloca",
 )
-STACK_FRAME_CHECK_FLAGS: tuple[str, ...] = (
-    "-O0",
-    "-fno-color-diagnostics",
-    "-fno-caret-diagnostics",
-    "-fdiagnostics-show-option",
-    "-Wno-everything",
-    f"-Wframe-larger-than={MAX_STACK_FRAME_BYTES}",
-    "-S",
-    "-o",
-    os.devnull,
-)
-
-WARNING_SILENCING_FLAGS = frozenset({"-w", "--no-warnings"})
-WARNING_OPTION_PREFIX = "-W"
-PASS_THROUGH_OPTION_PREFIXES = ("-Wl,", "-Wa,", "-Wp,")
-FRONTEND_PASS_THROUGH_FLAG = "-Xclang"
+STACK_FRAME_CHECK_FLAGS: tuple[str, ...] = ("-O0", "-fno-lto", "-fstack-usage", "-Wno-everything", "-S")
 
 _STACK_DIAG_RE = re.compile(
     r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
     re.MULTILINE,
 )
-_FRAME_DIAG_RE = re.compile(
-    r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\s*"
-    r"\[-W(?:error,)?-?W?frame-larger-than[^\]]*\]",
-    re.MULTILINE,
-)
-_FRAME_SIZE_RE = re.compile(r"\d+")
-_QUOTED_FUNCTION_RE = re.compile(r"'([^'\n]+)'")
+_STACK_USAGE_ROW_RE = re.compile(r"^(?P<file>.+):(?P<line>\d+):(?P<function>[^\t:]+)\t(?P<size>\d+)\t\S+$")
 
 
-def _controls_warnings(flag: str) -> bool:
-    if flag in WARNING_SILENCING_FLAGS:
-        return True
-    return flag.startswith(WARNING_OPTION_PREFIX) and not flag.startswith(PASS_THROUGH_OPTION_PREFIXES)
+@dataclass(frozen=True)
+class StackUsage:
+    violations: list[PolicyViolation] = field(default_factory=list)
+    unparsed: list[str] = field(default_factory=list)
 
 
 def codegen_flags(flags: list[str]) -> list[str]:
-    kept: list[str] = []
-    index = 0
-    while index < len(flags):
-        flag = flags[index]
-        has_forwarded = flag == FRONTEND_PASS_THROUGH_FLAG and index + 1 < len(flags)
-        group = flags[index : index + 2] if has_forwarded else [flag]
-        if not _controls_warnings(group[-1]):
-            kept += group
-        index += len(group)
-    return kept
+    return [flag for flag in flags if not is_diagnostic_option(flag)]
+
+
+def stack_usage_path(assembly: Path) -> Path:
+    return assembly.with_suffix(STACK_USAGE_SUFFIX)
 
 
 def _line_in(rel: str, file: str, line: str) -> int | None:
@@ -97,20 +82,22 @@ def unbounded_stack_violations(rel: str, stderr: str, reason: str) -> list[Polic
     ]
 
 
-def _frame_message(text: str) -> str:
-    size = _FRAME_SIZE_RE.search(text)
-    functions = _QUOTED_FUNCTION_RE.findall(text)
-    function = functions[-1] if functions else UNKNOWN_FUNCTION
-    shown_size = size.group() if size else UNKNOWN_SIZE
+def _frame_message(function: str, size: int) -> str:
     return (
-        f"function '{function}' has a {shown_size}-byte stack frame, more than the {MAX_STACK_FRAME_BYTES}-byte "
+        f"function '{function}' has a {size}-byte stack frame, more than the {MAX_STACK_FRAME_BYTES}-byte "
         f"limit ({STACK_FRAME_CONSEQUENCE})"
     )
 
 
-def stack_frame_violations(rel: str, stderr: str) -> list[PolicyViolation]:
-    return [
-        violation(STACK_FRAME_RULE, _frame_message(found.group("msg")), rel,
-                  _line_in(rel, found.group("file"), found.group("line")))
-        for found in _FRAME_DIAG_RE.finditer(stderr)
-    ]
+def stack_usage_findings(rel: str, text: str) -> StackUsage:
+    usage = StackUsage()
+    for row in text.splitlines():
+        found = _STACK_USAGE_ROW_RE.match(row)
+        if found is None:
+            usage.unparsed.append(row)
+        elif int(found.group("size")) > MAX_STACK_FRAME_BYTES:
+            usage.violations.append(
+                violation(STACK_FRAME_RULE, _frame_message(found.group("function"), int(found.group("size"))), rel,
+                          _line_in(rel, found.group("file"), found.group("line")))
+            )
+    return usage

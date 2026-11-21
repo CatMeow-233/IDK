@@ -290,6 +290,7 @@ def _record_tally(gate: _Gate, tally: PropertyTally, verify_run: CbmcRun) -> Non
 
 def _target_without_body(gate: _Gate, tally: PropertyTally) -> StageResult:
     target = gate.ctx.spec.target.function
+    gate.details["properties_unmodelled"] = len(tally.violated)
     gate.note(
         f"{len(tally.violated)} reported violation(s) discarded: they depend on arbitrary return values of the "
         f"undefined {target}()"

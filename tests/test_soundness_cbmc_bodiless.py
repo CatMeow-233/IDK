@@ -10,7 +10,7 @@ from leanc.backends.cbmc import run_cbmc
 from leanc.backends.cbmc.bodiless import (
     is_modelled_bodiless,
     split_violations,
-    unmodelled_callees_in_trace,
+    unmodelled_return_values_in_trace,
 )
 from leanc.foundation.status import Outcome, Status
 
@@ -78,36 +78,36 @@ def test_bodiless_allowlist(function, modelled):
     assert is_modelled_bodiless(function) is modelled
 
 
-def test_trace_matcher_finds_calls_and_return_temporaries_with_identifier_boundary():
+def test_trace_matcher_finds_return_temporaries_with_identifier_boundary():
     unmodelled = frozenset({"ext", "__builtin_ia32_pshufd256"})
     trace = [
         _return_step("return_value_ext_other"),
         _return_step("return_value_nondet_int$0"),
         _call_step("ext_other"),
-    ]
-    assert unmodelled_callees_in_trace({"trace": trace}, unmodelled) == []
-    for step in (
         _call_step("ext"),
+    ]
+    assert unmodelled_return_values_in_trace({"trace": trace}, unmodelled) == []
+    for step in (
         _return_step("return_value_ext"),
         _return_step("return_value_ext$0"),
         _return_step("goto_symex$$return_value$$ext"),
     ):
-        assert unmodelled_callees_in_trace({"trace": [*trace, step]}, unmodelled) == ["ext"], step
+        assert unmodelled_return_values_in_trace({"trace": [*trace, step]}, unmodelled) == ["ext"], step
     shuffle = [_return_step("return_value___builtin_ia32_pshufd256[3l]")]
-    assert unmodelled_callees_in_trace({"trace": shuffle}, unmodelled) == ["__builtin_ia32_pshufd256"]
-    assert unmodelled_callees_in_trace({"trace": "garbage"}, unmodelled) == []
+    assert unmodelled_return_values_in_trace({"trace": shuffle}, unmodelled) == ["__builtin_ia32_pshufd256"]
+    assert unmodelled_return_values_in_trace({"trace": "garbage"}, unmodelled) == []
 
 
-def test_split_violations_keeps_untouched_traces_real():
-    dependent = {"property": "p.1", "trace": [_call_step("ext")]}
-    real = {"property": "p.2", "trace": [_call_step("defined_function")]}
+def test_split_violations_keeps_traces_that_ignore_unmodelled_results_real():
+    dependent = {"property": "p.1", "trace": [_call_step("ext"), _return_step("return_value_ext")]}
+    real = {"property": "p.2", "trace": [_call_step("ext"), _call_step("defined_function")]}
     split = split_violations([dependent, real], frozenset({"ext"}))
     assert split.real == [real]
     assert [(item.result["property"], item.functions) for item in split.dependent] == [("p.1", ("ext",))]
 
 
-def test_violation_through_unmodelled_callee_is_not_a_counterexample(tmp_path):
-    steps = {prop: [_call_step(UNMODELLED)] for prop in FAILING_PROPERTIES}
+def test_violation_using_an_unmodelled_result_is_not_a_counterexample(tmp_path):
+    steps = {prop: [_call_step(UNMODELLED), _return_step(f"return_value_{UNMODELLED}")] for prop in FAILING_PROPERTIES}
     verify = _inject(_with_warnings(fixture_messages(FAILING_PAYLOAD), [UNMODELLED]), steps)
     res = _run(tmp_path, verify, src="arr_get_off_by_one")
     assert res.outcome is Outcome.INCONCLUSIVE, res.summary
@@ -131,8 +131,17 @@ def test_return_temporary_alone_marks_violation_dependent(tmp_path):
     assert _counterexamples(res) == []
 
 
+def test_discarded_unmodelled_call_keeps_the_counterexamples(tmp_path):
+    steps = {prop: [_call_step(UNMODELLED)] for prop in FAILING_PROPERTIES}
+    verify = _inject(_with_warnings(fixture_messages(FAILING_PAYLOAD), [UNMODELLED]), steps)
+    res = _run(tmp_path, verify, src="arr_get_off_by_one")
+    assert res.outcome is Outcome.FAIL and res.status is Status.COUNTEREXAMPLE_FOUND, res.summary
+    assert {f.property_id for f in _counterexamples(res)} == set(FAILING_PROPERTIES)
+    assert res.details["properties_unmodelled"] == 0
+
+
 def test_mutation_real_violation_still_fails_beside_unmodelled_callee(tmp_path):
-    steps = {FAILING_PROPERTIES[0]: [_call_step(UNMODELLED)]}
+    steps = {FAILING_PROPERTIES[0]: [_return_step(f"return_value_{UNMODELLED}$0")]}
     verify = _inject(_with_warnings(fixture_messages(FAILING_PAYLOAD), [UNMODELLED]), steps)
     res = _run(tmp_path, verify, src="arr_get_off_by_one")
     assert res.outcome is Outcome.FAIL, res.summary

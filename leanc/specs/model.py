@@ -8,6 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from leanc.foundation.errors import WorkspaceError
 from leanc.foundation.text import NUL, has_lone_surrogate
 from leanc.foundation.workspace import normalize_relpath
+from leanc.specs.compile_options import (
+    SANITIZER_CONTROL_MESSAGE,
+    TOOL_CONTROL_MESSAGE,
+    sanitizer_control_flags,
+    tool_control_flags,
+)
 
 SPEC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 C_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -181,9 +187,6 @@ class Sources(_M):
     include_dirs: list[str] = Field(default_factory=list)
 
 
-SANITIZER_FLAG_PREFIXES = ("-fsanitize", "-fno-sanitize")
-
-
 class CompileConfig(_M):
     compiler: str = "clang"
     flags: list[str] = Field(default_factory=lambda: ["-Wall", "-Wextra", "-Wpedantic"])
@@ -193,10 +196,13 @@ class CompileConfig(_M):
 
     @field_validator("flags")
     @classmethod
-    def _no_sanitizer_flags(cls, v: list[str]) -> list[str]:
-        controlled = [f for f in v if f.startswith(SANITIZER_FLAG_PREFIXES)]
-        if controlled:
-            raise ValueError(f"sanitizers are chosen by tests.sanitizers, not compile.flags: {controlled}")
+    def _no_tool_control_flags(cls, v: list[str]) -> list[str]:
+        sanitizer_controls = sanitizer_control_flags(v)
+        if sanitizer_controls:
+            raise ValueError(f"{SANITIZER_CONTROL_MESSAGE}: {sanitizer_controls}")
+        tool_controls = tool_control_flags(v)
+        if tool_controls:
+            raise ValueError(f"{TOOL_CONTROL_MESSAGE}: {tool_controls}")
         return v
 
 

@@ -239,6 +239,11 @@ def test_undefined_target_function_is_inconclusive(tmp_path, needs_cbmc):
     assert "has no definition" in res.summary
     assert res.failures == []
     assert any(d.rule_id == "no-body" and "arr_get" in d.message for d in res.diagnostics)
+    details = res.details
+    assert details["properties_failed"] == 0 and details["properties_unmodelled"] > 0
+    assert details["properties_total"] == (
+        details["properties_passed"] + details["properties_unmodelled"] + details["properties_unresolved"]
+    )
 
 
 def test_undefined_helper_makes_its_violation_inconclusive(tmp_path, needs_cbmc):

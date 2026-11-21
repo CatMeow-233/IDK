@@ -58,3 +58,7 @@ C++ 規格目前只能使用 compile / static_analysis / sanitizer（+ 強制 in
 所以只是讓剩下的缺陷換了行號不算「引入」）。此外，任何先前得到確定判決（PASS/FAIL）的必要關卡
 在候選碼下變成 INCONCLUSIVE / TIMEOUT / ERROR / SKIPPED，或新增 unwind / vacuity 失敗，候選碼一律被還原：
 讓程式變成不可驗證永遠不算改善。
+
+例外：候選碼讓 `integrity` 由未通過變為通過時，即使隨後解鎖的關卡（sanitizer、cbmc、wp、lean）找到反例、
+使狀態排名變差，也算改善；前提是候選碼仍為確定性失敗、沒有上述退化，而且先前已執行的關卡
+（`compile`、`static_analysis`）沒有失去 PASS、也沒有新增失敗。

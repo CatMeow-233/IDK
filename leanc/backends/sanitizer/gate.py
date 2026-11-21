@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from leanc.backends.clang import MISSING_SOURCE_RULE, unique_id
+from leanc.backends.clang import MISSING_SOURCE_RULE
 from leanc.backends.sanitizer.build import (
     build_command,
     compiler_crash_reported,
@@ -50,6 +50,7 @@ from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.sandbox import SandboxMounts
 from leanc.foundation.status import Outcome, Status, outcome_to_status
 from leanc.foundation.text import safe_name
+from leanc.rules.findings import unique_id
 from leanc.specs.model import TestCase, TestsConfig
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version

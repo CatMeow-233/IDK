@@ -74,6 +74,32 @@ def test_include_paths_char_and_standard_are_forwarded():
     assert translation.not_applied == () and translation.char_signedness is CharSignedness.UNSIGNED
 
 
+@pytest.mark.parametrize("flags", [["-DTWICE(x)=x", "-UTWICE"], ["-D", "TWICE(x)=x", "-U", "TWICE"]])
+def test_undefine_cancels_a_function_like_define(flags):
+    translation = _translate(flags)
+    assert translation.macro_args == () and translation.not_applied == ()
+
+
+def test_function_like_ndebug_is_dropped_like_ndebug():
+    assert _translate(["-DNDEBUG(x)="]).dropped_defines == ("-DNDEBUG(x)=",)
+
+
+@pytest.mark.parametrize("flags", [["--std=c99"], ["--std", "c99"], ["-std=c11", "--std=c99"]])
+def test_long_standard_spellings_select_the_standard(flags):
+    translation = _translate(flags, standard="c11")
+    assert translation.standard == "c99" and translation.standard_mode.flag == "--c99"
+    assert translation.not_applied == ()
+
+
+def test_long_ansi_spelling_selects_c89():
+    assert _translate(["--ansi"]).standard_mode.flag == "--c89"
+
+
+def test_no_warnings_alias_has_no_semantic_effect():
+    translation = _translate(["--no-warnings", "-w"])
+    assert translation.no_semantic_effect == ("--no-warnings", "-w") and translation.not_applied == ()
+
+
 def test_last_char_signedness_flag_wins():
     signed = _translate(["-funsigned-char", "-fsigned-char"])
     assert signed.char_signedness is CharSignedness.SIGNED
@@ -96,10 +122,10 @@ def test_standards_map_to_cbmc_modes(standard, mode, approximate):
 
 def test_unsupported_standard_and_semantic_flags_are_not_applied():
     flags = ["-Wall", "-Wextra", "-Wpedantic", "-pedantic", "-g", "-std=c2x", "-O2", "-ffast-math", "-mavx2",
-             "-Wp,-DHIDDEN", "-fwrapv", "-m32", "-include", "pre.h", "-isystem", "sys", "-D"]
+             "-fwrapv", "-m32", "-include", "pre.h", "-isystem", "sys", "-D"]
     translation = _translate(flags)
     assert translation.no_semantic_effect == ("-Wall", "-Wextra", "-Wpedantic", "-pedantic", "-g")
-    assert translation.not_applied == ("-O2", "-ffast-math", "-mavx2", "-Wp,-DHIDDEN", "-fwrapv", "-m32",
+    assert translation.not_applied == ("-O2", "-ffast-math", "-mavx2", "-fwrapv", "-m32",
                                        "-include pre.h", "-isystem sys", "-D", "-std=c2x")
     assert translation.standard_mode is None and translation.macro_args == ()
 

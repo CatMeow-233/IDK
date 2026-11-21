@@ -61,14 +61,15 @@ LEAK_SANITIZER_LIMITATION = (
     "statics or stale stack words is not reported"
 )
 TEST_PATHS_ONLY_LEAK_LIMITATION = (
-    "memory leaks are checked only on the executed test paths (CBMC memory-leak check is off)"
+    "memory leaks are checked only on the executed test paths (no CBMC memory-leak check reached a verdict)"
 )
-NO_LEAK_CHECK_LIMITATION = "no memory-leak check ran"
+NO_LEAK_CHECK_LIMITATION = "no memory-leak check reached a verdict"
 CBMC_MEMORY_MODEL_LIMITATION = (
     "CBMC does not check pointer alignment, strict aliasing, restrict, or overflows between sub-objects of one "
     "allocation"
 )
 LEAK_SANITIZER = "leak"
+VERDICT_OUTCOMES = (Outcome.PASS, Outcome.FAIL)
 CBMC_MEMORY_LEAK_CHECK = "memory-leak"
 UNAPPROVED_LIMITATION = "the specification is not approved: no result in this report is a verification result"
 PROVED_REASON = (
@@ -90,6 +91,10 @@ PROTECTED_FILE_CHANGED = "a protected file changed during verification"
 COMPILATION_FAILED = "compilation did not succeed"
 INTEGRITY_FAILED = (
     "the integrity gate did not pass; code with forbidden constructs is never executed, model-checked or proved"
+)
+INTEGRITY_NOT_RUN = (
+    "the integrity gate did not run (it runs after a passing compile gate); code it has not checked is never "
+    "executed, model-checked or proved"
 )
 
 _GATE_RUNNERS: dict[str, Callable[[BackendContext], StageResult]] = {
@@ -235,7 +240,7 @@ class _GateSequence:
     approval: ApprovalCheck
     stages: list[StageResult]
     blocked_reason: str | None = None
-    integrity_blocked_reason: str | None = None
+    integrity_blocked_reason: str | None = INTEGRITY_NOT_RUN
 
     def run(self) -> None:
         for gate in sorted(self.spec.gates, key=GATE_ORDER.index):
@@ -280,8 +285,7 @@ class _GateSequence:
         integrity = _run_gate(MANDATORY_GATE_AFTER_COMPILE, self.ctx)
         integrity.required = True
         self.stages.append(integrity)
-        if integrity.outcome is not Outcome.PASS:
-            self.integrity_blocked_reason = INTEGRITY_FAILED
+        self.integrity_blocked_reason = None if integrity.outcome is Outcome.PASS else INTEGRITY_FAILED
         log.info("gate integrity: %s %s", integrity.outcome.value, integrity.summary)
         if self.options.fail_fast and integrity.outcome is not Outcome.PASS:
             self.blocked_reason = f"--fail-fast after integrity {integrity.outcome.value}"
@@ -306,19 +310,21 @@ def _assumptions(spec: Spec, stages: list[StageResult], approval: ApprovalCheck)
     return assumptions
 
 
-def _ran(stages: list[StageResult], gate: str) -> bool:
+def _reached_verdict(stages: list[StageResult], gate: str) -> bool:
     stage = _stage(stages, gate)
-    return stage is not None and stage.outcome is not Outcome.SKIPPED
+    return stage is not None and stage.outcome in VERDICT_OUTCOMES
 
 
-def _memory_limitations(spec: Spec, stages: list[StageResult]) -> list[str]:
-    cbmc_ran = _ran(stages, "cbmc")
-    leak_sanitizer_ran = _ran(stages, "sanitizer") and LEAK_SANITIZER in sanitizer_plan(spec.tests.sanitizers).effective
-    cbmc_checks_leaks = cbmc_ran and CBMC_MEMORY_LEAK_CHECK in spec.effective_cbmc_checks()
-    limitations = [LEAK_SANITIZER_LIMITATION] if leak_sanitizer_ran else []
-    if not cbmc_checks_leaks:
-        limitations.append(TEST_PATHS_ONLY_LEAK_LIMITATION if leak_sanitizer_ran else NO_LEAK_CHECK_LIMITATION)
-    if cbmc_ran:
+def memory_limitations(spec: Spec, stages: list[StageResult]) -> list[str]:
+    cbmc_decided = _reached_verdict(stages, "cbmc")
+    leak_sanitizer_decided = (
+        _reached_verdict(stages, "sanitizer") and LEAK_SANITIZER in sanitizer_plan(spec.tests.sanitizers).effective
+    )
+    cbmc_decided_leaks = cbmc_decided and CBMC_MEMORY_LEAK_CHECK in spec.effective_cbmc_checks()
+    limitations = [LEAK_SANITIZER_LIMITATION] if leak_sanitizer_decided else []
+    if not cbmc_decided_leaks:
+        limitations.append(TEST_PATHS_ONLY_LEAK_LIMITATION if leak_sanitizer_decided else NO_LEAK_CHECK_LIMITATION)
+    if cbmc_decided:
         limitations.append(CBMC_MEMORY_MODEL_LIMITATION)
     return limitations
 
@@ -329,7 +335,7 @@ def _limitations(spec: Spec, ctx: BackendContext, approval: ApprovalCheck, stage
         limitations.append(WP_LIMITATION)
     if "lean" in spec.gates:
         limitations.append(LEAN_LIMITATION)
-    limitations.extend(_memory_limitations(spec, stages))
+    limitations.extend(memory_limitations(spec, stages))
     if not ctx.sandbox.active:
         limitations.append(f"no sandbox available: {ctx.sandbox.note}")
     if not approval.approved:

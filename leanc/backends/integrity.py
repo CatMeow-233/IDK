@@ -3,20 +3,24 @@ from __future__ import annotations
 import os
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
-from leanc.backends.clang import define_args
+from leanc.backends.clang import define_args, sandbox_visible_path
+from leanc.backends.stack_check import StackCheck
 from leanc.backends.verifier_macros import (
     CLANG_DUMP_LABEL,
     NO_GCC_PREPROCESSED_GATE,
     collect_divergences,
     compile_gate_macro_dump,
     gcc_preprocessed_verifiers,
+    needs_frama_c_builtin_macros,
     verifier_macro_dumps,
+)
+from leanc.backends.wp.builtin_macros import (
+    builtin_macros_path,
+    materialize_builtin_macros,
 )
 from leanc.foundation.models import (
     Diagnostic,
@@ -26,7 +30,7 @@ from leanc.foundation.models import (
     StageResult,
     ToolInvocation,
 )
-from leanc.foundation.redact import redact
+from leanc.foundation.redact import redact, redacted_excerpt
 from leanc.foundation.runner import Limits
 from leanc.foundation.status import Outcome, Status, outcome_to_status
 from leanc.foundation.text import safe_name
@@ -60,13 +64,6 @@ from leanc.rules.predefined_macros import (
     parse_predefined_macros,
 )
 from leanc.rules.source import source_violations
-from leanc.rules.stack_checks import (
-    STACK_FRAME_CHECK_FLAGS,
-    UNBOUNDED_STACK_CHECK_FLAGS,
-    codegen_flags,
-    stack_frame_violations,
-    unbounded_stack_violations,
-)
 from leanc.rules.symbol_types import (
     STRONG_TEXT_TYPE,
     UNDEFINED_TYPES,
@@ -83,7 +80,6 @@ STAGE = "integrity"
 TOOL = "leanc-integrity"
 TOOL_TIMEOUT_S = 60
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
-MAX_STDERR_EXCERPT_CHARS = 300
 UNRANKED_RULE = 99
 STDERR_SEPARATOR = "\n--- stderr ---\n"
 NULL_SECTION = "NULL"
@@ -200,13 +196,9 @@ class _IntegrityGate(ABC):
             return None
         if not proc.ok or proc.output_truncated:
             reason = proc.error or ("output truncated" if proc.output_truncated else f"exit {proc.exit_code}")
-            self.problems.append(f"{what} of {rel} failed ({reason}): {self._stderr_excerpt(proc.stderr)}")
+            self.problems.append(f"{what} of {rel} failed ({reason}): {redacted_excerpt(proc.stderr)}")
             return None
         return proc.stdout
-
-    @staticmethod
-    def _stderr_excerpt(stderr: str) -> str:
-        return redact(stderr.strip())[:MAX_STDERR_EXCERPT_CHARS]
 
     def check_file(self, rel: str) -> None:
         entry: dict[str, Any] = {"source": rel, "checks": [], "argv": {}}
@@ -250,50 +242,17 @@ class _IntegrityGate(ABC):
             entry["checks"].append("preprocessed")
 
     def check_unbounded_stack_allocations(self, rel: str, entry: dict) -> None:
-        unbounded = [
-            self.compiler_path,
-            f"-std={self.spec.language.standard}",
-            *define_args(self.spec.compile.defines),
-            *self.ctx.include_args(),
-            *UNBOUNDED_STACK_CHECK_FLAGS,
-            rel,
-        ]
-        frames = [
-            self.compiler_path,
-            f"-std={self.spec.language.standard}",
-            *codegen_flags(self.spec.compile.flags),
-            *define_args(self.spec.compile.defines),
-            *self.ctx.include_args(),
-            *STACK_FRAME_CHECK_FLAGS,
-            rel,
-        ]
-        entry["argv"]["stack"] = unbounded
-        entry["argv"]["stack_frames"] = frames
-        unbounded_parse = partial(unbounded_stack_violations, reason=self.stack_violation_reason)
-        ran_unbounded = self.run_stack_check(unbounded, rel, "stack", unbounded_parse)
-        ran_frames = self.run_stack_check(frames, rel, "stack-frame", stack_frame_violations)
-        if ran_unbounded and ran_frames:
+        check = StackCheck(
+            self.ctx, self.compiler_path, self.compiler_name, self.limits, STAGE, self.stack_violation_reason
+        )
+        outcome, checked = check.run(rel)
+        entry["argv"].update(outcome.argv)
+        self.violations += outcome.violations
+        self.problems += outcome.problems
+        self.timeouts += outcome.timeouts
+        self.invocations += outcome.invocations
+        if checked:
             entry["checks"].append("stack")
-
-    def run_stack_check(
-        self, argv: list[str], rel: str, what: str, parse: Callable[[str, str], list[PolicyViolation]]
-    ) -> bool:
-        proc = self.ctx.run(argv, limits=self.limits, cwd=self.snapshot)
-        log_name = self.ctx.log_name(STAGE, f"{what}-{rel}")
-        self.invocations.append(proc.to_invocation(self.compiler_name, self.ctx.run_dir, log_name))
-        if proc.timed_out:
-            self.timeouts.append(f"{what} check of {rel} timed out")
-            return False
-        if proc.error:
-            self.problems.append(f"{what} check of {rel} failed: {proc.error}")
-            return False
-        found = parse(rel, proc.stderr)
-        self.violations += found
-        if proc.exit_code not in (0, None) and not found:
-            self.problems.append(
-                f"{what} check of {rel} failed (exit {proc.exit_code}): {self._stderr_excerpt(proc.stderr)}"
-            )
-        return True
 
     def check_predefined_macro_divergence(self) -> None:
         if not gcc_preprocessed_verifiers(self.spec):
@@ -303,9 +262,10 @@ class _IntegrityGate(ABC):
         if gcc is None:
             self.problems.append(GCC_MISSING)
             return
-        if not self.compiler_path:
+        if not self.compiler_path or not self.frama_c_builtin_macros_ready():
             return
-        dumps = verifier_macro_dumps(gcc, self.spec)
+        frama_c_macros = sandbox_visible_path(builtin_macros_path(self.ctx.build_dir))
+        dumps = verifier_macro_dumps(gcc, self.spec, frama_c_macros)
         clang_argv = compile_gate_macro_dump(self.compiler_path, self.spec, self.ctx.include_args())
         self.details["predefined_macros"] = {"checked": False, "argv": {CLANG_DUMP_LABEL: clang_argv}}
         self.details["predefined_macros"]["argv"].update({dump.label: dump.argv for dump in dumps})
@@ -316,6 +276,15 @@ class _IntegrityGate(ABC):
         self.details["predefined_macros"].update({"checked": True, "divergent": len(divergent)})
         for rel, checked in self.checked.items():
             self.violations += divergent_macro_use_violations(rel, checked.source, divergent)
+
+    def frama_c_builtin_macros_ready(self) -> bool:
+        if not needs_frama_c_builtin_macros(self.spec):
+            return True
+        built = materialize_builtin_macros(self.ctx, self.limits, STAGE)
+        self.invocations += built.invocations
+        self.problems += built.problems
+        self.timeouts += built.timeouts
+        return built.available
 
     def predefined_macros(self, tool: str, label: str, argv: list[str]) -> dict[str, MacroDefinition] | None:
         dump = self.run_tool(tool, argv, label, PREDEFINED_MACROS_STEP)

@@ -16,7 +16,7 @@ Lean C 分析並執行 AI 生成的程式碼，因此把它當成潛在惡意輸
 | 10 | 不洩漏憑證 | 子行程使用最小環境（不繼承 `OPENAI_API_KEY` 等）；日誌、報告、LLM transcript、run.json 經 `redact()`（已知環境變數值、`sk-…`、`Authorization: Bearer …`、`api_key=…`、GitHub token） |
 | 11 | 補丁政策 | `leanc.repair.policy.check_candidate`：路徑、CPROVER/assume 注入、assert 刪除、警告/sanitizer 抑制、`#include` 逃逸、危險呼叫、inline asm、目標函式被「掏空」、補丁大小 |
 | 12 | 隔離執行 | bubblewrap：丟棄所有 capabilities、uid/gid 65534、唯讀 `/usr`、容量上限 256 MB 的私有 `/tmp`、最小 `/dev`、清空環境、`--die-with-parent`；家目錄、`/root`、`/home`、`/opt` 不可見；測試寫入的每個檔案上限 64 MB |
-| 13 | 程式完整性 | 強制 `integrity` 關卡：物件檔外部符號白名單（介面標頭）、匯入白名單（CBMC 可建模的 libc）、禁止 constructor/destructor section、禁止依工具而異的前處理、`#pragma`、`#line`、`__VERIFIER_*`；未通過時不執行測試 |
+| 13 | 程式完整性 | 強制 `integrity` 關卡：物件檔外部符號白名單（介面標頭）、匯入白名單（libc 子集；其中 `memchr`、`strnlen`、`strstr`、`fputc`、`putc` 沒有 CBMC 模型，用到時 `cbmc` 無法通過）、禁止 constructor/destructor section、禁止依工具而異的前處理、`#pragma`、`#line`、`__VERIFIER_*`；未通過時 sanitizer、cbmc、wp、lean 一律不執行 |
 | 14 | 專案設定不能削弱隔離 | `leanc.yaml` 中的 `allow_unsandboxed` 被忽略（並警告）；只有 `--allow-unsandboxed` 旗標能在無沙箱時執行測試 |
 | 15 | 符號連結 | `.leanc`、`.leanc/runs`、`.leanc/approvals` 不得為符號連結；`init` 與草案寫入都經 `Workspace`（拒絕 symlink） |
 

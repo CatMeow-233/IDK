@@ -107,9 +107,11 @@ verification.json / verification.md
    （`--check-unapproved` 可僅供參考地執行，但狀態仍為 `SPEC_UNAPPROVED`）。批准在 CBMC 之前與所有關卡之後
    會在快照上**再檢查一次**；驗證過程中受保護檔被改動 → `SPEC_UNAPPROVED`。
 2. `compile` 失敗 → 其餘關卡 `SKIPPED`。`compile` 通過後**一定**執行 `integrity` 關卡（不在 `gates` 清單中、
-   不能移除）；它失敗時 sanitizer 關卡 `SKIPPED`（含禁止構造的程式不會被執行），整體為
-   `STATIC_ANALYSIS_WARNING`（工具名 `leanc-integrity`）。
-3. 其餘關卡互不阻擋（盡量蒐集資訊給修復代理），`--fail-fast` 可改變。
+   不能移除）。`sanitizer`、`cbmc`、`wp`、`lean` 只在 `integrity` 通過後執行；`integrity` 未通過或沒有執行
+   （`gates` 不含 `compile`）時它們一律 `SKIPPED`（未經檢查的程式不會被執行、模型檢查或證明）。
+   `integrity` 的 `FAIL` 得 `STATIC_ANALYSIS_WARNING`（工具名 `leanc-integrity`），`ERROR` 得 `TOOL_ERROR`，
+   `TIMEOUT` 得 `TIMEOUT`；`static_analysis` 照常執行。
+3. 除第 2 點外，其餘關卡互不阻擋（盡量蒐集資訊給修復代理），`--fail-fast` 可改變。
 4. 彙總狀態取「最差」者；確定性缺陷優先於不確定結果（見 [status-semantics.md](status-semantics.md)）。
 5. `VERIFIED_BOUNDED` 需要所有必要關卡通過 **且** 包含 `cbmc` 關卡。
 

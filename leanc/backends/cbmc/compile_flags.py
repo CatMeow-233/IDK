@@ -1,34 +1,41 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
+from leanc.specs.compile_options import has_no_semantic_effect
 from leanc.specs.model import CompileConfig
 
 DEFINE_FLAG = "-D"
 UNDEFINE_FLAG = "-U"
 INCLUDE_DIR_FLAG = "-I"
 STANDARD_FLAG_PREFIX = "-std="
-ANSI_FLAG = "-ansi"
+LONG_STANDARD_FLAG_PREFIX = "--std="
+LONG_STANDARD_FLAG = "--std"
+ANSI_FLAGS = frozenset({"-ansi", "--ansi"})
 ANSI_STANDARD = "c89"
 CBMC_UNSIGNED_CHAR_FLAG = "--unsigned-char"
 DEFINES_DISABLING_HARNESS_ASSERTIONS = frozenset({"NDEBUG"})
-FORWARDED_FLAGS_TAKING_SEPARATE_VALUE = frozenset({DEFINE_FLAG, UNDEFINE_FLAG, INCLUDE_DIR_FLAG})
 UNAPPLIED_FLAGS_TAKING_SEPARATE_VALUE = frozenset({"-include", "-imacros", "-isystem", "-iquote", "-idirafter", "-x"})
 SINGLE_FLAG_WIDTH = 1
 FLAG_WITH_SEPARATE_VALUE_WIDTH = 2
-
-WARNING_FLAG_PREFIX = "-W"
-TOOL_PASSTHROUGH_PREFIXES = ("-Wl,", "-Wa,", "-Wp,")
-DEBUG_INFO_FLAG_PREFIX = "-g"
-DIAGNOSTICS_ONLY_FLAGS = frozenset({"-w", "-pedantic", "-pedantic-errors"})
 
 C89_MODE = "--c89"
 C99_MODE = "--c99"
 C11_MODE = "--c11"
 CBMC_DEFAULT_MODE = C11_MODE
 CBMC_PREPROCESSOR_STANDARDS: dict[str, str] = {C89_MODE: "gnu89", C99_MODE: "gnu99", C11_MODE: "gnu11"}
-CBMC_PREPROCESSOR_DEFINES: tuple[str, ...] = ("-D__CPROVER__",)
+CBMC_PREPROCESSOR_BASE_ARGS: tuple[str, ...] = ("-D__CPROVER__", "-m64")
+CBMC_ARCHITECTURE_DEFINES: tuple[str, ...] = (
+    "-D__LP64__",
+    "-D__x86_64",
+    "-D__x86_64__",
+    "-D_LP64",
+    "-D__amd64__",
+    "-D__amd64",
+)
 GCC_UNSIGNED_CHAR_FLAG = "-funsigned-char"
 C11_REVISION_NOTE = (
     "CBMC has no C17 mode; C17 only resolves defects of C11, but __STDC_VERSION__ is 201112L instead of 201710L"
@@ -125,30 +132,27 @@ class _Translator:
     no_semantic_effect: list[str] = field(default_factory=list)
     char_signedness: CharSignedness | None = None
 
-    def option(self, flag: str, value: str, spelling: str) -> None:
-        if flag == DEFINE_FLAG:
-            self.macros.define(DEFINE_FLAG + value, spelling)
-        elif flag == UNDEFINE_FLAG:
-            self.undefine(value, spelling)
-        elif flag == INCLUDE_DIR_FLAG:
-            self.include_args.append(INCLUDE_DIR_FLAG + value)
-        else:
-            raise ValueError(f"no CBMC translation for compile option {flag!r}")
+    def define(self, value: str, spelling: str) -> None:
+        self.macros.define(DEFINE_FLAG + value, spelling)
 
-    def undefine(self, name: str, spelling: str) -> None:
-        if not self.macros.undefine(name.strip()):
+    def undefine(self, value: str, spelling: str) -> None:
+        if not self.macros.undefine(value.strip()):
             self.not_applied.append(spelling)
+
+    def include_dir(self, value: str, spelling: str) -> None:
+        self.include_args.append(INCLUDE_DIR_FLAG + value)
+
+    def select_standard(self, value: str, spelling: str) -> None:
+        self.standard = value
 
     def flag(self, flag: str) -> None:
         joined = _joined_option(flag)
-        if flag.startswith(STANDARD_FLAG_PREFIX):
-            self.standard = flag.removeprefix(STANDARD_FLAG_PREFIX)
-        elif flag == ANSI_FLAG:
+        if joined is not None:
+            JOINED_OPTIONS[joined](self, flag[len(joined) :], flag)
+        elif flag in ANSI_FLAGS:
             self.standard = ANSI_STANDARD
         elif flag in CHAR_SIGNEDNESS_FLAGS:
             self.char_signedness = CHAR_SIGNEDNESS_FLAGS[flag]
-        elif joined is not None:
-            self.option(joined, flag[len(joined) :], flag)
         elif has_no_semantic_effect(flag):
             self.no_semantic_effect.append(flag)
         else:
@@ -163,33 +167,45 @@ class _Translator:
         return args
 
 
+OptionHandler = Callable[[_Translator, str, str], None]
+MACRO_AND_INCLUDE_OPTIONS: dict[str, OptionHandler] = {
+    DEFINE_FLAG: _Translator.define,
+    UNDEFINE_FLAG: _Translator.undefine,
+    INCLUDE_DIR_FLAG: _Translator.include_dir,
+}
+SEPARATE_VALUE_OPTIONS: dict[str, OptionHandler] = {
+    **MACRO_AND_INCLUDE_OPTIONS,
+    LONG_STANDARD_FLAG: _Translator.select_standard,
+}
+JOINED_OPTIONS: dict[str, OptionHandler] = {
+    **MACRO_AND_INCLUDE_OPTIONS,
+    STANDARD_FLAG_PREFIX: _Translator.select_standard,
+    LONG_STANDARD_FLAG_PREFIX: _Translator.select_standard,
+}
+_MACRO_NAME_END_RE = re.compile(r"[=(]")
+
+
 def platform_architecture(platform: str | None) -> str | None:
     fields = (platform or "").split()
     return fields[PLATFORM_ARCHITECTURE_FIELD] if len(fields) > PLATFORM_ARCHITECTURE_FIELD else None
 
 
 def macro_name(define_arg: str) -> str:
-    return define_arg.removeprefix(DEFINE_FLAG).split("=", 1)[0].strip()
+    return _MACRO_NAME_END_RE.split(define_arg.removeprefix(DEFINE_FLAG), maxsplit=1)[0].strip()
 
 
 def _joined_option(flag: str) -> str | None:
-    for prefix in (DEFINE_FLAG, UNDEFINE_FLAG, INCLUDE_DIR_FLAG):
+    for prefix in JOINED_OPTIONS:
         if flag.startswith(prefix) and len(flag) > len(prefix):
             return prefix
     return None
 
 
-def has_no_semantic_effect(flag: str) -> bool:
-    if flag.startswith(TOOL_PASSTHROUGH_PREFIXES):
-        return False
-    return flag in DIAGNOSTICS_ONLY_FLAGS or flag.startswith((WARNING_FLAG_PREFIX, DEBUG_INFO_FLAG_PREFIX))
-
-
 def _translate_flag_at(translator: _Translator, flags: list[str], position: int) -> int:
     flag = flags[position]
     value = flags[position + 1] if position + 1 < len(flags) else None
-    if value is not None and flag in FORWARDED_FLAGS_TAKING_SEPARATE_VALUE:
-        translator.option(flag, value, f"{flag} {value}")
+    if value is not None and flag in SEPARATE_VALUE_OPTIONS:
+        SEPARATE_VALUE_OPTIONS[flag](translator, value, f"{flag} {value}")
         return FLAG_WITH_SEPARATE_VALUE_WIDTH
     if value is not None and flag in UNAPPLIED_FLAGS_TAKING_SEPARATE_VALUE:
         translator.not_applied.append(f"{flag} {value}")
@@ -234,8 +250,9 @@ def cbmc_preprocessor_macro_args(compile_config: CompileConfig, standard: str) -
     mode = translation.standard_mode.flag if translation.standard_mode else CBMC_DEFAULT_MODE
     unsigned_char = translation.char_signedness is CharSignedness.UNSIGNED
     return [
-        *CBMC_PREPROCESSOR_DEFINES,
+        *CBMC_PREPROCESSOR_BASE_ARGS,
         *([GCC_UNSIGNED_CHAR_FLAG] if unsigned_char else []),
         STANDARD_FLAG_PREFIX + CBMC_PREPROCESSOR_STANDARDS[mode],
         *translation.macro_args,
+        *CBMC_ARCHITECTURE_DEFINES,
     ]

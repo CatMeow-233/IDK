@@ -9,32 +9,19 @@ import yaml
 from leanc.backends.counterexample import fingerprint
 from leanc.backends.wp import build_wp_argv, goal_kind, parse_console, run_wp
 from leanc.backends.wp import gate as wp_gate
+from leanc.backends.wp.assumptions import compile_statements
 from leanc.foundation.runner import ProcResult
 from leanc.foundation.status import Outcome, Status
 from leanc.rules.source import source_violations
+from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext, make_context
 from leanc.toolchain.framac import (
     INSTALL_HINT,
-    MIN_FRAMAC_MAJOR,
     FramaC,
-    find_framac,
-    framac_version_key,
 )
-from leanc.toolchain.tools import tool_version
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
-
-
-def _usable_framac() -> bool:
-    fc = find_framac()
-    return fc is not None and framac_version_key(tool_version(fc.real, "-version"))[0] >= MIN_FRAMAC_MAJOR
-
-
-@pytest.fixture
-def needs_framac():
-    if not _usable_framac():
-        pytest.skip(f"Frama-C >= {MIN_FRAMAC_MAJOR} with WP not installed (set LEANC_FRAMAC)")
 
 
 ADD_H = """\
@@ -464,3 +451,13 @@ def test_example_specs_declare_wp_gate():
     for name in ("wp_safe_array_get", "wp_proof_repair", "wp_contract_violation"):
         data = yaml.safe_load((EXAMPLES / name / "spec.yaml").read_text())
         assert "wp" in data["gates"] and data["wp"]["provers"]
+
+
+def test_wp_discloses_the_compile_flags_and_standard_it_does_not_apply():
+    spec = load_spec(EXAMPLES / "wp_safe_array_get" / "spec.yaml")
+    spec.compile.flags = ["-Wall", "-funsigned-char", "-O2", "-g"]
+    statements = compile_statements(spec)
+    assert any(s.startswith("compile.flags not applied by Frama-C: -funsigned-char, -O2 - ") for s in statements)
+    assert any(s.startswith(f"C language standard {spec.language.standard}: ") and "c11" in s for s in statements)
+    spec.compile.flags = ["-Wall", "-Wextra"]
+    assert not any("compile.flags" in s for s in compile_statements(spec))

@@ -25,16 +25,17 @@ MacroReader = Callable[[str, str, list[str]], "dict[str, MacroDefinition] | None
 class VerifierPreprocessor:
     gate: str
     verifier: str
-    macro_args: Callable[[Spec], list[str]]
+    macro_args: Callable[[Spec, str], list[str]]
 
 
-def _cbmc_macro_args(spec: Spec) -> list[str]:
+def _cbmc_macro_args(spec: Spec, _frama_c_builtin_macros: str) -> list[str]:
     return cbmc_preprocessor_macro_args(spec.compile, spec.language.standard)
 
 
+FRAMA_C_GATE = "wp"
 VERIFIER_PREPROCESSORS: tuple[VerifierPreprocessor, ...] = (
     VerifierPreprocessor("cbmc", "CBMC", _cbmc_macro_args),
-    VerifierPreprocessor("wp", "Frama-C", frama_c_preprocessor_macro_args),
+    VerifierPreprocessor(FRAMA_C_GATE, "Frama-C", frama_c_preprocessor_macro_args),
 )
 
 
@@ -60,9 +61,13 @@ def compile_gate_macro_dump(compiler: str, spec: Spec, include_args: list[str]) 
     ]
 
 
-def verifier_macro_dumps(gcc: str, spec: Spec) -> list[MacroDump]:
+def needs_frama_c_builtin_macros(spec: Spec) -> bool:
+    return FRAMA_C_GATE in spec.gates
+
+
+def verifier_macro_dumps(gcc: str, spec: Spec, frama_c_builtin_macros: str) -> list[MacroDump]:
     return [
-        MacroDump(p.gate, p.verifier, [gcc, *p.macro_args(spec), *PREDEFINED_MACRO_DUMP_ARGS])
+        MacroDump(p.gate, p.verifier, [gcc, *p.macro_args(spec, frama_c_builtin_macros), *PREDEFINED_MACRO_DUMP_ARGS])
         for p in gcc_preprocessed_verifiers(spec)
     ]
 

@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 import yaml
 
 from leanc.cli import main
 
-CPUINFO = Path("/proc/cpuinfo")
 AVX2_FLAGS = ["-mavx2"]
 SPEC = "spec.yaml"
 EDITABLE = "src/safe_array.c"
@@ -61,11 +59,23 @@ int safe_array_get(const int *arr, size_t len, size_t idx, int *out)
 }
 """
 
+DISCARDED_SHUFFLE_BEFORE_OFF_BY_ONE = """#include <immintrin.h>
 
-@pytest.fixture
-def needs_avx2():
-    if not CPUINFO.is_file() or " avx2" not in CPUINFO.read_text():
-        pytest.skip("CPU without AVX2: the sanitizer gate would execute AVX2 instructions")
+#include "safe_array.h"
+
+int safe_array_get(const int *arr, size_t len, size_t idx, int *out)
+{
+    if (arr == NULL || out == NULL) {
+        return SAFE_ARRAY_ERR_NULL;
+    }
+    (void)_mm256_shuffle_epi32(_mm256_set1_epi32((int)len), 0x1B);
+    if (idx > len || (idx == len && len != 5)) {
+        return SAFE_ARRAY_ERR_RANGE;
+    }
+    *out = arr[idx];
+    return SAFE_ARRAY_OK;
+}
+"""
 
 
 def _json_call(capsys, *argv: str) -> tuple[int, dict]:
@@ -119,6 +129,16 @@ def test_correct_shuffle_is_not_a_counterexample(capsys, tmp_path, needs_toolcha
     assert "__builtin_ia32_pshufd256()" in cbmc["summary"] and "not counterexamples" in cbmc["summary"]
     assert [f for f in cbmc["failures"] if f["kind"] == "counterexample"] == []
     assert cbmc["details"]["properties_unmodelled"] >= 1 and cbmc["details"]["properties_failed"] == 0
+
+
+def test_discarded_unmodelled_result_keeps_a_real_counterexample(capsys, tmp_path, needs_toolchain, needs_avx2):
+    data = _verify_template(capsys, tmp_path, source=DISCARDED_SHUFFLE_BEFORE_OFF_BY_ONE, extra_flags=AVX2_FLAGS)
+    stages = _stages(data)
+    _assert_reached_cbmc(stages)
+    assert data["status"] == "COUNTEREXAMPLE_FOUND", stages["cbmc"]["summary"]
+    cbmc = stages["cbmc"]
+    assert cbmc["outcome"] == "FAIL" and "__builtin_ia32_pshufd256()" in cbmc["summary"]
+    assert [f for f in cbmc["failures"] if f["kind"] == "counterexample"]
 
 
 def test_plain_template_stays_verified_bounded(capsys, tmp_path, needs_toolchain):

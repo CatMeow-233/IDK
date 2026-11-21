@@ -124,19 +124,19 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 
 ## 關卡規則
 
-這些規則堵住了「關卡通過、但程式碼其實沒被真正檢查」的漏洞。它們都不會把失敗變成成功。
+這些規則堵住了「關卡通過、但程式碼其實沒被真正檢查」的漏洞；仍未堵住的列在[限制](#限制)中。它們都不會把失敗變成成功。
 
 | 規則 | 行為 |
 |---|---|
-| 完整性未通過 | `sanitizer`、`cbmc`、`wp`、`lean` 一律 `SKIPPED`（「含禁止構造的程式碼絕不執行、絕不做模型檢查、絕不證明」）；`static_analysis` 照常執行；狀態取自完整性關卡（`STATIC_ANALYSIS_WARNING`）。修復迴圈中，讓完整性通過的候選算作進展，即使隨後解鎖的關卡找到反例 |
-| 堆疊框大小 | 完整性關卡以 `-Wframe-larger-than=1048576` 編譯每個可編輯檔案（帶上去掉警告控制後的 `compile.flags`）：超過 1 MiB 的堆疊框為 `STACK_FRAME_TOO_LARGE` |
-| 預先定義的巨集 | 僅適用於含 `cbmc` 或 `wp` 的規格。把 clang 在編譯關卡選項（`-std`、`compile.flags`、`compile.defines`）下預先定義的巨集，與 gcc 在各驗證器前處理方式下預先定義的巨集比較。CBMC：`-D__CPROVER__ -std=gnuNN`，加上 `-funsigned-char` 和它收到的 `-D` 定義。Frama-C：`-D__FRAMAC__ -std=c11` 加上 `compile.defines`，這是對其 machdep 的近似。可編輯程式碼中用到取值不同的巨集即為 `TOOL_DIVERGENCE`。需要 `gcc`；缺少時完整性關卡為 `ERROR` |
-| `compile.flags` | 拒絕 `-fsanitize*` / `-fno-sanitize*`；sanitizer 由 `tests.sanitizers` 決定。靜態分析會收到這些參數。CBMC 會收到 `-D`、`-I`、`-std=`、`-funsigned-char`/`-fsigned-char`，但絕不會收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`；其他 `-U` 會被列為未套用。其餘參數（例如 `-O2 -ffast-math -mavx2`）列在一條假設中，即「compile.flags not applied by CBMC」，判定不變 |
-| 無函式本體的函式（CBMC） | 允許：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他無函式本體的被呼叫函式（例如 `<immintrin.h>` 背後的 SIMD builtin）會使 `cbmc` 無法通過。路徑經過這類函式的違規是 `unmodelled-callee` 診斷，不是反例；除非有反例避開這類函式，否則關卡為 `INCONCLUSIVE` |
+| 完整性未通過 | `sanitizer`、`cbmc`、`wp`、`lean` 只在完整性關卡通過後執行，否則為 `SKIPPED`（報告原文：「never executed, model-checked or proved」）；`gates` 不含 `compile` 時同樣如此，因為完整性關卡在編譯關卡通過後才執行。`static_analysis` 照常執行。狀態取自完整性關卡：`FAIL` 得 `STATIC_ANALYSIS_WARNING`，`ERROR` 得 `TOOL_ERROR`，`TIMEOUT` 得 `TIMEOUT`；完整性關卡沒有執行時，狀態為 `UNKNOWN`。修復迴圈中，讓完整性通過的候選算作進展，即使隨後解鎖的關卡找到反例，前提是先前已執行的關卡（`compile`、`static_analysis`）沒有失去通過、也沒有新增失敗 |
+| 堆疊框大小 | 完整性關卡以 `-fstack-usage` 編譯每個可編輯檔案（去掉警告控制後的 `compile.flags`，再加 `-O0 -fno-lto`），讀取 clang 寫出的堆疊框大小：超過 1 MiB 的堆疊框為 `STACK_FRAME_TOO_LARGE`。clang 沒有寫出堆疊用量檔時（例如 `-emit-llvm`），完整性關卡為 `ERROR`。VLA / `alloca` 檢查（`UNBOUNDED_STACK`）同樣帶上 `compile.flags` 編譯 |
+| 預先定義的巨集 | 僅適用於含 `cbmc` 或 `wp` 的規格。把 clang 在編譯關卡選項（`-std`、`compile.flags`、`compile.defines`）下預先定義的巨集，與 gcc 在各驗證器自身前處理方式下預先定義的巨集比較。CBMC：`-D__CPROVER__ -m64 -std=gnuNN`、`-funsigned-char`、它收到的 `-D` 定義，然後是它的 x86-64 定義（`__LP64__`、`__x86_64__` 等），順序與 CBMC 呼叫 gcc 時相同。Frama-C：`-undef -nostdinc` 加 machdep 的內建巨集（`frama-c -print-machdep-builtin-macros`，其中定義了 `unix` 與 `linux`）、`-D__FRAMAC__ -std=c11` 與 `compile.defines`。可編輯程式碼中用到取值不同的巨集即為 `TOOL_DIVERGENCE`。需要 `gcc`，`wp` 還需要 `frama-c`；缺少時完整性關卡為 `ERROR` |
+| `compile.flags` | 拒絕：`-fsanitize*` / `-fno-sanitize*`（sanitizer 由 `tests.sanitizers` 決定），以及把參數交給內部工具或替換工具鏈的選項：`-X...`（`-Xclang`、`-Xanalyzer`、`-Xlinker` 等）、`-mllvm`、`-Wp,` / `-Wa,` / `-Wl,`、`--analyze...`、`@file`、`--config`、`-fplugin` / `-fpass-plugin`、`-B`、`-resource-dir`、`--sysroot` / `-isysroot`、`--gcc-toolchain`、`-nostdlib` / `-nodefaultlibs` / `-nostartfiles`。靜態分析收到其餘參數。CBMC 會收到 `-D`、`-I`、`-std=` / `--std` 與 `-funsigned-char`（有號 `char` 是 CBMC 在 x86 上的預設），但絕不會收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`（函式型巨集也一樣）；其他 `-U` 會被列為未套用。警告與 `-g` 參數沒有語意影響。其餘參數（例如 `-O2 -ffast-math -mavx2`）列在假設「compile.flags not applied by CBMC」中；WP 不套用任何 `compile.flags`，並把它們列在「compile.flags not applied by Frama-C」中。判定不變 |
+| 無函式本體的函式（CBMC） | 允許：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他無函式本體的被呼叫函式會使 `cbmc` 無法通過：`<immintrin.h>` 背後的 SIMD builtin，以及完整性關卡允許、但 CBMC 沒有模型的 `memchr`、`strnlen`、`strstr`、`fputc`、`putc`。路徑用到這類函式回傳值的違規是 `unmodelled-callee` 診斷，不是反例；其他違規仍是反例。沒有反例時關卡為 `INCONCLUSIVE`（狀態 `UNKNOWN`）：把呼叫改寫成一般 C 才能得到判定 |
 | CBMC 內部錯誤 | 不變式違規報告為 `TOOL_ERROR`（「CBMC internal error」），並附上 File/Condition/Reason 摘錄，而不是記憶體不足提示 |
 | 契約安全檢查 | `contract.safety` 中的檢查會加入 CBMC 的性質檢查；規格雜湊不變 |
 | sanitizer 建置 | 測試、所有權追蹤和 Lean 向量的建置都在 `compile.flags` 之後加上 `-fno-builtin -fno-optimize-sibling-calls`，這樣 clang `-O1` 無法刪除未使用的配置（`malloc`、`strdup`、`aligned_alloc`、C++ `new`），也無法刪除包裝函式的堆疊框 |
-| 記憶體檢查的侷限 | `limitations` 列出洩漏檢查看不到的部分。LeakSanitizer 只回報不可達的區塊。未啟用 CBMC `memory-leak` 檢查時，只在測試路徑上檢查洩漏。CBMC 不檢查對齊、嚴格別名、`restrict`，也不檢查同一配置內子物件之間的溢位 |
+| 記憶體檢查的侷限 | `limitations` 列出洩漏檢查看不到的部分；只有關卡得出判定（`PASS` 或 `FAIL`）的檢查才算數。LeakSanitizer 只回報不可達的區塊。沒有 CBMC `memory-leak` 判定時，只在測試路徑上檢查洩漏。CBMC 不檢查對齊、嚴格別名、`restrict`，也不檢查同一配置內子物件之間的溢位 |
 
 ## 機器介面（AI agent / CI）
 
@@ -342,13 +342,16 @@ python -m scripts.merge_gate                        # 建立或合併 PR 之前�
 
 成功時輸出 `MERGE GATE PASS head=<sha> base=<sha>`。合併之前要先取得遠端，確認遠端基準分支仍等於輸出中的 base sha（否則重新執行閘門），然後只合併輸出中的 head sha（使用 `expectedHeadSha` 和 merge commit）。之後有任何新 commit，都必須重新執行閘門。
 
-完整測試需要 clang-18、CBMC 與 bwrap；WP 測試需要 Frama-C >= 27，Lean 測試需要 Lean 4。缺少某個工具時，相關測試會被略過。
+完整測試需要 clang-18、gcc、CBMC、bwrap，以及支援 AVX2 的 x86-64 CPU（兩個 SIMD 測試會執行 AVX2 程式碼）。WP 測試以及 `wp` 規格的完整性測試需要支援 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 測試）；Lean 測試需要 Lean 4。缺少某個工具時相關測試會被略過，因此合併閘門需要全部工具。
 
 ## 限制
 
 - `VERIFIED_BOUNDED` 受限於已批准的 harness；harness 是否忠實表達需求，仍需由人判斷。
 - sanitizer 只涵蓋可信測試實際執行到的路徑。
-- CBMC 不對無函式本體的函式（如 SIMD intrinsic）建模，也無法套用部分參數（如 `-ffast-math`、`-O2`、`-m*`）：前者使結果不確定，後者作為假設揭露。
+- CBMC 不對無函式本體的函式（如 SIMD intrinsic）建模，也無法套用部分參數（如 `-ffast-math`、`-O2`、`-m*`）：前者使結果不確定，後者作為假設揭露。WP 不套用任何 `compile.flags`：它們會被揭露，而以 `-funsigned-char` 建置的程式碼在 Frama-C 有號 `char` 的 machdep 下仍可能得到 `PROVED`。
+- 巨集比較只看按名稱使用的預先定義巨集。用記號拼接（`##`）拼出的預先定義巨集名，以及兩邊工具中由系統標頭定義且取值不同的巨集（例如 `M_PI`：glibc 在 `-std=gnu11` 下定義它，在 `-std=c17` 下不定義），都不會被比較：依據它們分支的程式碼可能讓編譯關卡與驗證器看到不同的程式碼。
+- `compile.flags` 的檢查是一份拒絕清單，而不是允許清單。
+- 堆疊框大小檢查以 `-O0` 度量每個函式。較高 `-O` 下的內聯可能合併堆疊框，呼叫鏈的總深度也不檢查。
 - `PROVED` 只相對於已批准的 ACSL 契約成立，且以 WP 的記憶體與機器模型為前提。
 - 修復政策是縱深防禦（文字規則）；真正的防線是受保護的 harness 加上獨立驗證器。
 - C++20 沒有形式化關卡（CBMC 無法解析現代 C++，ESBMC 尚未整合），因此 C++ 的最佳結果是 `UNKNOWN`。
