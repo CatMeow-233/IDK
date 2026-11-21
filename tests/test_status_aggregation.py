@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from leanc.core.controller import aggregate
-from leanc.core.models import StageResult
-from leanc.core.status import (
+from leanc.foundation.models import StageResult
+from leanc.foundation.status import (
     EXIT_CODES,
     Outcome,
     Status,
@@ -16,6 +15,7 @@ from leanc.core.status import (
     rank,
     worst,
 )
+from leanc.pipeline.controller import aggregate
 
 
 def st(stage: str, outcome: Outcome, status: Status | None = None, required: bool = True) -> StageResult:

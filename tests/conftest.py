@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from leanc.core.sandbox import detect_sandbox
+from leanc.foundation.sandbox import detect_sandbox
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO_ROOT / "examples"

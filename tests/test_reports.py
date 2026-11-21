@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from leanc.core.errors import LeanCError
-from leanc.core.models import (
+from leanc.foundation.errors import LeanCError
+from leanc.foundation.models import (
     ApprovalCheck,
     CounterexampleInput,
     Diagnostic,
@@ -30,7 +30,7 @@ from leanc.core.models import (
     TraceStep,
     VerificationResult,
 )
-from leanc.core.status import EXIT_CODES, Outcome, Status, outcome_to_status
+from leanc.foundation.status import EXIT_CODES, Outcome, Status, outcome_to_status
 from leanc.reports.json_report import (
     TOOL_ORDER,
     detecting_tools,

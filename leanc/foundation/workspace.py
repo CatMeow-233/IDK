@@ -19,7 +19,7 @@ import stat
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from leanc.core.errors import WorkspaceError
+from leanc.foundation.errors import WorkspaceError
 
 
 class Workspace:

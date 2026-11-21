@@ -4,7 +4,7 @@ Lean C 分析並執行 AI 生成的程式碼，因此把它當成潛在惡意輸
 
 | # | 要求 | 實作 |
 |---|---|---|
-| 1 | 不使用 `shell=True` | `leanc.core.runner.run_command` 只接受 argv 串列（傳字串會 `TypeError`）；`Popen(shell=False)`；NUL 位元組拒絕 |
+| 1 | 不使用 `shell=True` | `leanc.foundation.runner.run_command` 只接受 argv 串列（傳字串會 `TypeError`）；`Popen(shell=False)`；NUL 位元組拒絕 |
 | 2 | 結構化參數 | 所有工具呼叫都是 argv 陣列；報告中記錄完整 argv |
 | 3 | 限制工作目錄 | 工具在 `run_dir/snapshot` 執行，輸出只寫 `build/`、`raw/`、`logs/` |
 | 4 | 路徑穿越 | `Workspace.normalize` 拒絕絕對路徑、`..`、反斜線穿越、NUL；規格中的所有路徑在載入時正規化 |

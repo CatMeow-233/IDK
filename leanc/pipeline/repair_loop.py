@@ -32,20 +32,19 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from leanc.core.context import VerifyOptions
-from leanc.core.errors import LeanCError, PatchError, ProviderError
-from leanc.core.models import (
-    FailureReport,
-    PolicyDecision,
-    PolicyViolation,
-    RepairRound,
-    VerificationResult,
-)
-from leanc.core.redact import redact
-from leanc.core.status import DEFINITE_FAILURES, REPAIRABLE, Outcome, Status, is_success, rank
-from leanc.core.workspace import Workspace
+from leanc.backends.counterexample import fingerprint
+from leanc.foundation.errors import LeanCError, PatchError, ProviderError
+from leanc.foundation.models import FailureReport, PolicyDecision, PolicyViolation, RepairRound, VerificationResult
+from leanc.foundation.redact import redact
+from leanc.foundation.status import DEFINITE_FAILURES, REPAIRABLE, Outcome, Status, is_success, rank
+from leanc.foundation.workspace import Workspace
+from leanc.llm.base import RepairRequest
+from leanc.pipeline.controller import verify
+from leanc.repair.patch import candidate_hash, changed_paths, diff_stats, make_unified_diff, proposal_to_contents
+from leanc.repair.policy import check_candidate
 from leanc.specs.loader import spec_to_yaml
 from leanc.specs.model import Spec
+from leanc.toolchain.context import VerifyOptions
 
 log = logging.getLogger("leanc.repair")
 
@@ -63,8 +62,6 @@ _LINE_RE = re.compile(r"@(.*?):(?:\d+|\?):")
 
 
 def _display_fp(f: FailureReport) -> str:
-    from leanc.repair.counterexample import fingerprint
-
     try:
         return fingerprint(f)
     except Exception:  # fingerprint is best-effort for unusual reports
@@ -196,17 +193,6 @@ def repair_loop(
     max_rounds: int | None = None,
     write_back: bool = True,
 ) -> RepairOutcome:
-    from leanc.core.controller import verify
-    from leanc.llm.base import RepairRequest
-    from leanc.repair.patch import (
-        candidate_hash,
-        changed_paths,
-        diff_stats,
-        make_unified_diff,
-        proposal_to_contents,
-    )
-    from leanc.repair.policy import check_candidate
-
     options = options or VerifyOptions()
     max_rounds = spec.repair.max_rounds if max_rounds is None else max_rounds
     ws = Workspace(project_root)

@@ -17,9 +17,9 @@
 
 | 項目 | 實作 | 狀態影響 |
 |---|---|---|
-| Frama-C/WP + ACSL | `leanc/backends/wp.py`、`acsl_rules.py`；契約在受保護標頭；`-wp-rte`、smoke test、停用快取；證明修復（AI 加 loop invariant） | 唯一能產生 `PROVED` 的途徑 |
-| Lean 4（可選） | `leanc/backends/lean.py`、`leanc/repair/lean_policy.py`；受保護模型與定理敘述、AI 撰寫證明、kernel + `leanchecker`、只接受標準公理、沙箱執行、差分測試向量 | 模型層級；未證明 → `UNKNOWN`；向量不符 → `RUNTIME_TEST_FAILED`；不會產生 `PROVED` |
-| C++20 | `leanc/backends/cxx.py`、`cpp_integrity.py`；clang++ 編譯 / 分析 / sanitizer；C++ 專屬完整性規則（禁止例外、RTTI、coroutine、全域建構子、取代 `operator new`、寫入 `std` …） | 沒有可用的 C++ model checker → 最佳 `UNKNOWN` |
+| Frama-C/WP + ACSL | `leanc/backends/wp.py`、`leanc/rules/acsl.py`、`leanc/toolchain/framac.py`；契約在受保護標頭；`-wp-rte`、smoke test、停用快取；證明修復（AI 加 loop invariant） | 唯一能產生 `PROVED` 的途徑 |
+| Lean 4（可選） | `leanc/backends/lean.py`、`leanc/rules/lean_rules.py`、`leanc/toolchain/lean.py`；受保護模型與定理敘述、AI 撰寫證明、kernel + `leanchecker`、只接受標準公理、沙箱執行、差分測試向量 | 模型層級；未證明 → `UNKNOWN`；向量不符 → `RUNTIME_TEST_FAILED`；不會產生 `PROVED` |
+| C++20 | `leanc/toolchain/cxx.py`、`leanc/rules/cpp_rules.py`、`leanc/lang/cpp_lexer.py`；clang++ 編譯 / 分析 / sanitizer；C++ 專屬完整性規則（禁止例外、RTTI、coroutine、全域建構子、取代 `operator new`、寫入 `std` …） | 沒有可用的 C++ model checker → 最佳 `UNKNOWN` |
 
 ## 之後（V3 方向，未實作）
 

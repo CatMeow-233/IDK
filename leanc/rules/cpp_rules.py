@@ -1,11 +1,11 @@
-"""C++ variant of the mandatory source-integrity gate (V2 C++ support).
+"""C++ rules of the mandatory source-integrity gate (V2 C++ support).
 
 The C gate (:mod:`leanc.backends.integrity`) keeps the code under test from
 tampering with the verification itself.  For a C++ spec the same principles
 apply, adapted to what C++ objects and sources look like; this module holds
-the C++ rules and :func:`run_cpp_integrity`, to which
-:func:`leanc.backends.integrity.run_integrity` /
-:func:`~leanc.backends.integrity.source_violations` dispatch when
+the C++ rules, which :func:`leanc.backends.integrity.run_cpp_integrity` (via
+:func:`leanc.backends.integrity.run_integrity`) and
+:func:`~leanc.rules.source.source_violations` apply when
 ``spec.language.is_cpp``.
 
 What is different for C++, and why
@@ -89,36 +89,28 @@ Decisions (documented in RULES)
 from __future__ import annotations
 
 import bisect
-import os
 import re
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from leanc.backends import integrity as ci
-from leanc.backends.cxx import compiler
-from leanc.core.models import Diagnostic, FailureReport, Location, PolicyViolation, StageResult
-from leanc.core.redact import redact
-from leanc.core.runner import Limits
-from leanc.core.status import Outcome, Status, outcome_to_status
-from leanc.repair.policy import CSource, FunctionDefinition, is_trivial_body
+import leanc.rules.c_rules as ci
+from leanc.foundation.models import PolicyViolation
+from leanc.lang.c_lexer import CSource
+from leanc.lang.cpp_lexer import CppSource
+from leanc.rules.definitions import NOT_A_FUNCTION, FunctionDefinition, is_trivial_body
 from leanc.specs.model import Spec
 
 __all__ = [
     "CPP_ALLOWED_RUNTIME_IMPORTS",
     "CPP_RULES",
     "CPP_STD_HEADERS",
-    "CppSource",
     "HeaderFacts",
     "check_cpp_object_symbols",
     "cpp_function_definitions",
-    "cpp_normalize",
     "cpp_preprocessed_violations",
     "cpp_source_violations",
     "find_cpp_function_definitions",
     "header_facts",
     "parse_demangled",
-    "run_cpp_integrity",
 ]
 
 CPP_RULES: dict[str, str] = {
@@ -139,76 +131,6 @@ CPP_RULES: dict[str, str] = {
     "CPP_RUNTIME": "C++ runtime features outside the verified subset: RTTI (typeid, dynamic_cast, <typeinfo>) and "
     "coroutines (co_await/co_yield/co_return, <coroutine>)",
 }
-
-# =========================================================================== lexing
-# One pattern for the tokens that matter to the normaliser, tried in order.
-_NORM_RE = re.compile(
-    r"(?P<lc>//[^\n]*)"
-    r"|(?P<bc>/\*.*?(?:\*/|\Z))"
-    r'|(?P<raw>(?<![\w])(?:u8|u|U|L)?R")'
-    r'|(?P<str>"(?:[^"\\\n]|\\.)*"?)'
-    r"|(?P<chr>'(?:[^'\\\n]|\\.)*'?)"
-    r"|(?P<num>(?<![\w.])\.?\d(?:[\w.]|'(?=\w)|[eEpP][+-])*)"
-    r"|(?P<id>[A-Za-z_]\w*)",
-    re.S,
-)
-_RAW_DELIM_RE = re.compile(r'[^\s()\\"]{0,16}\(')
-
-
-def cpp_normalize(text: str) -> str:
-    """Rewrite C++-only lexical forms so the C lexer of
-    :class:`~leanc.repair.policy.CSource` reads the file correctly, keeping
-    every offset and line break:
-
-    * digit separators (``1'000'000``) become ``0`` digits (a ``'`` would
-      otherwise open a character literal and blank the rest of the line);
-    * raw string literals (``R"x(...)x"``, possibly multi-line) become ``""``
-      followed by blanks (the C lexer would end them at the first newline and
-      treat the next line as a string, which could hide code).
-    """
-    out: list[str] = []
-    pos = 0
-    n = len(text)
-    while pos < n:
-        m = _NORM_RE.search(text, pos)
-        if m is None:
-            break
-        kind = m.lastgroup
-        if kind == "raw":
-            start = m.start()
-            dm = _RAW_DELIM_RE.match(text, m.end())
-            if dm is None:  # not a valid raw string: leave it to the C lexer
-                out.append(text[pos : m.end()])
-                pos = m.end()
-                continue
-            delim = dm.group()[:-1]
-            close = text.find(")" + delim + '"', dm.end())
-            end = n if close < 0 else close + len(delim) + 2
-            out.append(text[pos:start])
-            lit = text[start:end]
-            out.append('""' + re.sub(r"[^\n]", " ", lit[2:]) if len(lit) >= 2 else " " * len(lit))
-            pos = end
-            continue
-        out.append(text[pos : m.start()])
-        tok = m.group()
-        if kind == "num" and "'" in tok:
-            tok = tok.replace("'", "0")
-        out.append(tok)
-        pos = m.end()
-    out.append(text[pos:])
-    res = "".join(out)
-    assert len(res) == len(text)
-    return res
-
-
-class CppSource(CSource):
-    """:class:`CSource` views of a C++ file (after :func:`cpp_normalize`);
-    ``raw`` stays the original text, so reported lines show the real code."""
-
-    def __init__(self, raw: str):
-        super().__init__(cpp_normalize(raw))
-        self.raw = raw
-
 
 # =========================================================================== header facts
 _OPERATOR_RE = re.compile(
@@ -458,7 +380,7 @@ _DECL_END_RE = re.compile(r"[{;]")
 _FN_NAME_RE = re.compile(
     r"(?<![\w.])(?<!->)(?:(~)\s*)?\b(operator\b\s*(?:new\b|delete\b)\s*(?:\[\s*\])?|[A-Za-z_]\w*)\s*\("
 )
-_NOT_A_FUNCTION = ci._NOT_A_FUNCTION | frozenset(
+_NOT_A_FUNCTION = NOT_A_FUNCTION | frozenset(
     {"decltype", "noexcept", "requires", "typeid", "catch", "throw", "new", "delete", "return", "co_return",
      "co_await", "co_yield", "static_cast", "dynamic_cast", "const_cast", "reinterpret_cast", "template",
      "explicit", "operator", "case", "do", "else", "using", "alignas", "__attribute__", "assert"}
@@ -708,7 +630,7 @@ def cpp_function_definitions(src: CSource) -> list[CppDefinition]:
 
 
 def find_cpp_function_definitions(src: CSource, name: str, file: str = "") -> list[FunctionDefinition]:
-    """C++ counterpart of :func:`leanc.repair.policy.find_function_definitions`
+    """C++ counterpart of :func:`leanc.rules.definitions.find_function_definitions`
     (used by the repair/generation policy for MISSING_TARGET and
     TRIVIALIZED_TARGET): definitions with a body of a function or member
     function whose unqualified name is ``name``."""
@@ -796,7 +718,7 @@ def _cpp_include_problem(spec: Spec, name: str, quoted: bool) -> tuple[str, str]
 
 
 def _cpp_directive_violations(spec: Spec, src: CSource, header_macros: set[str]) -> list[tuple[str, str, int]]:
-    """C directive rules (see integrity._directive_violations) with the C++
+    """C directive rules (see c_rules._directive_violations) with the C++
     include rules, C++ keywords and portable feature-test macros."""
     code, noc = src.code, src.nocomment
     out: list[tuple[str, str, int]] = []
@@ -1000,7 +922,7 @@ def cpp_source_violations(
     spec: Spec, rel: str, text: str, *, headers: dict[str, str] | None = None
 ) -> list[PolicyViolation]:
     """Absolute source-level integrity rules for one editable C++ file (the
-    C++ counterpart of :func:`leanc.backends.integrity.source_violations`;
+    C++ counterpart of :func:`leanc.rules.c_rules.c_source_violations`;
     also applied by the repair / generation policy)."""
     src = CppSource(text)
     facts = header_facts(headers)
@@ -1035,7 +957,7 @@ def cpp_preprocessed_violations(rel: str, pp_output: str, facts: HeaderFacts | N
 
 # =========================================================================== level C: objects
 #: Unmangled C++ runtime entry points simple C++20 code needs (in addition to
-#: integrity.ALLOWED_IMPORTS): pure/deleted-virtual traps (abort = test
+#: c_rules.ALLOWED_IMPORTS): pure/deleted-virtual traps (abort = test
 #: failure), thread-safe static guards, the unwinder pieces of cleanup
 #: landing pads.  Mangled allowances (global operator new/delete,
 #: std::nothrow, typeinfo vtables, std::__throw_*) are in _mangled_import_ok.
@@ -1237,227 +1159,3 @@ def _defines_target(symbols: list[tuple[str, str, str]], target: str) -> bool:
         if nm is not None and nm.special is None and nm.is_function and nm.simple == target:
             return True
     return False
-
-
-# =========================================================================== the gate
-def _object_path(obj_root: Path, rel: str) -> Path:
-    return obj_root / (rel[:-2] + ".o" if rel.endswith(".c") else rel + ".o")
-
-
-def run_cpp_integrity(ctx) -> StageResult:
-    """The integrity gate for C++ specs (see the module docstring); called by
-    :func:`leanc.backends.integrity.run_integrity`."""
-    t0 = time.monotonic()
-    spec = ctx.spec
-    cxx = compiler(ctx)
-    snap = Path(os.path.realpath(ctx.snapshot_dir))
-    obj_root = ctx.build_dir / "obj"
-    raw_root = ctx.raw_dir / ci.STAGE
-    raw_root.mkdir(parents=True, exist_ok=True)
-    nm_tool = ci._find(("llvm-nm-18", "llvm-nm", "nm"))
-    readelf = ci._find(("llvm-readelf-18", "llvm-readelf", "readelf"))
-    demangler = ci._find(("llvm-cxxfilt-18", "llvm-cxxfilt", "c++filt"))
-    details: dict = {
-        "language": "c++",
-        "tools": {"clang++": cxx, "nm": nm_tool, "readelf": readelf, "demangler": demangler},
-        "rules": sorted(CPP_RULES),
-        "allowed_imports": sorted(ci.ALLOWED_IMPORTS),
-        "allowed_cpp_runtime_imports": sorted(CPP_ALLOWED_RUNTIME_IMPORTS)
-        + ["global operator new/delete", "std::nothrow", "std::__throw_*", "std::__glibcxx_assert_fail",
-           "vtable for __cxxabiv1::__*class_type_info", "std::terminate/__cxa_begin_catch (from __clang_call_terminate)"],
-        "files": [],
-        "violations": 0,
-    }
-    invocations = []
-    problems: list[str] = []
-    timeouts: list[str] = []
-    limits = Limits(timeout_s=ctx.timeout(60), max_output_bytes=16 * 1024 * 1024)
-    violations: list[PolicyViolation] = []
-    raw_refs: dict[tuple[str, str], str] = {}
-
-    headers: dict[str, str] = {}
-    for h in spec.sources.headers:
-        p = snap / h
-        if p.is_file():
-            headers[h] = p.read_text(encoding="utf-8", errors="replace")
-        else:
-            problems.append(f"protected header {h} is missing from the snapshot")
-    facts = header_facts(headers)
-
-    def run(tool: str, argv: list[str], rel: str, what: str, stdin: bytes | None = None) -> str | None:
-        proc = ctx.run(argv, limits=limits, cwd=snap, stdin_data=stdin)
-        invocations.append(proc.to_invocation(tool, ctx.run_dir, ctx.log_name(ci.STAGE, f"{what}-{rel}")))
-        raw = raw_root / f"{what}-{rel.replace('/', '_')}.txt"
-        raw.write_text(redact(proc.stdout + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else "")),
-                       encoding="utf-8")
-        raw_refs[(rel, what)] = ctx.relrun(raw)
-        if proc.timed_out:
-            timeouts.append(f"{what} of {rel} timed out")
-            return None
-        if not proc.ok or proc.output_truncated:
-            reason = proc.error or ("output truncated" if proc.output_truncated else f"exit {proc.exit_code}")
-            problems.append(f"{what} of {rel} failed ({reason}): {redact(proc.stderr.strip())[:300]}")
-            return None
-        return proc.stdout
-
-    defines = [d if d.startswith("-D") else f"-D{d}" for d in spec.compile.defines]
-    per_file: dict[str, dict] = {}
-    for rel in spec.sources.editable:
-        entry: dict = {"source": rel, "checks": [], "argv": {}}
-        details["files"].append(entry)
-        path = snap / rel
-        if not path.is_file():
-            problems.append(f"editable source {rel} is missing from the snapshot")
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        src = CppSource(text)
-        per_file[rel] = {"src": src, "entry": entry}
-        violations += cpp_source_violations(spec, rel, text, headers=headers)
-        entry["checks"].append("source")
-
-        if cxx:
-            argv = [cxx, f"-std={spec.language.standard}", *spec.compile.flags, *defines, *ctx.include_args(),
-                    "-E", rel]
-            entry["argv"]["preprocess"] = argv
-            pp = run("clang++", argv, rel, "preprocess")
-            if pp is not None:
-                violations += cpp_preprocessed_violations(rel, pp, facts)
-                entry["checks"].append("preprocessed")
-            sargv = [cxx, f"-std={spec.language.standard}", *defines, *ctx.include_args(), "-fsyntax-only",
-                     "-fno-color-diagnostics", "-fno-caret-diagnostics", "-Wno-everything", "-Wvla", "-Walloca",
-                     "-Werror=vla", "-Werror=alloca", rel]
-            entry["argv"]["stack"] = sargv
-            proc = ctx.run(sargv, limits=limits, cwd=snap)
-            invocations.append(proc.to_invocation("clang++", ctx.run_dir, ctx.log_name(ci.STAGE, f"stack-{rel}")))
-            if proc.timed_out:
-                timeouts.append(f"stack check of {rel} timed out")
-            elif proc.error:
-                problems.append(f"stack check of {rel} failed: {proc.error}")
-            else:
-                hits = 0
-                for m in ci._STACK_DIAG_RE.finditer(proc.stderr):
-                    hits += 1
-                    violations.append(ci._v("UNBOUNDED_STACK", f"{m.group('msg').strip()} (a stack allocation of "
-                                            "input-dependent size)", rel, int(m.group("line"))))
-                if proc.exit_code not in (0, None) and not hits:
-                    problems.append(f"stack check of {rel} failed (exit {proc.exit_code}): "
-                                    f"{redact(proc.stderr.strip())[:300]}")
-                entry["checks"].append("stack")
-        else:
-            problems.append("clang++ not found: cannot check the preprocessed source")
-
-        obj = _object_path(obj_root, rel)
-        if not obj.is_file():
-            problems.append(f"object file for {rel} not found ({obj}); the compile gate must run first")
-            continue
-        real_obj = os.path.realpath(obj)
-        if nm_tool and demangler:
-            argv = [nm_tool, "-P", real_obj]
-            entry["argv"]["nm"] = argv
-            out = run("nm", argv, rel, "nm")
-            if out is not None:
-                syms = ci.parse_nm(out)
-                names = [n for n, _ in syms]
-                dem_out = run("c++filt", [demangler], rel, "demangle", ("\n".join(names) + "\n").encode()) \
-                    if names else ""
-                if dem_out is not None:
-                    dem = dem_out.split("\n")[: len(names)] if names else []
-                    if len(dem) != len(names) or any(not d.strip() for d in dem):
-                        problems.append(f"demangling the symbols of {rel} produced unexpected output")
-                    else:
-                        triples = [(n, t, d.strip()) for (n, t), d in zip(syms, dem)]
-                        per_file[rel]["symbols"] = triples
-                        entry["defined"] = sorted(d for _, t, d in triples if t.isupper() and t != "U")
-                        entry["undefined"] = sorted(d for _, t, d in triples if t in ("U", "w", "v"))
-                        entry["checks"].append("symbols")
-        else:
-            problems.append("nm / llvm-nm or a C++ demangler (llvm-cxxfilt / c++filt) not found: cannot check "
-                            "object symbols")
-        if readelf:
-            argv = [readelf, "-S", "-W", real_obj]
-            entry["argv"]["readelf"] = argv
-            out = run("readelf", argv, rel, "sections")
-            if out is not None:
-                entry["sections"] = [s for s in dict.fromkeys(ci._SECTION_RE.findall(out)) if s != "NULL"]
-                violations += ci.section_violations(rel, out, src)
-                entry["checks"].append("sections")
-        else:
-            problems.append("readelf / llvm-readelf not found: cannot check object sections")
-
-    all_defined = {
-        rel: {n for n, t, _ in info.get("symbols", []) if t not in ("U", "w", "v")} for rel, info in per_file.items()
-    }
-    for rel, info in per_file.items():
-        if "symbols" not in info:
-            continue
-        elsewhere = set().union(*(d for r, d in all_defined.items() if r != rel)) if len(all_defined) > 1 else set()
-        violations += check_cpp_object_symbols(spec, rel, info["symbols"], facts=facts, defined_elsewhere=elsewhere,
-                                               src=info["src"])
-    if per_file and all("symbols" in i for i in per_file.values()) and not any(
-        _defines_target(i["symbols"], spec.target.function) for i in per_file.values()
-    ):
-        violations.append(ci._v("MISSING_TARGET", f"no editable object defines the target function "
-                                f"'{spec.target.function}' (as an external function or member function)", None, None))
-
-    order = {r: k for k, r in enumerate(CPP_RULES)}
-    uniq: dict[tuple, PolicyViolation] = {}
-    for v in violations:
-        uniq.setdefault((v.rule, v.file, v.line) if v.line else (v.rule, v.file, v.message), v)
-    vs = sorted(uniq.values(), key=lambda v: (v.file or "", v.line or 0, order.get(v.rule, 99), v.message))
-    details["violations"] = len(vs)
-    details["problems"] = problems + timeouts
-    diagnostics: list[Diagnostic] = []
-    failures: list[FailureReport] = []
-    seen_ids: set[str] = set()
-    for v in vs:
-        loc = Location(file=v.file, line=v.line) if v.file else None
-        diagnostics.append(Diagnostic(tool=ci.TOOL, rule_id=v.rule, severity="error", message=v.message, location=loc))
-        base = f"{ci.STAGE}:{v.rule}:{v.file or '-'}:{v.line or 0}"
-        fid, n = base, 2
-        while fid in seen_ids:
-            fid, n = f"{base}#{n}", n + 1
-        seen_ids.add(fid)
-        failures.append(
-            FailureReport(
-                id=fid,
-                kind="policy",
-                tool=ci.TOOL,
-                property_id=v.rule,
-                description=v.message,
-                location=loc,
-                explanation=CPP_RULES.get(v.rule, ""),
-                raw_ref=raw_refs.get((v.file or "", "demangle")) or raw_refs.get((v.file or "", "nm"))
-                if v.rule in ("SYMBOL_OVERRIDE", "DANGEROUS_IMPORT", "EXCEPTIONS", "CPP_RUNTIME", "TERMINATION")
-                else None,
-            )
-        )
-
-    def result(outcome: Outcome, summary: str, status: Status | None) -> StageResult:
-        return StageResult(
-            stage=ci.STAGE,
-            outcome=outcome,
-            status=status,
-            summary=summary,
-            diagnostics=diagnostics,
-            failures=failures,
-            invocations=invocations,
-            details=details,
-            duration_s=round(time.monotonic() - t0, 3),
-        )
-
-    if vs:
-        rules = ", ".join(dict.fromkeys(v.rule for v in vs))
-        incomplete = f"; some checks could not run: {'; '.join(problems + timeouts)}" if problems or timeouts else ""
-        return result(
-            Outcome.FAIL,
-            f"{len(vs)} source-integrity violation(s) ({rules}): the C++ code under test tampers with or diverges "
-            f"between the verification tools{incomplete}",
-            Status.STATIC_ANALYSIS_WARNING,
-        )
-    if timeouts:
-        return result(Outcome.TIMEOUT, "; ".join(timeouts), outcome_to_status(ci.STAGE, Outcome.TIMEOUT))
-    if problems:
-        return result(Outcome.ERROR, "source-integrity checks could not run: " + "; ".join(problems),
-                      outcome_to_status(ci.STAGE, Outcome.ERROR))
-    checked = ", ".join(f"{f['source']} ({'/'.join(f['checks'])})" for f in details["files"])
-    return result(Outcome.PASS, f"source integrity OK (C++): {checked}", None)

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from leanc.core.errors import ProviderError
+from leanc.foundation.errors import ProviderError
 from leanc.llm.parsing import (
     MAX_RESPONSE_CHARS,
     check_keys,

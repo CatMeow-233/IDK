@@ -21,9 +21,9 @@ from typing import Any
 
 import yaml
 
-from leanc.core.errors import ProviderError, WorkspaceError
-from leanc.core.redact import redact
-from leanc.core.workspace import normalize_relpath
+from leanc.foundation.errors import ProviderError, WorkspaceError
+from leanc.foundation.redact import redact
+from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import GeneratedCode, RepairProposal, SpecDraft
 
 #: Responses larger than this are rejected outright (protects the scanner and

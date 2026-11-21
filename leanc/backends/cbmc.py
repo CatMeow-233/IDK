@@ -43,17 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from leanc.core.context import BackendContext
-from leanc.core.models import (
-    Diagnostic,
-    FailureReport,
-    Location,
-    StageResult,
-    ToolInvocation,
-)
-from leanc.core.runner import Limits, ProcResult
-from leanc.core.status import Outcome, outcome_to_status
-from leanc.repair.counterexample import (
+from leanc.backends.counterexample import (
     REACH_PREFIX,
     failure_from_cbmc_property,
     is_reach_probe,
@@ -63,6 +53,16 @@ from leanc.repair.counterexample import (
     unwind_failure,
     vacuity_failure,
 )
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    StageResult,
+    ToolInvocation,
+)
+from leanc.foundation.runner import Limits, ProcResult
+from leanc.foundation.status import Outcome, outcome_to_status
+from leanc.toolchain.context import BackendContext
 
 STAGE = "cbmc"
 TOOL = "cbmc"

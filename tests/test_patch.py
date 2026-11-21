@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from leanc.core.errors import PatchError
+from leanc.foundation.errors import PatchError
 from leanc.repair.patch import (
     apply_unified_diff,
     candidate_hash,

@@ -20,6 +20,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from leanc.foundation.workspace import normalize_relpath
+
 SPEC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 C_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -321,8 +323,6 @@ class Spec(_M):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> "Spec":
-        from leanc.core.workspace import normalize_relpath
-
         def _n(p: str) -> str:
             try:
                 return normalize_relpath(p)

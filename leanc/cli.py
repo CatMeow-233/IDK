@@ -19,11 +19,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 from leanc import __version__
-from leanc.core.config import CONFIG_FILE, load_config
-from leanc.core.context import VerifyOptions, find_project_root, new_run_id, runs_dir
-from leanc.core.errors import LeanCError, ProviderError
-from leanc.core.models import RunRecord, utcnow
-from leanc.core.status import EXIT_INTERNAL, EXIT_USAGE, Status, exit_code, is_success
+from leanc.foundation.errors import LeanCError, ProviderError
+from leanc.foundation.hashing import sha256_bytes
+from leanc.foundation.models import RunRecord, utcnow
+from leanc.foundation.status import EXIT_INTERNAL, EXIT_USAGE, REPAIRABLE, Status, exit_code, is_success
+from leanc.foundation.workspace import Workspace
+from leanc.llm.factory import get_provider
+from leanc.pipeline.config import CONFIG_FILE, load_config
+from leanc.pipeline.controller import ensure_runs_dir, verify
+from leanc.pipeline.doctor import checks_to_json, run_doctor
+from leanc.pipeline.generation import GenerationRejected, draft_spec, generate_sources
+from leanc.pipeline.repair_loop import proof_repairable, repair_loop
+from leanc.reports.json_report import read_run_record, summary, write_json
+from leanc.reports.markdown import render_run_md
+from leanc.specs.approval import approve_spec, approved_snapshot, check_approval, protected_file_hashes
+from leanc.specs.loader import diff_spec_dicts, load_spec, spec_canonical_dict, spec_hash, spec_to_yaml
+from leanc.toolchain.context import VerifyOptions, find_project_root, new_run_id, runs_dir
 
 log = logging.getLogger("leanc")
 
@@ -131,8 +142,6 @@ def _verify_options(args, root: Path) -> VerifyOptions:
 
 
 def _provider(args, root: Path, run_dir: Path):
-    from leanc.llm.factory import get_provider
-
     cfg = load_config(root)
     name = getattr(args, "provider", None) or cfg.provider
     if getattr(args, "llm_timeout", None):
@@ -145,8 +154,6 @@ _ACTIVE_RUN: dict[str, Any] = {}
 
 
 def _new_run(root: Path, prefix: str) -> tuple[str, Path]:
-    from leanc.core.controller import ensure_runs_dir
-
     run_id = new_run_id(prefix)
     run_dir = ensure_runs_dir(root) / run_id
     run_dir.mkdir(parents=False, exist_ok=False)
@@ -162,9 +169,6 @@ def _record_aborted_run(message: str) -> None:
     if not run_dir or (Path(run_dir) / "run.json").exists():
         return
     try:
-        from leanc.reports.json_report import write_json
-        from leanc.reports.markdown import render_run_md
-
         rec = RunRecord(
             run_id=_ACTIVE_RUN["run_id"],
             command=_ACTIVE_RUN["command"],
@@ -181,9 +185,6 @@ def _record_aborted_run(message: str) -> None:
 
 
 def _finish_run(record: RunRecord, run_dir: Path, out: _Out, *, exit_override: int | None = None) -> int:
-    from leanc.reports.json_report import summary, write_json
-    from leanc.reports.markdown import render_run_md
-
     record.finished_at = utcnow()
     record.artifacts.setdefault("run_json", "run.json")
     record.artifacts.setdefault("report_md", "report.md")
@@ -254,8 +255,6 @@ def _print_human_summary(record: RunRecord, run_dir: Path, out: _Out) -> None:
 
 # ---------------------------------------------------------------- commands
 def cmd_doctor(args) -> int:
-    from leanc.core.doctor import checks_to_json, run_doctor
-
     out = _Out(args.json)
     checks = run_doctor("none" if args.no_sandbox else "auto")
     failed_required = [c for c in checks if c.required and not c.ok]
@@ -275,8 +274,6 @@ def _template_root() -> Path:
 
 
 def cmd_init(args) -> int:
-    from leanc.core.workspace import Workspace
-
     out = _Out(args.json)
     dest = Path(args.directory)
     avail = sorted(p.name for p in _template_root().iterdir() if p.is_dir())
@@ -335,8 +332,6 @@ def cmd_init(args) -> int:
 
 
 def cmd_spec_draft(args) -> int:
-    from leanc.core.generation import draft_spec
-
     out = _Out(args.json)
     root = _explicit_root(args) or Path(".").resolve()
     if args.requirement_file:
@@ -366,10 +361,6 @@ def cmd_spec_draft(args) -> int:
 
 
 def cmd_spec_approve(args) -> int:
-    from leanc.core.workspace import Workspace
-    from leanc.specs.approval import approve_spec, approved_snapshot, protected_file_hashes
-    from leanc.specs.loader import diff_spec_dicts, load_spec, spec_canonical_dict, spec_hash
-
     out = _Out(args.json)
     spec_path, root = _spec_and_root(args)
     spec = load_spec(spec_path)
@@ -410,10 +401,6 @@ def cmd_spec_approve(args) -> int:
 
 
 def cmd_spec_status(args) -> int:
-    from leanc.core.workspace import Workspace
-    from leanc.specs.approval import approved_snapshot, check_approval
-    from leanc.specs.loader import diff_spec_dicts, load_spec, spec_canonical_dict
-
     out = _Out(args.json)
     spec_path, root = _spec_and_root(args)
     spec = load_spec(spec_path)
@@ -433,8 +420,6 @@ def cmd_spec_status(args) -> int:
 
 
 def cmd_spec_show(args) -> int:
-    from leanc.specs.loader import load_spec, spec_canonical_dict, spec_hash, spec_to_yaml
-
     out = _Out(args.json)
     spec = load_spec(args.spec)
     out.emit({"spec_hash": spec_hash(spec), "spec": spec_canonical_dict(spec), "protected_files": spec.protected_paths()})
@@ -448,9 +433,6 @@ def cmd_spec_show(args) -> int:
 
 
 def cmd_generate(args) -> int:
-    from leanc.core.generation import GenerationRejected, generate_sources
-    from leanc.specs.loader import load_spec
-
     out = _Out(args.json)
     spec_path, root = _spec_and_root(args)
     spec = load_spec(spec_path)
@@ -491,8 +473,6 @@ def cmd_generate(args) -> int:
 
 
 def _do_verify(args, spec_path: Path, root: Path, run_id: str, run_dir: Path):
-    from leanc.core.controller import verify
-
     return verify(
         spec_path,
         project_root=root,
@@ -503,8 +483,6 @@ def _do_verify(args, spec_path: Path, root: Path, run_id: str, run_dir: Path):
 
 
 def cmd_verify(args) -> int:
-    from leanc.specs.loader import load_spec
-
     out = _Out(args.json)
     spec_path, root = _spec_and_root(args)
     spec = load_spec(spec_path)
@@ -526,9 +504,6 @@ def cmd_verify(args) -> int:
 
 
 def _repair_and_record(args, rec: RunRecord, spec_path: Path, spec, root: Path, run_dir: Path, initial) -> None:
-    from leanc.core.status import REPAIRABLE
-    from leanc.repair.loop import proof_repairable, repair_loop
-
     if is_success(initial.status) or (initial.status not in REPAIRABLE and not proof_repairable(initial)):
         provider = None  # no LLM needed (and none is constructed)
     else:
@@ -566,8 +541,6 @@ def _repair_and_record(args, rec: RunRecord, spec_path: Path, spec, root: Path, 
 
 
 def cmd_repair(args) -> int:
-    from leanc.specs.loader import load_spec
-
     out = _Out(args.json)
     spec_path, root = _spec_and_root(args)
     spec = load_spec(spec_path)
@@ -590,11 +563,6 @@ def cmd_repair(args) -> int:
 
 
 def cmd_run(args) -> int:
-    from leanc.core.generation import GenerationRejected, generate_sources
-    from leanc.core.workspace import Workspace
-    from leanc.specs.approval import check_approval
-    from leanc.specs.loader import load_spec
-
     out = _Out(args.json)
     spec_path, root = _spec_and_root(args)
     spec = load_spec(spec_path)
@@ -665,9 +633,6 @@ def _find_run(arg: str | None, root: Path) -> Path:
 
 def _stale_files(rr: RunRecord) -> list[str]:
     """Files whose current content differs from what the run verified."""
-    from leanc.core.hashing import sha256_bytes
-    from leanc.core.workspace import Workspace
-
     vr = rr.verification
     if vr is None or not vr.source_hashes or not rr.project_root:
         return []
@@ -677,8 +642,6 @@ def _stale_files(rr: RunRecord) -> list[str]:
         return sorted(vr.source_hashes)
     stale = []
     if rr.spec_path and vr.spec_hash:
-        from leanc.specs.loader import load_spec, spec_hash
-
         try:
             if spec_hash(load_spec(rr.spec_path)) != vr.spec_hash:
                 stale.append(f"{rr.spec_path} (spec content)")
@@ -696,9 +659,6 @@ def _stale_files(rr: RunRecord) -> list[str]:
 
 
 def cmd_report(args) -> int:
-    from leanc.reports.json_report import read_run_record, summary
-    from leanc.reports.markdown import render_run_md
-
     root = _explicit_root(args) or _discover_root(Path("."))
     run = _find_run(args.run, root)
     rr = read_run_record(run / "run.json")

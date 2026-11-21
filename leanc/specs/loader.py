@@ -9,8 +9,8 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from leanc.core.errors import SpecError
-from leanc.core.hashing import canonical_hash, canonical_json
+from leanc.foundation.errors import SpecError
+from leanc.foundation.hashing import canonical_hash, canonical_json
 from leanc.specs.model import Spec
 
 MAX_SPEC_BYTES = 1024 * 1024

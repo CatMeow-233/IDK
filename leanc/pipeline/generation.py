@@ -17,11 +17,15 @@ from pathlib import Path
 
 import yaml
 
-from leanc.core.errors import LeanCError, ProviderError, SpecError
-from leanc.core.hashing import sha256_text
-from leanc.core.models import GenerationRecord, PolicyDecision
-from leanc.core.redact import redact
-from leanc.core.workspace import Workspace
+from leanc.foundation.errors import LeanCError, ProviderError, SpecError
+from leanc.foundation.hashing import sha256_text
+from leanc.foundation.models import GenerationRecord, PolicyDecision
+from leanc.foundation.redact import redact
+from leanc.foundation.workspace import Workspace
+from leanc.lang.c_lexer import CSource
+from leanc.llm.base import CodeGenRequest, SpecDraftRequest
+from leanc.repair.policy import check_generated
+from leanc.rules.definitions import find_function_definitions
 from leanc.specs.approval import check_approval
 from leanc.specs.loader import parse_spec_text, spec_to_yaml
 from leanc.specs.model import Spec
@@ -47,9 +51,6 @@ def generate_sources(
     :class:`GenerationRejected` if the spec is not approved or the generated
     code violates the policy.
     """
-    from leanc.llm.base import CodeGenRequest
-    from leanc.repair.policy import check_generated
-
     ws = Workspace(project_root)
     approval = check_approval(spec, ws)
     if not approval.approved:
@@ -84,8 +85,6 @@ def generate_sources(
     decision = check_generated(spec, files)
     kept = {p: ws.read_text(p) for p in spec.sources.editable if p not in files and ws.exists(p)}
     if kept and any(v.rule == "MISSING_TARGET" for v in decision.violations):
-        from leanc.repair.policy import CSource, find_function_definitions
-
         if any(find_function_definitions(CSource(t), spec.target.function, rel) for rel, t in kept.items()):
             remaining = [v for v in decision.violations if v.rule != "MISSING_TARGET"]
             decision = PolicyDecision(allowed=not remaining, violations=remaining)
@@ -130,8 +129,6 @@ def draft_spec(
     force: bool = False,
 ) -> dict[str, str]:
     """Produce an UNTRUSTED spec draft.  Returns rel paths written."""
-    from leanc.llm.base import SpecDraftRequest
-
     if not _SAFE_ID.match(spec_id):
         raise SpecError("spec id must match ^[a-z0-9][a-z0-9._-]{0,63}$")
     ws = Workspace(project_root)

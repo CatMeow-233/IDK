@@ -28,11 +28,11 @@ from leanc.backends.sanitizer import (
     scan_sanitizer_control,
     ubsan_rule,
 )
-from leanc.core.context import VerifyOptions, make_context
-from leanc.core.sandbox import Sandbox
-from leanc.core.status import Outcome, Status
+from leanc.foundation.sandbox import Sandbox
+from leanc.foundation.status import Outcome, Status
 from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
+from leanc.toolchain.context import VerifyOptions, make_context
 
 # ----------------------------------------------------------------------------- helpers
 

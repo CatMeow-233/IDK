@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from leanc.core.context import VerifyOptions
-from leanc.core.controller import verify
-from leanc.core.models import ProviderInfo
-from leanc.core.status import Status
-from leanc.core.workspace import Workspace
+from leanc.foundation.models import ProviderInfo
+from leanc.foundation.status import Status
+from leanc.foundation.workspace import Workspace
 from leanc.llm.base import RepairProposal
-from leanc.repair.loop import is_improvement, repair_loop
+from leanc.pipeline.controller import verify
+from leanc.pipeline.repair_loop import is_improvement, repair_loop
 from leanc.specs.approval import approve_spec
 from leanc.specs.loader import load_spec
+from leanc.toolchain.context import VerifyOptions
 
 GOOD = (Path(__file__).resolve().parent.parent / "examples/safe_array_get/src/safe_array.c").read_text()
 BUGGY = GOOD.replace("if (idx >= len) {", "if (idx > len) {")
@@ -125,7 +125,7 @@ def test_unrepairable_status_is_not_sent_to_the_provider(example_copy, needs_too
 
 
 def test_is_improvement_never_accepts_inconclusive():
-    from leanc.core.models import VerificationResult
+    from leanc.foundation.models import VerificationResult
 
     before = VerificationResult(run_id="a", status=Status.COUNTEREXAMPLE_FOUND)
     for s in (Status.UNKNOWN, Status.TIMEOUT, Status.TOOL_ERROR, Status.SPEC_UNAPPROVED):

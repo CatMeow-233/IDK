@@ -26,9 +26,9 @@ from pathlib import Path
 
 import yaml
 
-from leanc.core.errors import ProviderError, WorkspaceError
-from leanc.core.models import FailureReport, ProviderInfo, VerificationResult
-from leanc.core.workspace import normalize_relpath
+from leanc.foundation.errors import ProviderError, WorkspaceError
+from leanc.foundation.models import FailureReport, ProviderInfo, VerificationResult
+from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import (
     CodeGenRequest,
     GeneratedCode,

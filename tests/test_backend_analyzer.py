@@ -8,11 +8,11 @@ from pathlib import Path
 
 from leanc.backends import analyzer
 from leanc.backends.analyzer import analyzer_command, parse_sarif, run_static_analysis
-from leanc.backends.tools import Toolchain
-from leanc.core.context import BackendContext, make_context
-from leanc.core.status import Outcome, Status
+from leanc.foundation.status import Outcome, Status
 from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
+from leanc.toolchain.context import BackendContext, make_context
+from leanc.toolchain.environment import Toolchain
 
 # --------------------------------------------------------------------------- helpers
 

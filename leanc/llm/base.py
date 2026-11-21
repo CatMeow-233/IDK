@@ -13,7 +13,7 @@ That keeps two things true:
 
 The request objects are plain dataclasses (not pydantic models) because they
 carry already-validated pydantic objects (:class:`~leanc.specs.model.Spec`,
-:class:`~leanc.core.models.FailureReport`, ...) and are never serialised as a
+:class:`~leanc.foundation.models.FailureReport`, ...) and are never serialised as a
 whole; prompt builders in :mod:`leanc.llm.prompts` decide what is sent.
 """
 
@@ -21,11 +21,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # imported lazily: keeps ``leanc.llm.base`` cheap to import
-    from leanc.core.models import Diagnostic, FailureReport, ProviderInfo, VerificationResult
-    from leanc.specs.model import Spec
+from leanc.foundation.models import Diagnostic, FailureReport, ProviderInfo, VerificationResult
+from leanc.specs.model import Spec
 
 
 # ------------------------------------------------------------------ spec draft
@@ -123,7 +121,7 @@ class RepairProposal:
 class LLMProvider(ABC):
     """Abstract model provider.
 
-    Implementations must raise :class:`~leanc.core.errors.ProviderError` for
+    Implementations must raise :class:`~leanc.foundation.errors.ProviderError` for
     transport, authentication or response-format problems, and must never put
     credentials into exceptions, logs or transcripts.
     """

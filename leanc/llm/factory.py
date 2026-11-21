@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from leanc.core.errors import ProviderError
+from leanc.foundation.errors import ProviderError
 from leanc.llm.base import LLMProvider
+from leanc.llm.mock import MockProvider
+from leanc.llm.openai_compat import OpenAICompatProvider
 
 _NAMES = ("mock", "openai", "openai-compatible")
 
@@ -32,16 +34,12 @@ def get_provider(
     """
     key = (name or "").strip().lower()
     if key == "mock":
-        from leanc.llm.mock import MockProvider
-
         root = Path(project_root)
         d = Path(mock_dir) if mock_dir is not None else root / "mock"
         if not d.is_absolute():
             d = root / d
         return MockProvider(d)
     if key in ("openai", "openai-compatible"):
-        from leanc.llm.openai_compat import OpenAICompatProvider
-
         return OpenAICompatProvider.from_env(transcript_dir=transcript_dir)
     raise ProviderError(f"unknown LLM provider {name!r}; choose one of: {', '.join(_NAMES)}")
 

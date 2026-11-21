@@ -15,20 +15,21 @@ import pytest
 
 from leanc.backends import integrity
 from leanc.backends.clang import run_compile
-from leanc.backends.integrity import (
+from leanc.backends.integrity import run_integrity
+from leanc.foundation.status import Outcome, Status
+from leanc.lang.c_lexer import CSource
+from leanc.repair.policy import check_candidate, check_generated
+from leanc.rules.c_rules import (
     ALLOWED_IMPORTS,
     RULES,
     check_object_symbols,
     parse_nm,
     preprocessed_violations,
-    run_integrity,
     section_violations,
-    source_violations,
 )
-from leanc.core.context import VerifyOptions, make_context
-from leanc.core.status import Outcome, Status
-from leanc.repair.policy import CSource, check_candidate, check_generated
+from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
+from leanc.toolchain.context import VerifyOptions, make_context
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -434,7 +435,7 @@ def test_policy_reports_integrity_rules_without_duplicates(spec):
 
 
 def test_defined_functions_helper():
-    from leanc.backends.integrity import defined_functions
+    from leanc.rules.definitions import defined_functions
 
     src = CSource(
         "int f(int x);\nstatic int g(void) { return f(1); }\n"

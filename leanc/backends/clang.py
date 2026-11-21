@@ -1,5 +1,5 @@
 """Clang compile gate: build every editable source to an object file and turn
-compiler output into structured :class:`~leanc.core.models.Diagnostic` objects.
+compiler output into structured :class:`~leanc.foundation.models.Diagnostic` objects.
 
 Why a separate compile gate?  Every later gate (static analysis, sanitizer
 tests, CBMC) needs code that at least type-checks.  Running a plain ``-c``
@@ -16,7 +16,7 @@ Design notes
   -fno-caret-diagnostics -fdiagnostics-show-option`` (one line per diagnostic,
   the ``[-Wflag]`` that triggered it at the end).
 * ``note:`` lines are *attached* to the preceding diagnostic as
-  :class:`~leanc.core.models.PathStep` entries (and their text is appended to
+  :class:`~leanc.foundation.models.PathStep` entries (and their text is appended to
   that diagnostic's ``raw``); they are **not** emitted as separate diagnostics,
   so counts of errors / warnings are not inflated.  A note with no preceding
   diagnostic (rare; e.g. a driver note) is kept as a standalone
@@ -33,12 +33,12 @@ import re
 import time
 from pathlib import Path
 
-from leanc.backends.cxx import compiler, compiler_missing, compiler_version
-from leanc.core.context import BackendContext
-from leanc.core.models import Diagnostic, FailureReport, Location, PathStep, StageResult, TraceStep
-from leanc.core.redact import redact
-from leanc.core.runner import Limits
-from leanc.core.status import Outcome, outcome_to_status
+from leanc.foundation.models import Diagnostic, FailureReport, Location, PathStep, StageResult, TraceStep
+from leanc.foundation.redact import redact
+from leanc.foundation.runner import Limits
+from leanc.foundation.status import Outcome, outcome_to_status
+from leanc.toolchain.context import BackendContext
+from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
 
 STAGE = "compile"
 

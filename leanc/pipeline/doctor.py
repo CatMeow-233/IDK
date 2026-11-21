@@ -9,10 +9,16 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from leanc.backends.tools import find_cbmc, find_clang, tool_version
-from leanc.core.runner import Limits, minimal_env, run_command
-from leanc.core.sandbox import SandboxMounts, detect_sandbox, network_probe_blocked
+from leanc.foundation.redact import redact
+from leanc.foundation.runner import Limits, minimal_env, run_command
+from leanc.foundation.sandbox import SandboxMounts, detect_sandbox, network_probe_blocked
 from leanc.specs.approval import leanc_home
+from leanc.toolchain.cxx import find_clangxx
+from leanc.toolchain.framac import INSTALL_HINT as WP_HINT
+from leanc.toolchain.framac import find_framac
+from leanc.toolchain.lean import INSTALL_HINT as LEAN_HINT
+from leanc.toolchain.lean import find_lean
+from leanc.toolchain.tools import find_cbmc, find_clang, tool_version
 
 APT_HINT = "sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap   (Ubuntu 24.04 / Debian)"
 
@@ -35,8 +41,6 @@ def _tiny_c(dir_: Path, name: str, text: str) -> Path:
 def _safe_url(url: str) -> str:
     """Strip userinfo, query and fragment before printing a URL."""
     from urllib.parse import urlsplit, urlunsplit
-
-    from leanc.core.redact import redact
 
     try:
         parts = urlsplit(url)
@@ -196,12 +200,6 @@ def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
         Check("llm-provider", configured, False, detail, "" if configured else "set LEANC_API_KEY and LEANC_MODEL (optional)")
     )
     # ---------------------------------------------------- V2 (optional) tools
-    from leanc.backends.cxx import find_clangxx
-    from leanc.backends.lean import INSTALL_HINT as LEAN_HINT
-    from leanc.backends.lean import find_lean
-    from leanc.backends.wp import INSTALL_HINT as WP_HINT
-    from leanc.backends.wp import find_framac
-
     cxx = find_clangxx(clang)
     checks.append(
         Check("clang++ (C++20 specs)", bool(cxx), False, f"{cxx}: {tool_version(cxx)}" if cxx else "not found",

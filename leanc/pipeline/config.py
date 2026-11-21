@@ -22,7 +22,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from leanc.core.errors import ConfigError
+from leanc.foundation.errors import ConfigError
 
 CONFIG_FILE = "leanc.yaml"
 

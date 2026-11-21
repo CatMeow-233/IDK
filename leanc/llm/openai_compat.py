@@ -8,7 +8,7 @@ Security properties (tested):
 
 * the API key is sent only in the ``Authorization: Bearer`` header; it is never
   part of an exception message, log record, ``repr`` or transcript (every such
-  text is passed through :func:`leanc.core.redact.redact` with the key as an
+  text is passed through :func:`leanc.foundation.redact.redact` with the key as an
   extra secret);
 * HTTP redirects are not followed (urllib would otherwise re-send the
   Authorization header to whatever host the redirect names);
@@ -18,7 +18,7 @@ Security properties (tested):
 
 Transient failures (HTTP 408/409/429/5xx, connection errors, timeouts) are
 retried with exponential backoff (honouring ``Retry-After``); everything else
-raises :class:`~leanc.core.errors.ProviderError` immediately.
+raises :class:`~leanc.foundation.errors.ProviderError` immediately.
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from leanc import __version__
-from leanc.core.errors import ProviderError
-from leanc.core.models import FailureReport, ProviderInfo, VerificationResult, utcnow
-from leanc.core.redact import REDACTED, redact
+from leanc.foundation.errors import ProviderError
+from leanc.foundation.models import FailureReport, ProviderInfo, VerificationResult, utcnow
+from leanc.foundation.redact import REDACTED, redact
 from leanc.llm.base import (
     CodeGenRequest,
     GeneratedCode,

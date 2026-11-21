@@ -2,7 +2,7 @@
 
 Kept separate from :mod:`leanc.llm.prompts` (a shared module) so the WP
 guidance can evolve with :mod:`leanc.backends.wp` and
-:mod:`leanc.backends.acsl_rules`, which define what is actually accepted.
+:mod:`leanc.rules.acsl`, which define what is actually accepted.
 """
 
 from __future__ import annotations

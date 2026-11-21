@@ -21,20 +21,20 @@ from __future__ import annotations
 
 import fcntl
 import hmac
-from contextlib import contextmanager
 import json
 import os
 import secrets
 import tempfile
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from leanc import __version__
-from leanc.core.errors import ApprovalError
-from leanc.core.hashing import canonical_json, sha256_bytes
-from leanc.core.models import ApprovalCheck, utcnow
-from leanc.core.workspace import Workspace
+from leanc.foundation.errors import ApprovalError
+from leanc.foundation.hashing import canonical_json, sha256_bytes
+from leanc.foundation.models import ApprovalCheck, utcnow
+from leanc.foundation.workspace import Workspace
 from leanc.specs.loader import spec_canonical_dict, spec_hash
 from leanc.specs.model import Spec
 

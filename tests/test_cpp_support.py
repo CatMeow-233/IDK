@@ -16,18 +16,21 @@ from pathlib import Path
 import pytest
 import yaml
 
-from leanc.backends import cpp_integrity as cpi
 from leanc.backends.analyzer import analyzer_command, run_static_analysis
 from leanc.backends.clang import compile_command, run_compile
-from leanc.backends.cxx import CXX_NOT_FOUND, find_clangxx
-from leanc.backends.integrity import run_integrity, source_violations
+from leanc.backends.integrity import run_integrity
 from leanc.backends.sanitizer import build_command, parse_build_diagnostics, run_sanitizer_tests, sanitizer_plan
-from leanc.backends.tools import Toolchain, clang_major, tool_version, toolchain
 from leanc.cli import main
-from leanc.core.context import VerifyOptions, make_context
-from leanc.core.status import Outcome, Status
+from leanc.foundation.status import Outcome, Status
+from leanc.lang import cpp_lexer
 from leanc.repair.policy import check_candidate, check_generated
+from leanc.rules import cpp_rules as cpi
+from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
+from leanc.toolchain.context import VerifyOptions, make_context
+from leanc.toolchain.cxx import CXX_NOT_FOUND, find_clangxx
+from leanc.toolchain.environment import Toolchain, toolchain
+from leanc.toolchain.tools import clang_major, tool_version
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -352,7 +355,7 @@ def test_policy_cpp_target_rules():
     no_push = original[:start] + original[end:]
     rules = {v.rule for v in check_generated(spec, {RB[1]: no_push}).violations}
     assert "MISSING_TARGET" in rules
-    defs = cpi.find_cpp_function_definitions(cpi.CppSource(original), "push", RB[1])
+    defs = cpi.find_cpp_function_definitions(cpp_lexer.CppSource(original), "push", RB[1])
     assert len(defs) == 1 and not defs[0].trivial and defs[0].line == original[:start].count("\n") + 1
 
 
@@ -420,10 +423,10 @@ def test_cpp_source_rules_no_false_positives(text):
 
 def test_cpp_normalize_keeps_offsets():
     text = "int a = 1'000; auto r = R\"d(x\ny\"z)d\"; exit(0);\nchar c = 'q';\n"
-    out = cpi.cpp_normalize(text)
+    out = cpp_lexer.cpp_normalize(text)
     assert len(out) == len(text) and out.count("\n") == text.count("\n")
     assert "1'000" not in out and "exit(0)" in out and "'q'" in out
-    src = cpi.CppSource(text)
+    src = cpp_lexer.CppSource(text)
     assert src.raw == text  # messages show the original code
     assert "exit" in src.code.split("\n")[1]
 
@@ -539,7 +542,7 @@ def test_cpp_definition_finder_shapes():
         "struct S { int inside() { return 1; } };\n"
         "}\n"
     )
-    defs = {d.name: d for d in cpi.cpp_function_definitions(cpi.CppSource(text))}
+    defs = {d.name: d for d in cpi.cpp_function_definitions(cpp_lexer.CppSource(text))}
     assert defs["c_api"].scope == "extern_c" and defs["c_api"].has_body
     assert defs["A"].qualifier == "A::" and "g();" in defs["A"].body
     assert defs["size"].qualifier == "RingBuffer<T,N>::" and "count_" in defs["size"].body

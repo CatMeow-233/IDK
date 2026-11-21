@@ -54,9 +54,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from leanc.backends.cxx import compiler, compiler_missing, compiler_version
-from leanc.core.context import BackendContext
-from leanc.core.models import (
+from leanc.foundation.models import (
     CounterexampleInput,
     Diagnostic,
     FailureReport,
@@ -65,11 +63,13 @@ from leanc.core.models import (
     StageResult,
     ToolInvocation,
 )
-from leanc.core.redact import redact
-from leanc.core.runner import Limits, ProcResult
-from leanc.core.sandbox import SandboxMounts
-from leanc.core.status import Outcome, Status, outcome_to_status
+from leanc.foundation.redact import redact
+from leanc.foundation.runner import Limits, ProcResult
+from leanc.foundation.sandbox import SandboxMounts
+from leanc.foundation.status import Outcome, Status, outcome_to_status
 from leanc.specs.model import TestCase
+from leanc.toolchain.context import BackendContext
+from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
 
 STAGE = "sanitizer"
 LIMITATION = "sanitizers only observe the executed test paths; absence of findings is not a proof"

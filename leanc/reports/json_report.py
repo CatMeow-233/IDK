@@ -5,7 +5,7 @@ Why this module is careful about three things:
 
 * **Redaction.**  Reports embed tool output, argv, LLM-supplied rationale and
   file contents, any of which can contain a credential that leaked into the
-  environment.  Every string is passed through :func:`leanc.core.redact.redact`
+  environment.  Every string is passed through :func:`leanc.foundation.redact.redact`
   before serialisation *and* the serialised text is redacted again, so secrets
   never reach disk whether they sit inside one JSON string or not.
 * **Atomicity.**  ``run.json`` is the record ``leanc report`` re-reads; a crash
@@ -32,10 +32,10 @@ from typing import Any, Iterable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from leanc.core.errors import LeanCError
-from leanc.core.models import Diagnostic, FailureReport, RunRecord, StageResult, VerificationResult
-from leanc.core.redact import REDACTED, redact
-from leanc.core.status import exit_code, is_success
+from leanc.foundation.errors import LeanCError
+from leanc.foundation.models import Diagnostic, FailureReport, RunRecord, StageResult, VerificationResult
+from leanc.foundation.redact import REDACTED, redact
+from leanc.foundation.status import exit_code, is_success
 
 log = logging.getLogger("leanc.reports")
 

@@ -1,4 +1,4 @@
-"""ACSL trust rules for editable C code (leanc.backends.acsl_rules), as
+"""ACSL trust rules for editable C code (leanc.rules.acsl), as
 applied by the integrity gate's source rules and by the repair policy."""
 
 from __future__ import annotations
@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends.acsl_rules import ACSL_RULES, find_annotations, parse_clauses, target_contracts
-from leanc.backends.integrity import RULES as INTEGRITY_RULES
-from leanc.backends.integrity import source_violations
 from leanc.repair.policy import RULES as POLICY_RULES
 from leanc.repair.policy import check_candidate, check_generated
+from leanc.rules.acsl import ACSL_RULES, find_annotations, parse_clauses, target_contracts
+from leanc.rules.c_rules import RULES as INTEGRITY_RULES
+from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"

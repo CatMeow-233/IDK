@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from leanc.core.status import Outcome, Status
+from leanc.foundation.status import Outcome, Status
 
 Severity = Literal["error", "warning", "note", "info"]
 

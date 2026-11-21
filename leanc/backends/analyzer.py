@@ -37,12 +37,12 @@ from leanc.backends.clang import (
     safe_name,
     unique_id,
 )
-from leanc.backends.cxx import compiler, compiler_missing, compiler_version
-from leanc.core.context import BackendContext
-from leanc.core.models import Diagnostic, FailureReport, Location, PathStep, StageResult
-from leanc.core.redact import redact
-from leanc.core.runner import Limits
-from leanc.core.status import Outcome, outcome_to_status
+from leanc.foundation.models import Diagnostic, FailureReport, Location, PathStep, StageResult
+from leanc.foundation.redact import redact
+from leanc.foundation.runner import Limits
+from leanc.foundation.status import Outcome, outcome_to_status
+from leanc.toolchain.context import BackendContext
+from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
 
 STAGE = "static_analysis"
 TOOL = "clang-static-analyzer"

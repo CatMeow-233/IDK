@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 
 from leanc.backends.clang import compile_command, parse_clang_diagnostics, run_compile
-from leanc.backends.tools import Toolchain
-from leanc.core.context import BackendContext, make_context
-from leanc.core.status import Outcome, Status
+from leanc.foundation.status import Outcome, Status
 from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
+from leanc.toolchain.context import BackendContext, make_context
+from leanc.toolchain.environment import Toolchain
 
 # --------------------------------------------------------------------------- helpers
 

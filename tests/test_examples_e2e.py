@@ -42,21 +42,21 @@ def _skip_without_v2_tools(name: str) -> None:
 
     spec = load_spec(EXAMPLES / name / "spec.yaml")
     if "wp" in spec.gates:
-        from leanc.backends.wp import MIN_FRAMAC_MAJOR, find_framac, framac_version_key
-        from leanc.backends.tools import tool_version
+        from leanc.toolchain.framac import MIN_FRAMAC_MAJOR, find_framac, framac_version_key
+        from leanc.toolchain.tools import tool_version
 
         fc = find_framac()
         if fc is None or framac_version_key(tool_version(fc.real, "-version"))[0] < MIN_FRAMAC_MAJOR:
             pytest.skip("Frama-C/WP (>= 27) not available")
     if "lean" in spec.gates:
-        from leanc.backends.lean import find_lean
+        from leanc.toolchain.lean import find_lean
 
         lt = find_lean()
         if lt is None or not lt.leanchecker:
             pytest.skip("Lean 4 toolchain with leanchecker not available")
     if spec.language.is_cpp:
-        from leanc.backends.cxx import find_clangxx
-        from leanc.backends.tools import find_clang
+        from leanc.toolchain.cxx import find_clangxx
+        from leanc.toolchain.tools import find_clang
 
         if find_clangxx(find_clang()) is None:
             pytest.skip("clang++ not available")

@@ -17,23 +17,15 @@ import pytest
 import yaml
 
 from leanc.backends import wp as wp_mod
-from leanc.backends.integrity import source_violations
-from leanc.backends.wp import (
-    INSTALL_HINT,
-    MIN_FRAMAC_MAJOR,
-    build_wp_argv,
-    find_framac,
-    framac_version_key,
-    goal_kind,
-    parse_console,
-    run_wp,
-)
-from leanc.backends.tools import tool_version
-from leanc.core.context import BackendContext, make_context
-from leanc.core.runner import ProcResult
-from leanc.core.status import Outcome, Status
-from leanc.repair.counterexample import fingerprint
+from leanc.backends.counterexample import fingerprint
+from leanc.backends.wp import build_wp_argv, goal_kind, parse_console, run_wp
+from leanc.foundation.runner import ProcResult
+from leanc.foundation.status import Outcome, Status
+from leanc.rules.source import source_violations
 from leanc.specs.model import Spec
+from leanc.toolchain.context import BackendContext, make_context
+from leanc.toolchain.framac import INSTALL_HINT, MIN_FRAMAC_MAJOR, FramaC, find_framac, framac_version_key
+from leanc.toolchain.tools import tool_version
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
@@ -373,7 +365,7 @@ PASS_CONSOLE = "[wp] 4 goals scheduled\n[wp] Proved goals:    6 / 6\n  Terminati
 
 @pytest.fixture
 def fake_framac(tmp_path, monkeypatch):
-    fc = wp_mod.FramaC(frama_c="/fake/bin/frama-c", real="/fake/bin/frama-c", bin_dir="/fake/bin", prefix="/fake",
+    fc = FramaC(frama_c="/fake/bin/frama-c", real="/fake/bin/frama-c", bin_dir="/fake/bin", prefix="/fake",
                        why3=None)
     monkeypatch.setattr(wp_mod, "find_framac", lambda: fc)
     monkeypatch.setattr(wp_mod, "tool_version", lambda path, flag="--version": "33.0 (Arsenic)")
@@ -483,7 +475,7 @@ def test_goal_kinds():
 
 def test_argv_validates_preprocessor_arguments(tmp_path):
     ctx = make_project(tmp_path, header=ADD_H.format(contract=GOOD_CONTRACT), src=ADD_C)
-    fc = wp_mod.FramaC(frama_c="frama-c", real="frama-c", bin_dir="/x/bin", prefix="/x", why3=None)
+    fc = FramaC(frama_c="frama-c", real="frama-c", bin_dir="/x/bin", prefix="/x", why3=None)
     argv = build_wp_argv(ctx, fc, report_json=tmp_path / "r.json", work_dir=tmp_path / "w", why3_conf=None)
     assert "-cpp-extra-args=-Iinclude" in argv and argv[-1] == "src/impl.c"
     ctx.spec.compile.defines = ["X=1; rm -rf /"]

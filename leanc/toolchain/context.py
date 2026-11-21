@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 
-from leanc.backends.tools import Toolchain, toolchain
-from leanc.core.hashing import sha256_bytes
-from leanc.core.runner import Limits, ProcResult, minimal_env, run_command
-from leanc.core.sandbox import Sandbox, SandboxMounts, detect_sandbox
-from leanc.core.workspace import Workspace
+from leanc.foundation.hashing import sha256_bytes
+from leanc.foundation.runner import Limits, ProcResult, minimal_env, run_command
+from leanc.foundation.sandbox import Sandbox, SandboxMounts, detect_sandbox
+from leanc.foundation.workspace import Workspace
 from leanc.specs.model import Spec
+from leanc.toolchain.environment import Toolchain, toolchain
 
 PROJECT_MARKER = "leanc.yaml"
 

@@ -25,7 +25,7 @@ sys.path.insert(0, str(REPO / "tests"))
 from test_backend_cbmc import make_cbmc_project
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
-from leanc.core.runner import Limits
+from leanc.foundation.runner import Limits
 
 # (output name, src, harness, function, verification overrides, modes to keep)
 SCENARIOS = [

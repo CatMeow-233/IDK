@@ -56,7 +56,8 @@ import bisect
 import re
 from dataclasses import dataclass, field
 
-from leanc.repair.policy import CSource
+from leanc.lang.c_lexer import CSource
+from leanc.rules.definitions import defined_functions
 from leanc.specs.model import Spec
 
 __all__ = [
@@ -323,13 +324,11 @@ _DEFINE_BODY_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(.*)$", r
 
 def acsl_violations(spec: Spec, src: CSource, headers: dict[str, str] | None = None) -> list[tuple[str, str, int]]:
     """``(rule, message, offset)`` triples for one editable C file (offsets
-    into ``src.text``, as :func:`leanc.backends.integrity.source_violations`
+    into ``src.text``, as :func:`leanc.rules.c_rules.c_source_violations`
     expects).  ``headers`` (protected header texts) enables the check that no
     identifier of the approved ACSL is redefined by a macro."""
     if "wp" not in spec.gates or spec.language.is_cpp:
         return []
-    from leanc.backends.integrity import defined_functions  # lazy: integrity imports this module
-
     target = spec.target.function
     text = src.text
     annots = find_annotations(text)

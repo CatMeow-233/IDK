@@ -184,7 +184,7 @@ def main() -> int:
             print(f"   verify={row['verify']['status']} run={row['run']['status']} match={row['match']}", flush=True)
             rows.append(row)
     from leanc import __version__
-    from leanc.backends.tools import toolchain
+    from leanc.toolchain.environment import toolchain
 
     tc = toolchain()
     meta = {

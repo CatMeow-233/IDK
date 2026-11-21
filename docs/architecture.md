@@ -23,25 +23,64 @@ C 原始碼 ──► I. Verification Controller ──────────�
            J. Report Generator：run.json / verification.json / report.md / raw/ / logs/
 ```
 
-## 模組對應
+## 分層與模組
+
+`leanc` 依職責分成嚴格分層、無循環的套件。每個套件只能 import 下表「允許依賴」所列的套件；同一套件內的模組可以互相
+import，但**模組**依賴圖必須無循環。`leanc` 內部的 import 一律寫在模組頂層（不在函式內延遲 import 來繞過循環）；
+多個模組共用的東西移到需要它的最低層，不新增向上依賴或轉出（re-export）墊片。根模組 `leanc` 只提供 `__version__`。
+這些規則由 `tests/test_architecture.py` 強制檢查（`ALLOWED_DEPENDENCIES` 即下表）。
+
+| 層 | 套件 | 模組 | 允許依賴 |
+|---|---|---|---|
+| L0 | `leanc/foundation` | `status`、`models`、`errors`、`hashing`、`redact`、`workspace`、`sandbox`、`runner` | （無） |
+| L1 | `leanc/specs` | `model`、`loader`、`approval` | foundation |
+| L1 | `leanc/lang` | `c_lexer`、`cpp_lexer`、`lean_lexer` | foundation |
+| L2 | `leanc/rules` | `definitions`、`acsl`、`c_rules`、`cpp_rules`、`source`、`lean_rules` | foundation、specs、lang |
+| L2 | `leanc/toolchain` | `tools`、`cxx`、`framac`、`lean`、`environment`、`context` | foundation、specs |
+| L2 | `leanc/reports` | `json_report`、`markdown` | foundation |
+| L2 | `leanc/llm` | `base`、`parsing`、`prompts`、`cpp_prompts`、`wp_prompts`、`mock`、`openai_compat`、`factory` | foundation、specs |
+| L3 | `leanc/backends` | `clang`、`analyzer`、`sanitizer`、`cbmc`、`counterexample`、`integrity`、`wp`、`lean` | foundation、specs、lang、rules、toolchain |
+| L3 | `leanc/repair` | `patch`、`policy` | foundation、specs、lang、rules |
+| L4 | `leanc/pipeline` | `controller`、`generation`、`repair_loop`、`doctor`、`config` | foundation、specs、lang、rules、toolchain、reports、llm、backends、repair |
+| L5 | `leanc/cli.py`、`leanc/__main__.py` | CLI（argparse）；`__main__` 只依賴 `cli` | 以上全部 |
+
+各層內的分工：
+
+* `foundation`：狀態與彙總規則、pydantic 資料模型、錯誤型別、雜湊、憑證遮蔽、工作區路徑防護、bwrap 沙箱、
+  無 shell 的子行程執行（`runner`）。
+* `lang`：只做詞法，不含任何規則。`c_lexer.CSource`（行接續、註解與字面值遮蔽、digraph、`#if 0` 區塊、行號對應）、
+  `cpp_lexer.CppSource`（數字分隔符、raw string，再交給 C 前端）、`lean_lexer.LeanSource`。
+* `rules`：完整性關卡與修復政策共用的純函式信任規則（不呼叫任何工具）。`definitions`（檔案範圍函式定義、
+  `is_trivial_body`；C、ACSL、C++ 規則與修復政策共用）→ `acsl`（ACSL 規則）→ `c_rules`（C 原始碼 / 前處理後 /
+  物件符號與 section 規則、`ALLOWED_IMPORTS`、名稱集合、標頭事實）→ `cpp_rules`（C++ 規則、demangle、C++ 定義）→
+  `source`（依語言分派的 `source_violations`）；`lean_rules`（Lean 證明檔規則與模組配置）。
+* `toolchain`：`tools`（`find_tool`、`tool_version` 等基本探測）→ `cxx`（clang++）、`framac`（Frama-C）、
+  `lean`（Lean 4 + `leanchecker`）→ `environment`（`Toolchain`、`toolchain()`、`environment_info`）→
+  `context`（`BackendContext`、`VerifyOptions`、執行目錄與快照）。
+* `backends`：各關卡的執行器。`integrity` 只剩 C 與 C++ 的關卡執行器（`clang -E`、`nm`、`readelf`、`c++filt`），
+  規則都在 `rules`；`counterexample` 解析 CBMC 反例。
+* `repair`：補丁處理（`patch`）與修復 / 生成政策（`policy.check_candidate` / `check_generated`，以 `lang` 與 `rules` 實作）。
+* `pipeline`：驗證控制器、程式碼與規格草案生成、修復迴圈、`leanc doctor`、專案設定。
+
+## 元件對應
 
 | 元件 | 模組 | 說明 |
 |---|---|---|
-| A. Specification Engine | `leanc/specs/model.py`、`loader.py`、`approval.py`、`leanc/core/generation.py:draft_spec` | 規格 schema（pydantic，`extra="forbid"`）、YAML 重複鍵拒絕、語意雜湊、HMAC 簽章批准、版本規則、AI 草案 |
-| B. Code Generation Engine | `leanc/core/generation.py:generate_sources` | 只對已批准規格生成；輸出經 `check_generated` 政策檢查；只寫 editable 檔 |
+| A. Specification Engine | `leanc/specs/model.py`、`loader.py`、`approval.py`、`leanc/pipeline/generation.py:draft_spec` | 規格 schema（pydantic，`extra="forbid"`）、YAML 重複鍵拒絕、語意雜湊、HMAC 簽章批准、版本規則、AI 草案 |
+| B. Code Generation Engine | `leanc/pipeline/generation.py:generate_sources` | 只對已批准規格生成；輸出經 `check_generated` 政策檢查；只寫 editable 檔 |
 | C. Compilation Engine | `leanc/backends/clang.py` | `clang -std=c17 -Wall -Wextra -Wpedantic -c`；診斷解析（檔案/行/欄/旗標）；warning 政策 |
-| C'. Source Integrity（強制） | `leanc/backends/integrity.py` | 物件檔符號/匯入/section 檢查、前處理層級規則；確保所有工具看到同一份程式、程式不能覆寫 harness/CBMC/libc 符號或終止行程 |
+| C'. Source Integrity（強制） | `leanc/backends/integrity.py`、`leanc/rules/c_rules.py`、`source.py`、`definitions.py` | 物件檔符號/匯入/section 檢查、前處理層級規則；確保所有工具看到同一份程式、程式不能覆寫 harness/CBMC/libc 符號或終止行程 |
 | D. Static Analysis Engine | `leanc/backends/analyzer.py` | `clang --analyze --analyzer-output sarif`；SARIF 解析（含 code flow）；不支援時退回文字格式並記錄 |
 | E. Runtime Verification Engine | `leanc/backends/sanitizer.py` | ASan/UBSan/LSan 建置可信測試；在 bubblewrap 沙箱中逐案例執行；逾時/輸出/記憶體限制 |
 | F. Formal Verification Engine | `leanc/backends/cbmc.py` | CBMC 有界模型檢查；強制檢查類別；unwinding assertions；vacuity 探針；可選覆蓋率 |
-| G. Counterexample Analyzer | `leanc/repair/counterexample.py` | 失敗性質、位置、輸入值、呼叫堆疊、精簡 trace、指紋（fingerprint） |
-| H. Repair Agent | `leanc/repair/loop.py`、`patch.py`、`policy.py`、`leanc/llm/*` | 提案 → 補丁 → 政策 → 去重 → 快照驗證 → 改善判定 / 還原 |
-| I. Verification Controller | `leanc/core/controller.py` | 關卡順序、略過規則、狀態彙總 |
+| G. Counterexample Analyzer | `leanc/backends/counterexample.py` | 失敗性質、位置、輸入值、呼叫堆疊、精簡 trace、指紋（fingerprint） |
+| H. Repair Agent | `leanc/pipeline/repair_loop.py`、`leanc/repair/patch.py`、`policy.py`、`leanc/llm/*` | 提案 → 補丁 → 政策 → 去重 → 快照驗證 → 改善判定 / 還原 |
+| I. Verification Controller | `leanc/pipeline/controller.py` | 關卡順序、略過規則、狀態彙總 |
 | J. Report Generator | `leanc/reports/json_report.py`、`markdown.py` | JSON 摘要、Markdown 報告（依偵測工具分組） |
-| F'. Deductive Verification（V2） | `leanc/backends/wp.py`、`acsl_rules.py` | Frama-C/WP：受保護標頭中的 ACSL 契約 + `-wp-rte` + smoke test；唯一能產生 `PROVED` 的關卡 |
-| F''. Model Proofs（V2，可選） | `leanc/backends/lean.py`、`leanc/repair/lean_policy.py` | Lean 4 kernel + `leanchecker` 檢查 AI 撰寫的模型證明；差分測試向量連結模型與 C |
-| C++20（V2） | `leanc/backends/cxx.py`、`cpp_integrity.py`、`leanc/llm/cpp_prompts.py` | clang++ 編譯/分析/sanitizer；C++ 完整性規則；沒有形式化關卡 |
-| 基礎設施 | `leanc/core/runner.py`、`sandbox.py`、`workspace.py`、`redact.py` | 無 shell 執行、rlimit、輸出上限、bwrap 沙箱、路徑穿越/符號連結防護、憑證遮蔽 |
+| F'. Deductive Verification（V2） | `leanc/backends/wp.py`、`leanc/rules/acsl.py`、`leanc/toolchain/framac.py` | Frama-C/WP：受保護標頭中的 ACSL 契約 + `-wp-rte` + smoke test；唯一能產生 `PROVED` 的關卡 |
+| F''. Model Proofs（V2，可選） | `leanc/backends/lean.py`、`leanc/rules/lean_rules.py`、`leanc/toolchain/lean.py` | Lean 4 kernel + `leanchecker` 檢查 AI 撰寫的模型證明；差分測試向量連結模型與 C |
+| C++20（V2） | `leanc/toolchain/cxx.py`、`leanc/rules/cpp_rules.py`、`leanc/lang/cpp_lexer.py`、`leanc/llm/cpp_prompts.py` | clang++ 編譯/分析/sanitizer；C++ 完整性規則；沒有形式化關卡 |
+| 基礎設施 | `leanc/foundation/runner.py`、`sandbox.py`、`workspace.py`、`redact.py` | 無 shell 執行、rlimit、輸出上限、bwrap 沙箱、路徑穿越/符號連結防護、憑證遮蔽 |
 
 ## 資料流與快照
 
@@ -76,7 +115,7 @@ verification.json / verification.md
 
 ## 擴充點
 
-* 新後端：實作 `run_xxx(ctx: BackendContext) -> StageResult`，在 `controller._gate_runner` 註冊，
+* 新後端：在 `leanc/backends/` 實作 `run_xxx(ctx: BackendContext) -> StageResult`，在 `leanc/pipeline/controller.py` 的 `_gate_runner` 註冊，
   並在 `specs/model.py` 的 `GateName` 加入名稱。
 * 新 LLM provider：實作 `leanc.llm.base.LLMProvider`，在 `llm/factory.py` 註冊。
 * V2 規劃見 [roadmap.md](roadmap.md)。

@@ -1,5 +1,5 @@
-"""Tests for the foundation process runner (leanc.core.runner) and the
-bubblewrap sandbox (leanc.core.sandbox).
+"""Tests for the foundation process runner (leanc.foundation.runner) and the
+bubblewrap sandbox (leanc.foundation.sandbox).
 
 These are the guarantees every backend relies on when it executes tools and,
 above all, untrusted generated programs: no shell, bounded time / CPU /
@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from leanc.core import runner
-from leanc.core.runner import Limits, minimal_env, run_command
-from leanc.core.sandbox import SandboxMounts, detect_sandbox
+from leanc.foundation import runner
+from leanc.foundation.runner import Limits, minimal_env, run_command
+from leanc.foundation.sandbox import SandboxMounts, detect_sandbox
 
 SH = shutil.which("sh") or "/bin/sh"
 CAT = shutil.which("cat") or "/bin/cat"

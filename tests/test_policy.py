@@ -7,17 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends.integrity import source_violations
+from leanc.lang.c_lexer import CSource, strip_c
 from leanc.repair.patch import proposal_to_contents
-from leanc.repair.policy import (
-    RULES,
-    CSource,
-    check_candidate,
-    check_generated,
-    find_function_definitions,
-    is_trivial_body,
-    strip_c,
-)
+from leanc.repair.policy import RULES, check_candidate, check_generated
+from leanc.rules.definitions import find_function_definitions, is_trivial_body
+from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
 

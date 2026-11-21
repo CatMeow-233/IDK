@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import re
 
-from leanc.backends.tools import clang_major, find_tool, tool_version
+from leanc.toolchain.tools import clang_major, find_tool, tool_version
 
 CXX_ENV = "LEANC_CLANGXX"
 

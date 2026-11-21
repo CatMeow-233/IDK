@@ -35,28 +35,27 @@ defence.
 
 from __future__ import annotations
 
-import bisect
 import re
 from collections import Counter
 from dataclasses import dataclass
-from functools import cached_property
 
-from leanc.core.errors import WorkspaceError
-from leanc.core.models import PolicyDecision, PolicyViolation
-from leanc.core.workspace import normalize_relpath
+from leanc.foundation.errors import WorkspaceError
+from leanc.foundation.models import PolicyDecision, PolicyViolation
+from leanc.foundation.workspace import normalize_relpath
+from leanc.lang.c_lexer import BIDI_RE, CSource
+from leanc.lang.cpp_lexer import CppSource
 from leanc.repair.patch import changed_paths, diff_stats
+from leanc.rules.cpp_rules import find_cpp_function_definitions
+from leanc.rules.definitions import FunctionDefinition, find_function_definitions
+from leanc.rules.lean_rules import LEAN_RULES, check_lean_file, is_lean_path
+from leanc.rules.source import source_violations
 from leanc.specs.model import CPP_SUFFIXES, Spec
 
 __all__ = [
     "MAX_ANALYZED_CHARS",
     "RULES",
-    "CSource",
-    "FunctionDefinition",
     "check_candidate",
     "check_generated",
-    "find_function_definitions",
-    "is_trivial_body",
-    "strip_c",
 ]
 
 #: Rule id -> one-line description (also the stable order of reported violations).
@@ -84,7 +83,7 @@ RULES: dict[str, str] = {
     "from review and from this policy",
     "MISSING_TARGET": "the generated code does not define the target function",
     # absolute source-integrity rules shared with the verify-time gate
-    # (leanc.backends.integrity.source_violations)
+    # (leanc.rules.source.source_violations)
     "TOOL_DIVERGENCE": "code that can differ between clang, the sanitizer build and CBMC (conditionals on "
     "compiler/optimiser/verifier macros, non-standard directives, optimisation-dependent built-ins)",
     "PRAGMA": "a #pragma / _Pragma other than '#pragma once'",
@@ -94,14 +93,12 @@ RULES: dict[str, str] = {
     "CONSTRUCTOR": "constructor/destructor/section attributes (code running outside the function under test)",
     "TERMINATION": "process termination or non-local control flow (exit, _exit, abort, atexit, longjmp, raise, ...)",
     "DANGEROUS_IMPORT": "process/network/loader/thread/sanitizer-control APIs",
-    # ACSL trust rules for the wp gate (leanc.backends.acsl_rules, applied via source_violations)
+    # ACSL trust rules for the wp gate (leanc.rules.acsl, applied via source_violations)
     "ACSL_FORBIDDEN": "ACSL that could add unproved assumptions (admit, axiom, inductive, recursive logic, ghost, ...)",
     "ACSL_CONTRACT": "an ACSL contract on the target, or one not attached to a static helper definition",
     "ACSL_MACRO": "a macro used inside ACSL, or a #define of an identifier of the approved ACSL contract",
 }
 # Lean proof files (spec.lean.proofs) get Lean rules instead of the C rules.
-from leanc.repair.lean_policy import LEAN_RULES, check_lean_file, is_lean_path
-
 RULES.update(LEAN_RULES)
 
 #: Files larger than this are not lexed (TOO_LARGE); real sources are far smaller.
@@ -109,280 +106,7 @@ MAX_ANALYZED_CHARS = 1_000_000
 
 _WS = r"[^\S\n]*"  # horizontal whitespace (incl. \f, \v)
 
-# =========================================================================== lexing
-_SPLICE_RE = re.compile(r"\\[ \t\f\v]*\r?\n")
-_INTERESTING_RE = re.compile(r"[/\"']")
-_DIGRAPHS = {"%:%:": "##  ", "<%": "{ ", "%>": "} ", "<:": "[ ", ":>": "] ", "%:": "# "}
-_DIGRAPH_RE = re.compile(r"%:%:|<%|%>|<:|:>|%:")
-_COND_RE = re.compile(rf"^{_WS}#{_WS}(if|ifdef|ifndef|elif|elifdef|elifndef|else|endif)\b(.*)$")
-_CONST01_RE = re.compile(r"^[\s(]*([01])[uUlL]*[\s)]*$")
-
-
-def _blank(s: str) -> str:
-    """Replace everything but newlines by spaces (keeps offsets and lines)."""
-    return re.sub(r"[^\n]", " ", s)
-
-
-def _splice(raw: str) -> tuple[str, list[int], list[int]]:
-    """Translation phase 2.  Returns the spliced text and a mapping from
-    spliced offsets to original line numbers (``offs``/``lines`` checkpoints)."""
-    pieces: list[str] = []
-    offs, lines = [0], [1]
-    line, out_len, pos = 1, 0, 0
-
-    def note(chunk: str, base: int, line: int) -> int:
-        k = chunk.find("\n")
-        while k != -1:
-            line += 1
-            offs.append(base + k + 1)
-            lines.append(line)
-            k = chunk.find("\n", k + 1)
-        return line
-
-    for m in _SPLICE_RE.finditer(raw):
-        chunk = raw[pos : m.start()]
-        line = note(chunk, out_len, line)
-        pieces.append(chunk)
-        out_len += len(chunk)
-        line += 1
-        offs.append(out_len)
-        lines.append(line)
-        pos = m.end()
-    chunk = raw[pos:]
-    note(chunk, out_len, line)
-    pieces.append(chunk)
-    return "".join(pieces), offs, lines
-
-
-def _lex(s: str) -> tuple[str, str]:
-    """Return ``(code, nocomment)``: comments blanked in both; string and
-    character literal contents additionally blanked in ``code`` (quotes kept).
-    A literal that is not closed on its line ends at the newline, as in the
-    compiler, so a stray quote can never hide the following lines."""
-    code: list[str] = []
-    noc: list[str] = []
-    n = len(s)
-    i = plain = 0
-    while True:
-        m = _INTERESTING_RE.search(s, i)
-        if m is None:
-            break
-        i = m.start()
-        c = s[i]
-        if c == "/":
-            nxt = s[i + 1 : i + 2]
-            if nxt not in ("*", "/"):
-                i += 1
-                continue
-            if nxt == "*":
-                j = s.find("*/", i + 2)
-                end = n if j < 0 else j + 2
-            else:
-                j = s.find("\n", i + 2)
-                end = n if j < 0 else j
-            code.append(s[plain:i])
-            noc.append(s[plain:i])
-            b = _blank(s[i:end])
-            code.append(b)
-            noc.append(b)
-            i = plain = end
-            continue
-        j = i + 1
-        closed = False
-        while j < n:
-            ch = s[j]
-            if ch == "\\":
-                j += 2
-                continue
-            if ch == c:
-                j += 1
-                closed = True
-                break
-            if ch == "\n":
-                break
-            j += 1
-        j = min(j, n)
-        lit = s[i:j]
-        code.append(s[plain:i])
-        noc.append(s[plain:i])
-        inner = lit[1:-1] if closed else lit[1:]
-        code.append(c + " " * len(inner) + (c if closed else ""))
-        noc.append(lit)
-        i = plain = j
-    code.append(s[plain:])
-    noc.append(s[plain:])
-    return "".join(code), "".join(noc)
-
-
-def _const01(expr: str) -> int | None:
-    m = _CONST01_RE.match(expr)
-    return int(m.group(1)) if m else None
-
-
-def _blank_dead_branches(code: str, noc: str) -> tuple[str, str]:
-    """Blank ``#if 0`` regions (and the ``#else`` of ``#if 1`` / after an
-    ``#elif 1``): the compiler never sees that code, so it must neither count
-    as present (an assert moved into ``#if 0`` is a removed assert) nor
-    trigger content rules.  Other conditionals are treated as live."""
-    code_lines = code.split("\n")
-    noc_lines = noc.split("\n")
-    stack: list[list[bool]] = []  # [skipping, a branch is certainly taken]
-    skipping = 0  # number of frames on the stack that are skipping
-    for idx, line in enumerate(code_lines):
-        m = _COND_RE.match(line)
-        if m:
-            d, rest = m.group(1), m.group(2)
-            if d in ("if", "ifdef", "ifndef"):
-                dead = skipping > 0
-                v = _const01(rest) if d == "if" else None
-                stack.append([v == 0, v == 1])
-                skipping += v == 0
-            elif stack:
-                top = stack[-1]
-                dead = skipping - top[0] > 0  # an *enclosing* group is skipped
-                skipping -= top[0]
-                if d == "endif":
-                    stack.pop()
-                elif top[1]:
-                    top[0] = True
-                elif d == "else":
-                    top[0], top[1] = False, True
-                else:
-                    v = _const01(rest) if d == "elif" else None
-                    top[0], top[1] = v == 0, v == 1
-                if d != "endif":
-                    skipping += top[0]
-            else:
-                dead = False
-        else:
-            dead = skipping > 0
-        if dead:
-            code_lines[idx] = _blank(line)
-            noc_lines[idx] = _blank(noc_lines[idx])
-    return "\n".join(code_lines), "\n".join(noc_lines)
-
-
-def _pair_map(s: str) -> dict[int, int]:
-    """Offset of every matched ``(``/``[``/``{`` -> offset of its partner,
-    computed in one pass (each bracket kind nests independently).  Lets all
-    later matching be O(1), so hostile input such as 50 000 unclosed
-    ``__attribute__((`` cannot make the checker quadratic."""
-    out: dict[int, int] = {}
-    stacks: dict[str, list[int]] = {"(": [], "[": [], "{": []}
-    partner = {")": "(", "]": "[", "}": "{"}
-    for m in re.finditer(r"[()\[\]{}]", s):
-        ch = m.group()
-        if ch in stacks:
-            stacks[ch].append(m.start())
-        else:
-            st = stacks[partner[ch]]
-            if st:
-                out[st.pop()] = m.start()
-    return out
-
-
-class CSource:
-    """Lexically cleaned views of one C file.
-
-    * ``text``: the file after line splicing;
-    * ``code``: comments and literal contents blanked, digraphs canonical,
-      dead ``#if 0`` regions blanked - what the content rules match against;
-    * ``nocomment``: like ``code`` but with literals kept (header names,
-      ``_Pragma`` strings, attribute arguments).
-
-    All three have the same length and line structure, so an offset found
-    in one view is valid in the others; :meth:`line_of` maps it back to the
-    line number in the original (unspliced) file.
-    """
-
-    def __init__(self, raw: str):
-        self.raw = raw
-        self.text, self._offs, self._lines = _splice(raw)
-        code, noc = _lex(self.text)
-        code = _DIGRAPH_RE.sub(lambda m: _DIGRAPHS[m.group()], code)
-        self.code, self.nocomment = _blank_dead_branches(code, noc)
-
-        self._line_text: dict[int, str] = {}
-        self._shown: dict[int, str] = {}
-
-    def line_of(self, offset: int) -> int:
-        """Original (unspliced) line number of an offset in the views."""
-        return self._lines[bisect.bisect_right(self._offs, offset) - 1]
-
-    def raw_line_of(self, offset: int) -> int:
-        """Line number of an offset in :attr:`raw`."""
-        return bisect.bisect_right(self._raw_newlines, offset - 1) + 1
-
-    @cached_property
-    def _code_newlines(self) -> list[int]:
-        return [m.start() for m in re.finditer("\n", self.code)]
-
-    @cached_property
-    def _raw_newlines(self) -> list[int]:
-        return [m.start() for m in re.finditer("\n", self.raw)]
-
-    def line_text(self, offset: int) -> str:
-        """Whitespace-normalised code line containing ``offset`` (cached per
-        line, so many findings on one huge line stay linear)."""
-        nl = self._code_newlines
-        k = bisect.bisect_left(nl, offset)
-        if k not in self._line_text:
-            start = nl[k - 1] + 1 if k > 0 else 0
-            end = nl[k] if k < len(nl) else len(self.code)
-            self._line_text[k] = " ".join(self.code[start:end].split())[:500]
-        return self._line_text[k]
-
-    @cached_property
-    def _raw_lines(self) -> list[str]:
-        return self.raw.split("\n")
-
-    def shown_line(self, line: int) -> str:
-        """Original source line ``line`` for messages (whitespace collapsed,
-        control/bidi characters escaped, truncated)."""
-        if line not in self._shown:
-            lines = self._raw_lines
-            text = " ".join((lines[line - 1] if 1 <= line <= len(lines) else "")[:1000].split())
-            text = "".join(c if c.isprintable() and not _BIDI_RE.match(c) else f"\\u{ord(c):04x}" for c in text)
-            self._shown[line] = text if len(text) <= 120 else text[:117] + "..."
-        return self._shown[line]
-
-    @cached_property
-    def pairs(self) -> dict[int, int]:
-        """Bracket partners in :attr:`code`."""
-        return _pair_map(self.code)
-
-    @cached_property
-    def pairs_nodirectives(self) -> dict[int, int]:
-        """Bracket partners in :attr:`code_nodirectives`."""
-        return _pair_map(self.code_nodirectives)
-
-    @cached_property
-    def code_nodirectives(self) -> str:
-        """``code`` with preprocessor directive lines blanked (brace matching
-        must not be confused by ``#define BEGIN {``)."""
-        return "\n".join(_blank(ln) if ln.lstrip().startswith("#") else ln for ln in self.code.split("\n"))
-
-
-def strip_c(text: str) -> str:
-    """Comment- and literal-free view of C source (same line structure);
-    see :class:`CSource`."""
-    return CSource(text).code
-
-
 # =========================================================================== helpers
-def _match_close(s: str, open_at: int, open_ch: str = "(", close_ch: str = ")") -> int | None:
-    depth = 0
-    for k in range(open_at, len(s)):
-        ch = s[k]
-        if ch == open_ch:
-            depth += 1
-        elif ch == close_ch:
-            depth -= 1
-            if depth == 0:
-                return k
-    return None
-
-
 @dataclass(frozen=True)
 class _Hit:
     rule: str
@@ -391,14 +115,6 @@ class _Hit:
     text: str  # normalised line text, to tell new occurrences from old ones
     shown: str  # original line, for the message
     offset: int = -1
-
-
-@dataclass(frozen=True)
-class FunctionDefinition:
-    file: str
-    line: int
-    body: str  # code view of the body between the braces
-    trivial: bool
 
 
 # =========================================================================== rules
@@ -456,7 +172,6 @@ _SUPPRESS_ATTR_RE = re.compile(r"\bclang\s*::\s*suppress\b")
 _ASSUME_ATTR_RE = re.compile(r"\b(?:\w+\s*::\s*)?_*(assume|assume_aligned|nonnull|returns_nonnull)_*\b")
 _ALIAS_ATTR_RE = re.compile(r'\b_*(?:alias|weakref)_*\s*\(\s*"\s*(__CPROVER\w*|LEANC_\w*)')
 _TRIGRAPH_RE = re.compile(r"\?\?[=/'()!<>\-]")
-_BIDI_RE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
 _ASSERT_RE = re.compile(r"(?<![\w.])(?<!->)\bassert(?=\s*\()")
 _STATIC_ASSERT_RE = re.compile(r"\b(?:static_assert|_Static_assert)(?=\s*\()")
 
@@ -580,7 +295,7 @@ def _scan(src: CSource, target: str | None, *, _depth: int = 0) -> list[_Hit]:
     # raw-text checks: trigraphs (phase 1, active even inside literals and
     # comments under -std=c*) and Trojan-Source style bidi controls
     raw = src.raw
-    for rx, what in ((_TRIGRAPH_RE, "trigraph"), (_BIDI_RE, "bidirectional control character")):
+    for rx, what in ((_TRIGRAPH_RE, "trigraph"), (BIDI_RE, "bidirectional control character")):
         for m in rx.finditer(raw):
             line = src.raw_line_of(m.start())
             shown = src.shown_line(line)
@@ -605,113 +320,6 @@ def _asserts(src: CSource) -> dict[str, list[_Hit]]:
         for m in rx.finditer(src.code):
             line = src.line_of(m.start())
             out[key].append(_Hit("ASSERT_REMOVED", key, line, src.line_text(m.start()), src.shown_line(line), m.start()))
-    return out
-
-
-# =========================================================================== target function
-_TYPE_WORDS = (
-    r"const|volatile|restrict|signed|unsigned|short|long|int|char|_Bool|bool|float|double|void|"
-    r"size_t|ssize_t|ptrdiff_t|intptr_t|uintptr_t|[A-Za-z_]\w*_t|struct\s+\w+|enum\s+\w+|union\s+\w+"
-)
-_CAST_RE = re.compile(rf"^\(\s*(?:(?:{_TYPE_WORDS})\s*)+\**\s*\)")
-_CONST_RE = re.compile(
-    r"(?:0[xX][0-9a-fA-F]+|0[bB][01]+|\d+\.?\d*(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?)[uUlLfF]*"
-    r"|'[^'\n]*'|(?:L|u8|u|U)?\"[^\"\n]*\"|NULL|nullptr|true|false|[A-Z_][A-Z0-9_]+"
-)
-_MAX_TRIVIAL_BODY = 2000
-# a no-op statement `(void)param;` / `(void)(param);` (silences -Wunused-parameter)
-_VOID_CAST_STMT_RE = re.compile(r"\(\s*void\s*\)\s*(?:[A-Za-z_]\w*|\(\s*[A-Za-z_]\w*\s*\))\s*;")
-_DEF_ATTR_RE = re.compile(r"__attribute__\s*\(|__declspec\s*\(")
-_NORETURN_RE = re.compile(
-    r"(?:abort|exit|_Exit|quick_exit|__builtin_trap)\s*\([^;]*\)\s*;(?:\s*return\b[^;]*;)?"
-)
-
-
-def _is_constant_expr(expr: str) -> bool:
-    e = expr.strip()
-    for _ in range(32):
-        e = e.strip()
-        if e.startswith("(") and _match_close(e, 0) == len(e) - 1:
-            e = e[1:-1]
-            continue
-        m = _CAST_RE.match(e)
-        if m and m.end() < len(e):
-            e = e[m.end() :]
-            continue
-        if e[:1] in ("-", "+", "~", "!"):
-            e = e[1:]
-            continue
-        break
-    return bool(_CONST_RE.fullmatch(e.strip()))
-
-
-def is_trivial_body(body: str) -> bool:
-    """Heuristic: does a function body (code view, without the outer braces)
-    do nothing but return a literal / macro constant (or nothing at all, or
-    only call abort/exit)?  ``(void)param;`` casts and extra braces or
-    semicolons are ignored, however many there are."""
-    s = " ".join(_VOID_CAST_STMT_RE.sub(" ", body).split())
-    if len(s) > _MAX_TRIVIAL_BODY:
-        return False  # a stub is short; this also bounds the work below
-    while True:
-        s2 = s.lstrip("; ").strip()
-        if s2.startswith("{") and _match_close(s2, 0, "{", "}") == len(s2) - 1:
-            s2 = s2[1:-1].strip()
-        if s2 == s:
-            break
-        s = s2
-    s = re.sub(r";[\s;]*$", ";", s)
-    if s == "" or re.fullmatch(r"return\s*;", s):
-        return True
-    if _NORETURN_RE.fullmatch(s):
-        return True
-    m = re.fullmatch(r"return\b(.*);", s, re.DOTALL)
-    return bool(m and ";" not in m.group(1) and _is_constant_expr(m.group(1)))
-
-
-def find_function_definitions(src: CSource, name: str, file: str = "") -> list[FunctionDefinition]:
-    """File-scope definitions (with a body) of function ``name``.
-
-    Declarations, calls, macro-generated definitions and code in ``#if 0``
-    are not definitions; the conservative consequence is that hiding the
-    target behind a macro reads as "definition removed"."""
-    code = src.code_nodirectives
-    pairs = src.pairs_nodirectives
-    marks: list[int] = []
-    depth_after: list[int] = []
-    d = 0
-    for bm in re.finditer(r"[{}]", code):
-        d += 1 if bm.group() == "{" else -1
-        marks.append(bm.start())
-        depth_after.append(d)
-
-    def depth_at(off: int) -> int:
-        j = bisect.bisect_left(marks, off) - 1
-        return depth_after[j] if j >= 0 else 0
-
-    out: list[FunctionDefinition] = []
-    for m in re.finditer(rf"(?<![\w.])(?<!->)\b{re.escape(name)}\s*\(", code):
-        if depth_at(m.start()) > 0:
-            continue
-        close = pairs.get(m.end() - 1)
-        if close is None:
-            continue
-        j = close + 1
-        for _ in range(64):  # skip attributes between ')' and '{'
-            while j < len(code) and code[j].isspace():
-                j += 1
-            am = _DEF_ATTR_RE.match(code, j)
-            if am and (c2 := pairs.get(am.end() - 1)) is not None:
-                j = c2 + 1
-                continue
-            if code.startswith("[[", j) and (c2 := pairs.get(j)) is not None:
-                j = c2 + 1
-                continue
-            break
-        if j < len(code) and code[j] == "{":
-            end = pairs.get(j)
-            body = code[j + 1 : end if end is not None else len(code)]
-            out.append(FunctionDefinition(file, src.line_of(m.start()), body, is_trivial_body(body)))
     return out
 
 
@@ -803,9 +411,7 @@ def _content_violations(path: str, old_src: CSource | None, new_src: CSource, ta
 def _integrity_violations(spec: Spec, path: str, text: str) -> list[PolicyViolation]:
     """The verify-time gate's absolute source rules, applied early so a
     repair round or a generation that the gate would reject never reaches
-    the verifier.  (Imported lazily: the gate module builds on this one.)"""
-    from leanc.backends.integrity import source_violations
-
+    the verifier."""
     return source_violations(spec, path, text)
 
 
@@ -831,8 +437,6 @@ class _Sources:
             return None
         if path not in self._cache:
             if path.endswith(CPP_SUFFIXES):  # C++ lexing (digit separators, raw strings)
-                from leanc.backends.cpp_integrity import CppSource
-
                 self._cache[path] = CppSource(self.files[path])
             else:
                 self._cache[path] = CSource(self.files[path])
@@ -844,8 +448,6 @@ def _definitions(spec: Spec, srcs: _Sources, paths: list[str]) -> list[FunctionD
     for p in paths:
         s = srcs.get(p)
         if s is not None and spec.language.is_cpp:  # namespaces, out-of-line members, noexcept, ...
-            from leanc.backends.cpp_integrity import find_cpp_function_definitions
-
             out.extend(find_cpp_function_definitions(s, spec.target.function, p))
         elif s is not None:
             out.extend(find_function_definitions(s, spec.target.function, p))
@@ -916,7 +518,7 @@ def check_candidate(
     the changed editable files and flag only constructs that are new
     relative to ``old``; in addition the changed editable files must satisfy
     the *absolute* source-integrity rules of the verify-time gate
-    (:func:`leanc.backends.integrity.source_violations`).
+    (:func:`leanc.rules.source.source_violations`).
     ``max_changed_lines`` defaults to ``spec.repair.max_changed_lines``.
     """
     changed = changed_paths(old, new)

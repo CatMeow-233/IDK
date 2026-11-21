@@ -33,11 +33,11 @@ from leanc.backends.cbmc import (
     run_cbmc,
     strip_c_comments,
 )
-from leanc.backends.tools import Toolchain
-from leanc.core.context import BackendContext, make_context
-from leanc.core.status import Outcome, Status
-from leanc.repair.counterexample import fingerprint
+from leanc.backends.counterexample import fingerprint
+from leanc.foundation.status import Outcome, Status
 from leanc.specs.model import CheckName, Spec
+from leanc.toolchain.context import BackendContext, make_context
+from leanc.toolchain.environment import Toolchain
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "cbmc"
 

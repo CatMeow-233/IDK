@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from leanc.core.errors import ProviderError
-from leanc.core.models import (
+from leanc.foundation.errors import ProviderError
+from leanc.foundation.models import (
     CounterexampleInput,
     Diagnostic,
     FailureReport,
@@ -26,7 +26,7 @@ from leanc.core.models import (
     StageResult,
     VerificationResult,
 )
-from leanc.core.status import Outcome, Status
+from leanc.foundation.status import Outcome, Status
 from leanc.llm.base import CodeGenRequest, RepairRequest, SpecDraftRequest
 from leanc.llm.openai_compat import OpenAICompatProvider
 from leanc.llm.prompts import (

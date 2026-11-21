@@ -8,7 +8,7 @@ Rules enforced here (see docs/security.md):
 * stdout / stderr are read incrementally and capped; exceeding the cap kills the
   process group and marks the output as truncated.
 * The child runs in its own session so the whole process group can be killed.
-* Optionally the argv is wrapped by a :class:`~leanc.core.sandbox.Sandbox`.
+* Optionally the argv is wrapped by a :class:`~leanc.foundation.sandbox.Sandbox`.
 """
 
 from __future__ import annotations
@@ -21,13 +21,11 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import Mapping, Sequence
 
-from leanc.core.models import ToolInvocation
-from leanc.core.redact import redact
-
-if TYPE_CHECKING:  # pragma: no cover
-    from leanc.core.sandbox import Sandbox, SandboxMounts
+from leanc.foundation.models import ToolInvocation
+from leanc.foundation.redact import redact
+from leanc.foundation.sandbox import Sandbox, SandboxMounts
 
 DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 

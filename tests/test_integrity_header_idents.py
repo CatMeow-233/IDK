@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from leanc.backends.integrity import source_violations
+from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
 
 EX = Path(__file__).resolve().parent.parent / "examples/safe_array_get"

@@ -228,14 +228,18 @@ python scripts/run_experiments.py        # 結果寫入 experiments/results/resu
 ## 專案結構
 
 ```
-leanc/
-  cli.py                 CLI（argparse）
-  core/                  狀態、資料模型、控制器、安全執行、沙箱、工作區、設定、doctor、生成
-  specs/                 規格 schema、載入/雜湊、批准（信任邊界）
-  llm/                   Provider 抽象、OpenAI 相容 provider、Mock provider、prompts
-  backends/              clang、analyzer（SARIF）、sanitizer、cbmc、integrity、wp（Frama-C）、lean、cxx（C++）
-  repair/                反例解析、補丁、修復政策、修復迴圈
-  reports/               JSON 與 Markdown 報告
+leanc/                   嚴格分層、無循環（見 docs/architecture.md；由 tests/test_architecture.py 強制）
+  foundation/            L0 狀態、資料模型、錯誤、雜湊、憑證遮蔽、工作區、沙箱、安全執行
+  specs/                 L1 規格 schema、載入/雜湊、批准（信任邊界）
+  lang/                  L1 詞法分析：C、C++、Lean
+  rules/                 L2 純函式信任規則：C / C++ / ACSL / Lean 完整性規則、函式定義（關卡與修復政策共用）
+  toolchain/             L2 工具探測（clang、clang++、CBMC、Frama-C、Lean）、BackendContext
+  reports/               L2 JSON 與 Markdown 報告
+  llm/                   L2 Provider 抽象、OpenAI 相容 provider、Mock provider、prompts
+  backends/              L3 clang、analyzer（SARIF）、sanitizer、cbmc、counterexample、integrity、wp（Frama-C）、lean
+  repair/                L3 補丁、修復 / 生成政策
+  pipeline/              L4 驗證控制器、生成、修復迴圈、doctor、設定
+  cli.py                 L5 CLI（argparse）
   data/include/leanc.h   harness 巨集（LEANC_ASSUME / LEANC_REACH / nondet_*）
   data/templates/        `leanc init` 範本
 examples/                可驗證的範例專案（含 mock 固定輸出與 expected.yaml）

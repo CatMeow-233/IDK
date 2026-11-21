@@ -15,7 +15,7 @@ Rules this renderer follows, and why:
   Table cells escape pipes and newlines.
 * **Deterministic and redacted.**  Output depends only on the input objects
   (no clock, no environment, stable ordering), and the final text is passed
-  through :func:`leanc.core.redact.redact`.
+  through :func:`leanc.foundation.redact.redact`.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import shlex
 from pathlib import PurePosixPath
 from typing import Iterable
 
-from leanc.core.models import (
+from leanc.foundation.models import (
     ApprovalCheck,
     Diagnostic,
     FailureReport,
@@ -37,8 +37,8 @@ from leanc.core.models import (
     TraceStep,
     VerificationResult,
 )
-from leanc.core.redact import redact
-from leanc.core.status import Status, exit_code, is_success
+from leanc.foundation.redact import redact
+from leanc.foundation.status import Status, exit_code, is_success
 from leanc.reports.json_report import detecting_tools, is_finding, sort_tools
 
 #: What each status means -- and, just as importantly, what it does not mean.

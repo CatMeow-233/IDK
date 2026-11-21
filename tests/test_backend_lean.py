@@ -1,5 +1,5 @@
 """Tests for the V2 Lean 4 model-proof gate (leanc.backends.lean) and the Lean
-proof-file policy (leanc.repair.lean_policy, hooked into leanc.repair.policy).
+proof-file policy (leanc.rules.lean_rules, hooked into leanc.repair.policy).
 
 Gate tests compile tiny Lean projects with the real toolchain inside the real
 sandbox and are skipped when Lean (or bwrap / clang for the vector tests) is
@@ -15,20 +15,15 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends.lean import (
-    INSTALL_HINT,
-    STANDARD_AXIOMS,
-    find_lean,
-    parse_lean_messages,
-    render_checker,
-    run_lean,
-)
-from leanc.core.context import VerifyOptions, make_context
-from leanc.core.status import Outcome, Status
-from leanc.repair.lean_policy import LeanSource, lean_layout, lean_source_violations
+from leanc.backends.lean import STANDARD_AXIOMS, parse_lean_messages, render_checker, run_lean
+from leanc.foundation.status import Outcome, Status
+from leanc.lang.lean_lexer import LeanSource
 from leanc.repair.policy import RULES, check_candidate, check_generated
+from leanc.rules.lean_rules import lean_layout, lean_source_violations
 from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
+from leanc.toolchain.context import VerifyOptions, make_context
+from leanc.toolchain.lean import INSTALL_HINT, find_lean
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
@@ -397,8 +392,8 @@ def test_lean_pass_never_upgrades_to_proved(clamp_project, capsys, needs_cbmc):
 
 
 def test_sorry_proofs_are_proof_repairable(tmp_path, capsys, needs_lean, needs_toolchain):
-    from leanc.core.controller import verify
-    from leanc.repair.loop import proof_repairable
+    from leanc.pipeline.controller import verify
+    from leanc.pipeline.repair_loop import proof_repairable
 
     root = tmp_path / "lean_clamp"
     shutil.copytree(EXAMPLES / "lean_clamp", root, ignore=shutil.ignore_patterns(".leanc"))

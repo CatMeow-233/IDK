@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from leanc.core.errors import ProviderError
-from leanc.core.models import (
+from leanc.foundation.errors import ProviderError
+from leanc.foundation.models import (
     CounterexampleInput,
     FailureReport,
     Location,
@@ -18,7 +18,7 @@ from leanc.core.models import (
     TraceStep,
     VerificationResult,
 )
-from leanc.core.status import Outcome, Status
+from leanc.foundation.status import Outcome, Status
 from leanc.llm.base import CodeGenRequest, LLMProvider, RepairRequest, SpecDraftRequest
 from leanc.llm.factory import available_providers, get_provider
 from leanc.llm.mock import MockProvider

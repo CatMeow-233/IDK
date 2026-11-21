@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends.integrity import source_violations
 from leanc.cli import main
+from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
 
 REPO = Path(__file__).resolve().parent.parent
@@ -41,7 +41,7 @@ def test_shipped_wp_sources_still_clean():
 
 @pytest.mark.slow
 def test_attack_is_not_proved_end_to_end(tmp_path, capsys, needs_toolchain):
-    from leanc.backends.wp import find_framac
+    from leanc.toolchain.framac import find_framac
 
     if find_framac() is None:
         pytest.skip("Frama-C not available")

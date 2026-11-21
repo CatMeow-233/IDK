@@ -52,10 +52,10 @@ outputs are mounted read-only, and after each step the directory must
 contain exactly the expected ``.olean`` (anything else -> ERROR), so a proof
 file cannot plant or replace modules for later steps.  Before anything
 runs, the proof files must pass the Lean rules of
-:mod:`leanc.repair.lean_policy` (no ``axiom``/``unsafe``/``set_option
+:mod:`leanc.rules.lean_rules` (no ``axiom``/``unsafe``/``set_option
 debug.*``/``#eval``/``macro``/``instance``/foreign imports, ...).
 
-Module layout: see :func:`leanc.repair.lean_policy.lean_layout` (all Lean
+Module layout: see :func:`leanc.rules.lean_rules.lean_layout` (all Lean
 files under one root directory; ``lean/Spec.lean`` is module ``Spec``).
 Proof files are compiled in the order of ``spec.lean.proofs``; a proof file
 may import the spec module and *earlier* proof files.
@@ -75,7 +75,6 @@ Vector protocol (generator / driver are trusted, protected files)
 
 from __future__ import annotations
 
-import glob
 import json
 import math
 import os
@@ -87,9 +86,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from leanc.backends.tools import find_tool, tool_version
-from leanc.core.context import BackendContext
-from leanc.core.models import (
+import leanc.backends.sanitizer as san
+from leanc.foundation.models import (
     CounterexampleInput,
     Diagnostic,
     FailureReport,
@@ -97,11 +95,15 @@ from leanc.core.models import (
     StageResult,
     ToolInvocation,
 )
-from leanc.core.redact import redact
-from leanc.core.runner import DEFAULT_PATH, Limits, ProcResult
-from leanc.core.sandbox import SandboxMounts
-from leanc.core.status import Outcome, Status, outcome_to_status
-from leanc.repair.lean_policy import LeanLayout, lean_layout, lean_source_violations
+from leanc.foundation.redact import redact
+from leanc.foundation.runner import DEFAULT_PATH, Limits, ProcResult
+from leanc.foundation.sandbox import SandboxMounts
+from leanc.foundation.status import Outcome, Status, outcome_to_status
+from leanc.rules.lean_rules import LeanLayout, lean_layout, lean_source_violations
+from leanc.rules.source import source_violations
+from leanc.toolchain.context import BackendContext
+from leanc.toolchain.cxx import compiler, compiler_version
+from leanc.toolchain.lean import INSTALL_HINT, LeanToolchain, find_lean
 
 STAGE = "lean"
 #: The only axioms a proof may depend on (Lean's standard foundations).
@@ -119,84 +121,9 @@ VECTOR_MISMATCH_TAG = "LEANC-VECTOR-MISMATCH"
 VECTOR_CHECKED_TAG = "LEANC-VECTORS-CHECKED"
 CHECKER_FILE = "LeancCheck.lean"
 
-INSTALL_HINT = (
-    "Lean 4 not found: install a Lean 4 toolchain (release archive from "
-    "https://github.com/leanprover/lean4/releases unpacked e.g. to /opt/lean/<version>, or elan) and put its "
-    "bin/lean on PATH or set LEANC_LEAN=/path/to/toolchain/bin/lean (no Mathlib needed)"
-)
-
 _MISMATCH_RE = re.compile(rf"^\s*{VECTOR_MISMATCH_TAG}\b(.*)$", re.MULTILINE)
 _CHECKED_RE = re.compile(rf"^\s*{VECTOR_CHECKED_TAG}\s+(\S+)\s*$", re.MULTILINE)
 _KV_RE = re.compile(r"([A-Za-z_][\w.\-]*)=(\S*)")
-_VERSION_RE = re.compile(r"version (\d+\.\d+\.\d+[\w.\-]*)")
-
-
-# =========================================================================== toolchain
-@dataclass(frozen=True)
-class LeanToolchain:
-    lean: str  # real path of the lean executable
-    prefix: str  # toolchain root (bin/, lib/lean/), bound read-only into the sandbox
-    version: str | None
-    version_line: str | None
-    leanchecker: str | None
-
-    @property
-    def lib_dir(self) -> str:
-        return os.path.join(self.prefix, "lib", "lean")
-
-
-def _toolchain_from(path: str) -> LeanToolchain | None:
-    real = os.path.realpath(path)
-    if not (os.path.isfile(real) and os.access(real, os.X_OK)):
-        return None
-    prefix = os.path.dirname(os.path.dirname(real))
-    # an elan shim resolves to the elan binary, which has no toolchain next to it
-    if not os.path.isfile(os.path.join(prefix, "lib", "lean", "Init.olean")):
-        return None
-    line = tool_version(real)
-    if not line or not line.startswith("Lean"):
-        return None
-    m = _VERSION_RE.search(line)
-    chk = os.path.join(prefix, "bin", "leanchecker")
-    return LeanToolchain(
-        lean=real,
-        prefix=prefix,
-        version=m.group(1) if m else None,
-        version_line=line,
-        leanchecker=chk if os.path.isfile(chk) and os.access(chk, os.X_OK) else None,
-    )
-
-
-def _version_key(path: str) -> list:
-    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", path)]
-
-
-def find_lean() -> LeanToolchain | None:
-    """Locate a Lean 4 toolchain: ``LEANC_LEAN`` (the ``lean`` executable or
-    the toolchain directory; if set, nothing else is tried), then ``lean`` on
-    PATH, then ``/opt/lean/*/bin/lean`` (newest first)."""
-    env = os.environ.get("LEANC_LEAN")
-    if env:
-        cands = [env, os.path.join(env, "bin", "lean"), os.path.join(env, "lean")] if os.path.isdir(env) else [env]
-        if not os.path.isabs(env) and not os.path.isdir(env):
-            found = find_tool(env)
-            cands = [found] if found else []
-        for c in cands:
-            if os.path.isfile(c):
-                tc = _toolchain_from(c)
-                if tc:
-                    return tc
-        return None
-    p = find_tool("lean")
-    if p:
-        tc = _toolchain_from(p)
-        if tc:
-            return tc
-    for c in sorted(glob.glob("/opt/lean/*/bin/lean"), key=_version_key, reverse=True):
-        tc = _toolchain_from(c)
-        if tc:
-            return tc
-    return None
 
 
 # =========================================================================== Lean messages
@@ -815,8 +742,6 @@ def _run_vectors(ctx: BackendContext, tc: LeanToolchain, runner: _Runner, layout
                  failures: list[FailureReport]) -> dict:
     """Generate vectors from the model and check the C implementation on them.
     Returns ``details["vectors"]`` with ``status`` pass | fail | timeout | error | skipped."""
-    from leanc.backends import sanitizer as san
-
     spec = ctx.spec
     lv = spec.lean.vectors  # type: ignore[union-attr]
     assert lv is not None
@@ -856,8 +781,6 @@ def _run_vectors(ctx: BackendContext, tc: LeanToolchain, runner: _Runner, layout
     vec.update(count=len(lines), file=_rel(ctx, vraw))
 
     # -------------------------------------------------------------- never execute code with forbidden constructs
-    from leanc.backends.integrity import source_violations
-
     headers = {h: (snap / h).read_text(encoding="utf-8", errors="replace") for h in spec.sources.headers
                if (snap / h).is_file()}
     blocked: list[str] = []
@@ -995,10 +918,6 @@ def _run_vectors(ctx: BackendContext, tc: LeanToolchain, runner: _Runner, layout
 
 def _compiler(ctx: BackendContext) -> tuple[str | None, str | None]:
     """The driver for the vector build: clang++ for C++ specs, clang for C."""
-    try:
-        from leanc.backends.cxx import compiler, compiler_version
-    except ImportError:  # pragma: no cover - C-only installation
-        return ctx.tools.clang, ctx.tools.clang_version
     return compiler(ctx), compiler_version(ctx)
 
 

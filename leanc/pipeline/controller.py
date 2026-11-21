@@ -6,7 +6,7 @@ Runs the gates of an approved spec in order::
 
 and combines their outcomes into one honest :class:`VerificationResult`.
 
-Aggregation rules (see :mod:`leanc.core.status`):
+Aggregation rules (see :mod:`leanc.foundation.status`):
 
 * An unapproved / modified spec yields ``SPEC_UNAPPROVED`` and nothing else is
   claimed (gates are only run for information with ``check_unapproved``).
@@ -25,8 +25,23 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from leanc.backends.tools import environment_info
-from leanc.core.context import (
+from leanc.backends.analyzer import run_static_analysis
+from leanc.backends.cbmc import run_cbmc
+from leanc.backends.clang import run_compile
+from leanc.backends.integrity import run_integrity
+from leanc.backends.lean import run_lean
+from leanc.backends.sanitizer import run_sanitizer_tests
+from leanc.backends.wp import run_wp
+from leanc.foundation.errors import LeanCError, WorkspaceError
+from leanc.foundation.models import StageResult, VerificationResult, utcnow
+from leanc.foundation.status import Outcome, Status, outcome_to_status, worst
+from leanc.foundation.workspace import Workspace, normalize_relpath
+from leanc.reports.json_report import write_json
+from leanc.reports.markdown import render_verification_md
+from leanc.specs.approval import check_approval
+from leanc.specs.loader import load_spec
+from leanc.specs.model import GATE_ORDER, Spec
+from leanc.toolchain.context import (
     BackendContext,
     VerifyOptions,
     find_project_root,
@@ -35,13 +50,7 @@ from leanc.core.context import (
     runs_dir,
     snapshot_hashes,
 )
-from leanc.core.errors import LeanCError
-from leanc.core.models import StageResult, VerificationResult, utcnow
-from leanc.core.status import Outcome, Status, outcome_to_status, worst
-from leanc.core.workspace import Workspace, normalize_relpath
-from leanc.specs.approval import check_approval
-from leanc.specs.loader import load_spec
-from leanc.specs.model import Spec
+from leanc.toolchain.environment import environment_info
 
 log = logging.getLogger("leanc.controller")
 
@@ -55,35 +64,19 @@ STANDARD_LIMITATIONS = [
 
 
 def _gate_runner(name: str) -> Callable[[BackendContext], StageResult]:
-    # Imported lazily so that a broken / missing backend surfaces as TOOL_ERROR
-    # for that gate instead of breaking the whole controller.
     if name == "compile":
-        from leanc.backends.clang import run_compile
-
         return run_compile
     if name == "static_analysis":
-        from leanc.backends.analyzer import run_static_analysis
-
         return run_static_analysis
     if name == "sanitizer":
-        from leanc.backends.sanitizer import run_sanitizer_tests
-
         return run_sanitizer_tests
     if name == "cbmc":
-        from leanc.backends.cbmc import run_cbmc
-
         return run_cbmc
     if name == "integrity":
-        from leanc.backends.integrity import run_integrity
-
         return run_integrity
     if name == "wp":
-        from leanc.backends.wp import run_wp
-
         return run_wp
     if name == "lean":
-        from leanc.backends.lean import run_lean
-
         return run_lean
     raise ValueError(f"unknown gate {name!r}")
 
@@ -142,8 +135,6 @@ def _recheck_protected(spec: Spec, ws: Workspace, ctx: BackendContext, when: str
 def ensure_runs_dir(root: Path) -> Path:
     """Create ``<root>/.leanc/runs`` refusing symlinked components, so run
     artefacts can never be redirected outside the project."""
-    from leanc.core.errors import WorkspaceError
-
     root = Path(root)
     for d in (root / ".leanc", root / ".leanc" / "runs"):
         if d.is_symlink():
@@ -238,8 +229,6 @@ def verify(
         duration_s=round(time.monotonic() - t0, 3),
     )
     stages: list[StageResult] = [spec_stage]
-
-    from leanc.specs.model import GATE_ORDER
 
     gates = sorted(spec.gates, key=GATE_ORDER.index)
     if options.gates is not None:
@@ -350,8 +339,5 @@ def verify(
 
 
 def write_verification_artifacts(result: VerificationResult, run_dir: Path) -> None:
-    from leanc.reports.json_report import write_json
-    from leanc.reports.markdown import render_verification_md
-
     write_json(result, Path(run_dir) / "verification.json")
     (Path(run_dir) / "verification.md").write_text(render_verification_md(result), encoding="utf-8")

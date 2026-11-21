@@ -18,8 +18,8 @@ Why our own applier instead of GNU ``patch``:
   instead of being half-applied or silently skipped.
 
 Paths inside a diff are validated with
-:func:`leanc.core.workspace.normalize_relpath`; an absolute or ``..`` path is
-a :class:`~leanc.core.errors.PatchError`, never something passed to a reader.
+:func:`leanc.foundation.workspace.normalize_relpath`; an absolute or ``..`` path is
+a :class:`~leanc.foundation.errors.PatchError`, never something passed to a reader.
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from leanc.core.errors import PatchError, WorkspaceError
-from leanc.core.hashing import canonical_hash
-from leanc.core.workspace import normalize_relpath
+from leanc.foundation.errors import PatchError, WorkspaceError
+from leanc.foundation.hashing import canonical_hash
+from leanc.foundation.workspace import normalize_relpath
 
 __all__ = [
     "DEFAULT_MAX_OFFSET",

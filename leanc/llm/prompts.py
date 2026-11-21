@@ -13,7 +13,7 @@ Design rules:
   files are cut in the middle with an explicit marker so the model knows it is
   not seeing everything (and is told to answer with a diff instead).
 * **No secrets.**  The final text of every prompt goes through
-  :func:`leanc.core.redact.redact`.
+  :func:`leanc.foundation.redact.redact`.
 
 All builders are pure and deterministic, so prompts can be unit-tested and
 diffed between versions.
@@ -32,13 +32,12 @@ from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
-from leanc.core.redact import redact
+from leanc.foundation.models import Diagnostic, FailureReport, VerificationResult
+from leanc.foundation.redact import redact
+from leanc.llm.base import CodeGenRequest, RepairRequest, SpecDraftRequest
 from leanc.llm.cpp_prompts import cpp_system
+from leanc.llm.wp_prompts import wp_repair_note
 from leanc.specs.model import ALL_GATES, MANDATORY_CHECKS, SPEC_ID_RE, Spec
-
-if typing.TYPE_CHECKING:
-    from leanc.core.models import Diagnostic, FailureReport, VerificationResult
-    from leanc.llm.base import CodeGenRequest, RepairRequest, SpecDraftRequest
 
 
 # ------------------------------------------------------------------ limits / containers
@@ -795,7 +794,6 @@ def build_repair_prompt(req: RepairRequest, limits: PromptLimits = DEFAULT_LIMIT
             "maxHeartbeats/maxRecDepth), #eval/run_cmd and other metaprogramming, new instances/notation/macros, "
             "imports other than Init, Std, the spec module and other proof modules. Never redefine model functions."
         )
-    from leanc.llm.wp_prompts import wp_repair_note  # V2 wp gate: ACSL trust rules, proof repair
 
     if wp_note := wp_repair_note(spec):
         parts.append(wp_note)

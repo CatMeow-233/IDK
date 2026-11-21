@@ -1,1 +1,1 @@
-"""Counterexample analysis, patch handling, repair policy and the repair loop."""
+"""Patch handling and the repair / generation policy."""

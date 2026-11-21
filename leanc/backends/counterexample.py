@@ -33,7 +33,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from leanc.core.models import CounterexampleInput, FailureReport, Location, TraceStep
+from leanc.foundation.models import CounterexampleInput, FailureReport, Location, TraceStep
 
 #: Description prefix of a vacuity probe (see ``leanc.h``: LEANC_REACH).
 REACH_PREFIX = "leanc_reach:"
