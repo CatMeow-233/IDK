@@ -10,8 +10,6 @@ from leanc.rules.findings import Finding, to_violations
 
 __all__ = [
     "GCC_MISSING",
-    "GCC_PREPROCESSED_GATES",
-    "NO_GCC_PREPROCESSED_GATE",
     "PREDEFINED_MACRO_DUMP_ARGS",
     "MacroDefinition",
     "MacroDivergence",
@@ -21,11 +19,9 @@ __all__ = [
     "parse_predefined_macros",
 ]
 
-GCC_PREPROCESSED_GATES = frozenset({"cbmc", "wp"})
-NO_GCC_PREPROCESSED_GATE = "no gate preprocesses the code with gcc (cbmc, wp)"
 GCC_MISSING = (
-    "gcc not found: cannot compare the macros clang (with compile.flags) predefines with those of gcc, "
-    "which preprocesses the code for CBMC and Frama-C"
+    "gcc not found: cannot compare the macros clang predefines for the compile gate with those gcc predefines "
+    "when it preprocesses the code for CBMC or Frama-C"
 )
 PREDEFINED_MACRO_DUMP_ARGS: tuple[str, ...] = ("-dM", "-E", "-x", "c", os.devnull)
 DIVERGENCE_RULE = "TOOL_DIVERGENCE"
@@ -63,11 +59,12 @@ class MacroDivergence:
     name: str
     clang: MacroDefinition | None
     gcc: MacroDefinition | None
+    verifier: str
 
     def message(self) -> str:
         return (
-            f"'{self.name}' is predefined differently by clang with compile.flags ({_shown(self.clang)}) and by gcc, "
-            f"which preprocesses for CBMC and Frama-C ({_shown(self.gcc)}): the tools would verify different code"
+            f"'{self.name}' is predefined differently by clang with the compile gate's options ({_shown(self.clang)}) "
+            f"and by gcc preprocessing for {self.verifier} ({_shown(self.gcc)}): the tools would verify different code"
         )
 
 
@@ -91,10 +88,10 @@ def parse_predefined_macros(dump: str) -> PredefinedMacros:
 
 
 def divergent_macros(
-    clang: dict[str, MacroDefinition], gcc: dict[str, MacroDefinition]
+    clang: dict[str, MacroDefinition], gcc: dict[str, MacroDefinition], verifier: str
 ) -> dict[str, MacroDivergence]:
     return {
-        name: MacroDivergence(name, clang.get(name), gcc.get(name))
+        name: MacroDivergence(name, clang.get(name), gcc.get(name), verifier)
         for name in sorted(clang.keys() | gcc.keys())
         if clang.get(name) != gcc.get(name)
     }

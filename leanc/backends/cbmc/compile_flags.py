@@ -26,6 +26,10 @@ DIAGNOSTICS_ONLY_FLAGS = frozenset({"-w", "-pedantic", "-pedantic-errors"})
 C89_MODE = "--c89"
 C99_MODE = "--c99"
 C11_MODE = "--c11"
+CBMC_DEFAULT_MODE = C11_MODE
+CBMC_PREPROCESSOR_STANDARDS: dict[str, str] = {C89_MODE: "gnu89", C99_MODE: "gnu99", C11_MODE: "gnu11"}
+CBMC_PREPROCESSOR_DEFINES: tuple[str, ...] = ("-D__CPROVER__",)
+GCC_UNSIGNED_CHAR_FLAG = "-funsigned-char"
 C11_REVISION_NOTE = (
     "CBMC has no C17 mode; C17 only resolves defects of C11, but __STDC_VERSION__ is 201112L instead of 201710L"
 )
@@ -223,3 +227,15 @@ def translate_compile_options(compile_config: CompileConfig, standard: str) -> C
         standard_mode=mode,
         char_signedness=translator.char_signedness,
     )
+
+
+def cbmc_preprocessor_macro_args(compile_config: CompileConfig, standard: str) -> list[str]:
+    translation = translate_compile_options(compile_config, standard)
+    mode = translation.standard_mode.flag if translation.standard_mode else CBMC_DEFAULT_MODE
+    unsigned_char = translation.char_signedness is CharSignedness.UNSIGNED
+    return [
+        *CBMC_PREPROCESSOR_DEFINES,
+        *([GCC_UNSIGNED_CHAR_FLAG] if unsigned_char else []),
+        STANDARD_FLAG_PREFIX + CBMC_PREPROCESSOR_STANDARDS[mode],
+        *translation.macro_args,
+    ]

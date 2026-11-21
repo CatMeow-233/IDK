@@ -9,6 +9,15 @@ from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
+from leanc.backends.clang import define_args
+from leanc.backends.verifier_macros import (
+    CLANG_DUMP_LABEL,
+    NO_GCC_PREPROCESSED_GATE,
+    collect_divergences,
+    compile_gate_macro_dump,
+    gcc_preprocessed_verifiers,
+    verifier_macro_dumps,
+)
 from leanc.foundation.models import (
     Diagnostic,
     FailureReport,
@@ -46,12 +55,8 @@ from leanc.rules.cpp_rules import (
 from leanc.rules.findings import dedupe_key, unique_id, violation
 from leanc.rules.predefined_macros import (
     GCC_MISSING,
-    GCC_PREPROCESSED_GATES,
-    NO_GCC_PREPROCESSED_GATE,
-    PREDEFINED_MACRO_DUMP_ARGS,
     MacroDefinition,
     divergent_macro_use_violations,
-    divergent_macros,
     parse_predefined_macros,
 )
 from leanc.rules.source import source_violations
@@ -102,10 +107,6 @@ def _find(names: tuple[str, ...]) -> str | None:
 
 def _object_path(object_root: Path, rel: str) -> Path:
     return object_root / (rel[:-2] + ".o" if rel.endswith(".c") else rel + ".o")
-
-
-def _define_args(defines: list[str]) -> list[str]:
-    return [define if define.startswith("-D") else f"-D{define}" for define in defines]
 
 
 @dataclass
@@ -237,7 +238,7 @@ class _IntegrityGate(ABC):
             self.compiler_path,
             f"-std={self.spec.language.standard}",
             *self.spec.compile.flags,
-            *_define_args(self.spec.compile.defines),
+            *define_args(self.spec.compile.defines),
             *self.ctx.include_args(),
             "-E",
             rel,
@@ -252,7 +253,7 @@ class _IntegrityGate(ABC):
         unbounded = [
             self.compiler_path,
             f"-std={self.spec.language.standard}",
-            *_define_args(self.spec.compile.defines),
+            *define_args(self.spec.compile.defines),
             *self.ctx.include_args(),
             *UNBOUNDED_STACK_CHECK_FLAGS,
             rel,
@@ -261,7 +262,7 @@ class _IntegrityGate(ABC):
             self.compiler_path,
             f"-std={self.spec.language.standard}",
             *codegen_flags(self.spec.compile.flags),
-            *_define_args(self.spec.compile.defines),
+            *define_args(self.spec.compile.defines),
             *self.ctx.include_args(),
             *STACK_FRAME_CHECK_FLAGS,
             rel,
@@ -295,7 +296,7 @@ class _IntegrityGate(ABC):
         return True
 
     def check_predefined_macro_divergence(self) -> None:
-        if not GCC_PREPROCESSED_GATES & set(self.spec.gates):
+        if not gcc_preprocessed_verifiers(self.spec):
             self.details["predefined_macros"] = {"checked": False, "reason": NO_GCC_PREPROCESSED_GATE}
             return
         gcc = _find(GCC_CANDIDATES)
@@ -304,20 +305,20 @@ class _IntegrityGate(ABC):
             return
         if not self.compiler_path:
             return
-        clang_argv = [self.compiler_path, *self.spec.compile.flags, *self.ctx.include_args(), *PREDEFINED_MACRO_DUMP_ARGS]
-        gcc_argv = [gcc, *PREDEFINED_MACRO_DUMP_ARGS]
-        self.details["predefined_macros"] = {"checked": False, "argv": {"clang": clang_argv, "gcc": gcc_argv}}
-        clang_macros = self.predefined_macros(self.compiler_name, clang_argv)
-        gcc_macros = self.predefined_macros("gcc", gcc_argv)
-        if clang_macros is None or gcc_macros is None:
+        dumps = verifier_macro_dumps(gcc, self.spec)
+        clang_argv = compile_gate_macro_dump(self.compiler_path, self.spec, self.ctx.include_args())
+        self.details["predefined_macros"] = {"checked": False, "argv": {CLANG_DUMP_LABEL: clang_argv}}
+        self.details["predefined_macros"]["argv"].update({dump.label: dump.argv for dump in dumps})
+        clang_macros = self.predefined_macros(self.compiler_name, CLANG_DUMP_LABEL, clang_argv)
+        divergent = None if clang_macros is None else collect_divergences(clang_macros, dumps, self.predefined_macros)
+        if divergent is None:
             return
-        divergent = divergent_macros(clang_macros, gcc_macros)
         self.details["predefined_macros"].update({"checked": True, "divergent": len(divergent)})
         for rel, checked in self.checked.items():
             self.violations += divergent_macro_use_violations(rel, checked.source, divergent)
 
-    def predefined_macros(self, tool: str, argv: list[str]) -> dict[str, MacroDefinition] | None:
-        dump = self.run_tool(tool, argv, tool, PREDEFINED_MACROS_STEP)
+    def predefined_macros(self, tool: str, label: str, argv: list[str]) -> dict[str, MacroDefinition] | None:
+        dump = self.run_tool(tool, argv, label, PREDEFINED_MACROS_STEP)
         if dump is None:
             return None
         parsed = parse_predefined_macros(dump)

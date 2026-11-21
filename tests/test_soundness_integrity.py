@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from leanc.backends import integrity
+from leanc.backends.cbmc.compile_flags import cbmc_preprocessor_macro_args
 from leanc.backends.clang import run_compile
 from leanc.backends.integrity import run_integrity
 from leanc.foundation.status import Outcome, Status
@@ -25,9 +26,12 @@ from leanc.rules.stack_checks import (
     stack_frame_violations,
 )
 from leanc.specs.loader import load_spec
+from leanc.specs.model import CompileConfig
 from leanc.toolchain.context import VerifyOptions, make_context
 
 EXAMPLE = "safe_array_get"
+WP_EXAMPLE = "wp_safe_array_get"
+VERIFIER = "CBMC"
 SOURCE = "src/safe_array.c"
 DEFAULT_FLAGS = "flags: [-Wall, -Wextra, -Wpedantic]"
 DEFAULT_GATES = "gates: [compile, static_analysis, sanitizer, cbmc]"
@@ -38,6 +42,7 @@ HUGE_FRAME_READ = (
     "    *out = arr[idx] + scratch[0];"
 )
 FINITE_MATH_READ = "    *out = arr[idx] + __FINITE_MATH_ONLY__;"
+STDC_VERSION_READ = "    *out = arr[idx] + (int)(__STDC_VERSION__ / 100000000L);"
 LEGACY_MODE_READ = "#ifdef LEGACY_MODE\n    *out = arr[idx + 1];\n#else\n    *out = arr[idx];\n#endif"
 MISSING_GCC = ("leanc-test-no-such-gcc",)
 
@@ -57,12 +62,18 @@ CPP_FRAME_WARNING = (
 )
 
 
-def _shipped() -> str:
-    return (Path(__file__).resolve().parent.parent / "examples" / EXAMPLE / SOURCE).read_text()
+def _shipped(example: str = EXAMPLE) -> str:
+    return (Path(__file__).resolve().parent.parent / "examples" / example / SOURCE).read_text()
 
 
-def _gate(example_copy, tmp_path: Path, source: str | None = None, spec_edits: dict[str, str] | None = None):
-    root = example_copy(EXAMPLE)
+def _gate(
+    example_copy,
+    tmp_path: Path,
+    source: str | None = None,
+    spec_edits: dict[str, str] | None = None,
+    example: str = EXAMPLE,
+):
+    root = example_copy(example)
     if source is not None:
         (root / SOURCE).write_text(source)
     spec_file = root / "spec.yaml"
@@ -101,24 +112,25 @@ def test_predefined_macro_dump_reports_unexpected_lines():
 def test_divergent_macros_are_exactly_those_with_different_or_missing_definitions():
     clang = parse_predefined_macros(CLANG_DUMP).definitions
     gcc = parse_predefined_macros(GCC_DUMP).definitions
-    divergent = divergent_macros(clang, gcc)
+    divergent = divergent_macros(clang, gcc, VERIFIER)
     assert set(divergent) == {"__FINITE_MATH_ONLY__", "__EMPTY__", "__GCC_ONLY__"}
     assert divergent["__GCC_ONLY__"].clang is None and divergent["__EMPTY__"].gcc is None
 
 
 def test_divergent_macro_use_is_rejected_in_code_but_not_in_comments_or_strings():
     divergent = divergent_macros(parse_predefined_macros(CLANG_DUMP).definitions,
-                                 parse_predefined_macros(GCC_DUMP).definitions)
+                                 parse_predefined_macros(GCC_DUMP).definitions, VERIFIER)
     text = 'int f(void)\n{\n    /* __FINITE_MATH_ONLY__ */\n    const char *s = "__GCC_ONLY__";\n' \
            "    return __FINITE_MATH_ONLY__ + (s != 0);\n}\n"
     found = divergent_macro_use_violations("src/a.c", CSource(text), divergent)
     assert [(v.rule, v.line) for v in found] == [("TOOL_DIVERGENCE", 5)]
     assert "__FINITE_MATH_ONLY__" in found[0].message and "(1)" in found[0].message and "(0)" in found[0].message
+    assert f"for {VERIFIER}" in found[0].message
 
 
 def test_code_without_divergent_macros_is_unaffected():
     divergent = divergent_macros(parse_predefined_macros(CLANG_DUMP).definitions,
-                                 parse_predefined_macros(GCC_DUMP).definitions)
+                                 parse_predefined_macros(GCC_DUMP).definitions, VERIFIER)
     assert divergent_macro_use_violations("src/a.c", CSource(_shipped()), divergent) == []
 
 
@@ -202,10 +214,40 @@ def test_divergent_flags_alone_do_not_reject_code_that_ignores_them(example_copy
     assert result.outcome is Outcome.PASS, result.summary
 
 
-def test_define_only_in_compile_flags_is_a_tool_divergence(example_copy, needs_clang, tmp_path):
+def test_define_in_compile_flags_reaches_cbmc_so_it_is_no_divergence(example_copy, needs_clang, tmp_path):
     source = _shipped().replace(READ_LINE, LEGACY_MODE_READ)
     result = _gate(example_copy, tmp_path, source, _flags("-Wall", "-DLEGACY_MODE"))
-    assert any("'LEGACY_MODE'" in d.message for d in _by_rule(result, "TOOL_DIVERGENCE")), result.summary
+    assert result.outcome is Outcome.PASS, result.summary
+    assert "-DLEGACY_MODE" in result.details["predefined_macros"]["argv"]["cbmc"]
+
+
+def test_define_only_in_compile_flags_is_a_divergence_for_frama_c(example_copy, needs_clang, tmp_path):
+    source = _shipped(WP_EXAMPLE).replace(READ_LINE, LEGACY_MODE_READ)
+    result = _gate(example_copy, tmp_path, source, _flags("-Wall", "-DLEGACY_MODE"), WP_EXAMPLE)
+    [found] = [d for d in _by_rule(result, "TOOL_DIVERGENCE") if "'LEGACY_MODE'" in d.message]
+    assert "for Frama-C" in found.message and result.outcome is Outcome.FAIL
+
+
+def test_define_in_compile_defines_reaches_both_verifiers(example_copy, needs_clang, tmp_path):
+    source = _shipped(WP_EXAMPLE).replace(READ_LINE, LEGACY_MODE_READ)
+    edits = {DEFAULT_FLAGS: f"{DEFAULT_FLAGS}\n  defines: [LEGACY_MODE]"}
+    result = _gate(example_copy, tmp_path, source, edits, WP_EXAMPLE)
+    assert not _by_rule(result, "TOOL_DIVERGENCE"), result.summary
+
+
+def test_cbmc_preprocessing_standard_differs_from_the_compile_gate(example_copy, needs_clang, tmp_path):
+    source = _shipped().replace(READ_LINE, STDC_VERSION_READ)
+    result = _gate(example_copy, tmp_path, source)
+    [found] = _by_rule(result, "TOOL_DIVERGENCE")
+    assert "'__STDC_VERSION__'" in found.message and "201710L" in found.message and "201112L" in found.message
+
+
+def test_cbmc_macro_environment_mirrors_cbmc_preprocessor_command():
+    compile_config = CompileConfig(flags=["-funsigned-char", "-DA=1", "-UA", "-DB", "-O2"], defines=["NDEBUG", "C"])
+    assert cbmc_preprocessor_macro_args(compile_config, "c99") == [
+        "-D__CPROVER__", "-funsigned-char", "-std=gnu99", "-DB", "-DC"
+    ]
+    assert cbmc_preprocessor_macro_args(CompileConfig(), "c2x")[:2] == ["-D__CPROVER__", "-std=gnu11"]
 
 
 def test_missing_gcc_is_an_integrity_error_not_a_silent_pass(example_copy, needs_clang, tmp_path, monkeypatch):

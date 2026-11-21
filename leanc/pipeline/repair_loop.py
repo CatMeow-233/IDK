@@ -50,6 +50,7 @@ CRLF = "\r\n"
 LF = "\n"
 
 _DEFINITE_OUTCOMES = (Outcome.PASS, Outcome.FAIL)
+INTEGRITY_STAGE = "integrity"
 _LINE_NUMBER_IN_FINGERPRINT_RE = re.compile(r"@(.*?):(?:\d+|\?):")
 
 
@@ -125,6 +126,15 @@ def _is_proof_improvement(before: VerificationResult, after: VerificationResult)
     return bool(fixed) and not introduced
 
 
+def _passes(vr: VerificationResult, stage: str) -> bool:
+    result = vr.stage(stage)
+    return result is not None and result.outcome is Outcome.PASS
+
+
+def _unblocks_integrity(before: VerificationResult, after: VerificationResult) -> bool:
+    return not _passes(before, INTEGRITY_STAGE) and _passes(after, INTEGRITY_STAGE)
+
+
 def is_improvement(before: VerificationResult, after: VerificationResult) -> bool:
     if _goal_reached(after):
         return True
@@ -134,6 +144,8 @@ def is_improvement(before: VerificationResult, after: VerificationResult) -> boo
         return False
     if stage_regressions(before, after):
         return False
+    if _unblocks_integrity(before, after):
+        return True
     if rank(after.status) > rank(before.status):
         return True
     if rank(after.status) < rank(before.status):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-from sanitizer_support import make_project, make_spec
+from sanitizer_support import DRIVER, HEADER, make_project, make_spec
 
 from leanc.backends.lean.vectors import VectorCheck
 from leanc.backends.sanitizer import build, run_sanitizer_tests, sanitizer_plan
@@ -14,17 +14,11 @@ from leanc.backends.sanitizer.build import (
 )
 from leanc.backends.sanitizer.ownership_build import build_steps
 from leanc.foundation.status import Outcome
-from leanc.specs.model import LeanVectors
+from leanc.specs.model import Language, LeanVectors
 from leanc.toolchain.context import make_context
 from leanc.toolchain.cxx import compiler
 
-EXPECTED_FIDELITY_FLAGS = (
-    "-fno-builtin-malloc",
-    "-fno-builtin-calloc",
-    "-fno-builtin-realloc",
-    "-fno-builtin-free",
-    "-fno-optimize-sibling-calls",
-)
+EXPECTED_FIDELITY_FLAGS = ("-fno-builtin", "-fno-optimize-sibling-calls")
 SIBLING_CALL_FLAG = "-fno-optimize-sibling-calls"
 SPEC_SIBLING_CALLS_FLAG = "-foptimize-sibling-calls"
 SPEC_FLAGS = ["-Wall", SPEC_SIBLING_CALLS_FLAG]
@@ -52,6 +46,29 @@ OVERWRITTEN_ALLOCATION_SRC = textwrap.dedent(
     }
     """
 )
+
+OVERWRITTEN_LIBRARY_ALLOCATIONS_SRC = textwrap.dedent(
+    """\
+    #define _POSIX_C_SOURCE 200809L
+    #include <stdlib.h>
+    #include <string.h>
+    #include "f.h"
+
+    int f(int n)
+    {
+        char *s = strdup("first"); /* first strdup */
+        s = strdup("second");
+        void *b = aligned_alloc(64, 64); /* first aligned_alloc */
+        b = aligned_alloc(64, 64);
+        if (!s || !b) return -1;
+        int r = n + 32 + (s[0] == 's') - 1;
+        free(s);
+        free(b);
+        return r;
+    }
+    """
+)
+LIBRARY_ALLOCATION_MARKERS = ("first strdup", "first aligned_alloc")
 
 RELEASED_ALLOCATIONS_SRC = textwrap.dedent(
     """\
@@ -95,6 +112,41 @@ WRAPPER_LEAK_SRC = textwrap.dedent(
     }
     """
 )
+
+
+OVERWRITTEN_NEW_SRC = textwrap.dedent(
+    """\
+    #include "f.h"
+
+    int *g_last;
+
+    int f(int n)
+    {
+        int *a = new int[4]; /* first new */
+        a = new int[4]; /* second new */
+        g_last = a;
+        g_last = nullptr;
+        return n + 32;
+    }
+    """
+)
+CPP_NEW_MARKERS = ("first new", "second new")
+ADDRESS_AND_LEAK = ["address", "leak"]
+CPP_DRIVER = DRIVER.replace("#include <stdio.h>\n#include <stdlib.h>\n", "#include <cstdio>\n#include <cstdlib>\n")
+
+
+def _cpp_context(tmp_path: Path, src: str):
+    root = tmp_path / "cpp"
+    for directory in ("src", "include", "tests"):
+        (root / directory).mkdir(parents=True)
+    (root / "include" / "f.h").write_text(HEADER)
+    (root / "src" / "f.cpp").write_text(src)
+    (root / "tests" / "driver.cpp").write_text(CPP_DRIVER)
+    spec = make_spec([LEAK_CASE], sanitizers=ADDRESS_AND_LEAK)
+    spec.language = Language(name="cpp", standard="c++20")
+    spec.sources.editable = ["src/f.cpp"]
+    spec.tests.driver = "tests/driver.cpp"
+    return make_context(spec, root, root / ".leanc" / "runs" / "r1")
 
 
 def _context(tmp_path: Path, src: str = RELEASED_ALLOCATIONS_SRC, flags: list[str] | None = None):
@@ -211,6 +263,22 @@ def test_overwritten_allocation_escapes_lsan_without_fidelity_flags(tmp_path, ne
     monkeypatch.setattr(build, "BUILD_FIDELITY_FLAGS", ())
     res = _run_gate(tmp_path, OVERWRITTEN_ALLOCATION_SRC)
     assert res.outcome is Outcome.PASS, res.summary
+
+
+def test_overwritten_library_allocations_are_reported_as_leaks(tmp_path, needs_clang, needs_bwrap):
+    res = _run_gate(tmp_path, OVERWRITTEN_LIBRARY_ALLOCATIONS_SRC)
+    assert res.outcome is Outcome.FAIL, res.summary
+    lines = sorted(d.location.line for d in res.diagnostics if d.tool == "lsan" and d.location)
+    expected = sorted(_line_of(OVERWRITTEN_LIBRARY_ALLOCATIONS_SRC, m) for m in LIBRARY_ALLOCATION_MARKERS)
+    assert lines == expected, res.diagnostics
+
+
+def test_overwritten_cpp_new_is_reported_as_leak(tmp_path, needs_clang, needs_bwrap):
+    res = run_sanitizer_tests(_cpp_context(tmp_path, OVERWRITTEN_NEW_SRC))
+    assert res.outcome is Outcome.FAIL, res.summary
+    leaks = [d for d in res.diagnostics if d.tool == "lsan"]
+    expected = sorted(("src/f.cpp", _line_of(OVERWRITTEN_NEW_SRC, marker)) for marker in CPP_NEW_MARKERS)
+    assert sorted((d.location.file, d.location.line) for d in leaks) == expected, res.diagnostics
 
 
 def test_released_allocations_still_pass(tmp_path, needs_clang, needs_bwrap):

@@ -12,13 +12,7 @@ from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler
 
 BASE_FLAGS: tuple[str, ...] = ("-g", "-O1", "-fno-omit-frame-pointer")
-BUILD_FIDELITY_FLAGS: tuple[str, ...] = (
-    "-fno-builtin-malloc",
-    "-fno-builtin-calloc",
-    "-fno-builtin-realloc",
-    "-fno-builtin-free",
-    "-fno-optimize-sibling-calls",
-)
+BUILD_FIDELITY_FLAGS: tuple[str, ...] = ("-fno-builtin", "-fno-optimize-sibling-calls")
 BUILD_TOOL = "clang"
 UNDEFINED_REFERENCE_RULE = "undefined-reference"
 MULTIPLE_DEFINITION_RULE = "multiple-definition"
