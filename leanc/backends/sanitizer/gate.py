@@ -26,7 +26,8 @@ from leanc.backends.sanitizer.judge import (
     ExecutedCase,
     judge_case,
 )
-from leanc.backends.sanitizer.ownership import OwnershipInputs, attach_ownership_traces
+from leanc.backends.sanitizer.ownership import attach_ownership_traces
+from leanc.backends.sanitizer.ownership_replay import OwnershipInputs
 from leanc.backends.sanitizer.plan import (
     SanitizerPlan,
     exit_code_details,

@@ -164,12 +164,12 @@ C 项目出现 LeakSanitizer 失败时，`ownership_trace` 保存对该泄漏测
 
 - `allocation`：配置点。
 - `released_at`：同一配置点的内存在其他路径上被释放的位置。
-- `loss` 与 `function`：最后一个引用在函数层级消失的位置。`loss` 是以下之一：
-  - `inside-function`：函数返回前已消失。
-  - `at-function-return`：函数的 frame 结束时消失。
-  - `after-return-by-caller`：返回后的检查仍看得到该内存，所以是调用者丢掉的。
-  - `at-or-after-return`：没有后续事件可以区分是哪一种。
-- `returned_to`：函数返回到的调用点。
+- `loss` 与 `function`：最后一个引用消失时间的上界。只有在某次检查中被列为 Direct 泄漏才算证据；LeakSanitizer 的扫描是保守的，扫描中仍找到看似指针的值并不能证明任何事。`loss` 是以下之一：
+  - `lost-during-call`：该内存在调用 `function` 期间分配，且在 `function` 返回前已不可达，所以是在 `function` 或其被调用者中遗失的。这是唯一的强结论。
+  - `unreachable-by-return`：`function` 不在分配时的调用栈上，到它即将返回时已没有任何引用。这不说明是在哪里遗失的。
+  - `unreachable-by-next-event`：在 `function` 返回后的第一个被追踪事件之前，于 `function` 或其调用者中遗失。
+  - `not-localised`：程序结束前没有任何检查发现它不可达。仍会报告 `released_at`。
+- `returned_to`：`function` 返回到的调用点；被内联的函数不提供。
 
 修复 prompt 会以明确标签显示同样的证据。它不会指出执行的是哪一行 `return`。
 

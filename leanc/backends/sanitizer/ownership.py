@@ -2,86 +2,65 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from leanc.backends.sanitizer.ownership_analysis import (
     OwnershipLossFinding,
     TraceRun,
-    build_trace,
     classify_losses,
     leaked_allocations,
     probe_plan,
-    release_sites,
+    release_summary,
 )
+from leanc.backends.sanitizer.ownership_attach import TraceCandidate, attach_traces
 from leanc.backends.sanitizer.ownership_build import STAGE, build_trace_binary
-from leanc.backends.sanitizer.ownership_log import (
-    ProbeKey,
-    leaked_objects_at_exit,
-    leaked_objects_per_probe,
-    parse_events,
+from leanc.backends.sanitizer.ownership_replay import (
+    OwnershipInputs,
+    Replay,
+    ReplaySession,
+    replay,
 )
 from leanc.backends.sanitizer.ownership_symbols import (
     CodeAddress,
     Symbolized,
     symbolize,
 )
-from leanc.backends.sanitizer.plan import SanitizerPlan, find_llvm_symbolizer
+from leanc.backends.sanitizer.plan import find_llvm_symbolizer
 from leanc.backends.sanitizer.runtime_reports import MEMORY_LEAK_RULE
-from leanc.foundation.models import FailureReport, MemoryOwnershipTrace, ToolInvocation
-from leanc.foundation.redact import redact
-from leanc.foundation.runner import Limits
-from leanc.foundation.sandbox import SandboxMounts
-from leanc.foundation.text import safe_name
+from leanc.foundation.models import (
+    FailureReport,
+    Location,
+    MemoryOwnershipTrace,
+    ToolInvocation,
+)
 from leanc.specs.model import TestCase
-from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler, compiler_version
 
-RUN_TOOL = "ownership-trace-run"
 OUT_DIR_NAME = "ownership"
-LOG_FILE = "ownership.log"
-LOG_PATH_ENV = "LEANC_OWNERSHIP_LOG"
-PROBED_EXITS_ENV = "LEANC_OWNERSHIP_CHECKS"
-LSAN_OPTIONS = "LSAN_OPTIONS"
-REPORT_OBJECTS_OPTION = "report_objects=1"
-MAX_LOG_BYTES = 8 * 1024 * 1024
 BUDGET_S = 120.0
 TEST_CASE_INPUT = "test_case"
 FAILURE_ID_PREFIX = "sanitizer:"
 LEAK_TOOL = "lsan"
 MAX_RELEASE_SITES = 5
 DETAILS_KEY = "ownership_trace"
-
-
-@dataclass
-class OwnershipInputs:
-    ctx: BackendContext
-    plan: SanitizerPlan
-    env: dict[str, str]
-    project_files: set[str]
-    case_limits: Callable[[TestCase], Limits]
-
-
-@dataclass
-class _Replay:
-    run: TraceRun | None = None
-    leaked_at_exit: frozenset[int] = frozenset()
-    probes: dict[ProbeKey, frozenset[int]] = field(default_factory=dict)
-    problem: str | None = None
-
+TRACED_STATUS = "traced (evidence for the repair model, never part of the verdict)"
+BUDGET_EXHAUSTED = "time budget exhausted"
 
 @dataclass
 class _Session:
-    inputs: OwnershipInputs
-    out_root: Path
-    raw_root: Path
-    binary: Path
+    replays: ReplaySession
     symbolizer: str
-    invocations: list[ToolInvocation]
     deadline: float
+    releases: dict[int, list[int]] = field(default_factory=dict)
+
+    def out_of_time(self) -> bool:
+        return time.monotonic() > self.deadline
+
+    def add_releases(self, run: TraceRun) -> None:
+        for site, frees in release_summary([run]).items():
+            self.releases[site] = sorted(set(self.releases.get(site, [])) | set(frees))
 
 
 def _case_name(failure: FailureReport) -> str | None:
@@ -97,88 +76,6 @@ def leak_failures_by_case(failures: list[FailureReport]) -> dict[str, list[Failu
     return by_case
 
 
-@dataclass(frozen=True)
-class _LogRead:
-    text: str = ""
-    problem: str | None = None
-
-
-def _read_regular_file(fd: int) -> _LogRead:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        return _LogRead(problem=f"{LOG_FILE} is not a regular file")
-    chunks: list[bytes] = []
-    size = 0
-    while size <= MAX_LOG_BYTES:
-        chunk = os.read(fd, MAX_LOG_BYTES + 1 - size)
-        if not chunk:
-            return _LogRead(text=b"".join(chunks).decode("utf-8", errors="replace"))
-        chunks.append(chunk)
-        size += len(chunk)
-    return _LogRead(problem=f"{LOG_FILE} exceeds {MAX_LOG_BYTES} bytes")
-
-
-def _read_trace_log(path: Path) -> _LogRead:
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except OSError as exc:
-        return _LogRead(problem=f"cannot open {LOG_FILE} ({exc.strerror})")
-    try:
-        return _read_regular_file(fd)
-    except OSError as exc:
-        return _LogRead(problem=f"cannot read {LOG_FILE} ({exc.strerror})")
-    finally:
-        os.close(fd)
-
-
-def _replay_env(inputs: OwnershipInputs, log_path: Path, probed: list[int] | None) -> dict[str, str]:
-    env = dict(inputs.env)
-    env[LSAN_OPTIONS] = f"{env[LSAN_OPTIONS]}:{REPORT_OBJECTS_OPTION}" if env.get(LSAN_OPTIONS) else REPORT_OBJECTS_OPTION
-    env[LOG_PATH_ENV] = str(log_path)
-    if probed is not None:
-        env[PROBED_EXITS_ENV] = ",".join(str(o) for o in probed)
-    return env
-
-
-def _run_program(session: _Session, index: int, case: TestCase, probed: list[int] | None):
-    ctx = session.inputs.ctx
-    stem = f"{index:02d}-{safe_name(case.name, 60) or 'case'}-{'probe' if probed is not None else 'record'}"
-    case_dir = session.out_root / "cases" / stem
-    case_dir.mkdir(parents=True)
-    log_path = Path(os.path.realpath(case_dir)) / LOG_FILE
-    proc = ctx.run(
-        [str(session.binary), *case.args],
-        limits=session.inputs.case_limits(case),
-        cwd=case_dir,
-        env_extra=_replay_env(session.inputs, log_path, probed),
-        stdin_data=case.stdin.encode("utf-8") if case.stdin is not None else None,
-        mounts=SandboxMounts(ro=[str(session.out_root)], rw=[str(case_dir)]),
-    )
-    session.invocations.append(proc.to_invocation(RUN_TOOL, ctx.run_dir, ctx.log_name(STAGE, f"ownership {stem}")))
-    (session.raw_root / f"{stem}.stderr.txt").write_text(redact(proc.stderr), encoding="utf-8")
-    return proc, log_path, stem
-
-
-def _replay(session: _Session, index: int, case: TestCase, probed: list[int] | None) -> _Replay:
-    proc, log_path, stem = _run_program(session, index, case, probed)
-    if proc.error or proc.timed_out or proc.output_truncated:
-        return _Replay(problem=f"replay of {case.name!r} did not complete ({proc.error or 'timeout or output limit'})")
-    log = _read_trace_log(log_path)
-    if log.problem:
-        return _Replay(problem=f"replay of {case.name!r}: {log.problem}")
-    (session.raw_root / f"{stem}.log.txt").write_text(redact(log.text), encoding="utf-8")
-    events = parse_events(log.text)
-    if isinstance(events, str):
-        return _Replay(problem=events)
-    run = build_trace(events)
-    if isinstance(run, str):
-        return _Replay(problem=run)
-    if probed is None:
-        leaked = leaked_objects_at_exit(proc.stderr)
-        return _Replay(problem=leaked) if isinstance(leaked, str) else _Replay(run=run, leaked_at_exit=leaked)
-    probes = leaked_objects_per_probe(proc.stderr, events)
-    return _Replay(problem=probes) if isinstance(probes, str) else _Replay(run=run, probes=probes)
-
-
 def _unsupported(inputs: OwnershipInputs, symbolizer: str | None) -> str | None:
     if inputs.ctx.spec.language.is_cpp:
         return "C++ allocations (operator new/delete) bypass the traced malloc family"
@@ -189,90 +86,125 @@ def _unsupported(inputs: OwnershipInputs, symbolizer: str | None) -> str | None:
     return None
 
 
-def _addresses(finding: OwnershipLossFinding, runs: list[TraceRun]) -> list[CodeAddress]:
-    sites = release_sites(runs, finding.allocation.site)[:MAX_RELEASE_SITES]
-    return [
-        CodeAddress(finding.allocation.site, True),
-        CodeAddress(finding.frame.function, False),
-        CodeAddress(finding.frame.call_site, True),
-        *(CodeAddress(s, True) for s in sites),
-    ]
+def _unique_findings(findings: list[OwnershipLossFinding]) -> list[OwnershipLossFinding]:
+    seen: dict[tuple, OwnershipLossFinding] = {}
+    for f in findings:
+        frame_key = (f.frame.function, f.frame.call_site) if f.frame else None
+        seen.setdefault((f.allocation.site, f.chain, f.loss, frame_key), f)
+    return list(seen.values())
 
 
-def _trace_for(case: str, finding: OwnershipLossFinding, runs: list[TraceRun], symbols: Symbolized) -> MemoryOwnershipTrace | None:
+def _addresses(session: _Session, finding: OwnershipLossFinding) -> list[CodeAddress]:
+    addresses = [CodeAddress(finding.allocation.site, True), *(CodeAddress(s, True) for s in finding.chain)]
+    if finding.frame is not None:
+        addresses += [CodeAddress(finding.frame.function, False), CodeAddress(finding.frame.call_site, True)]
+    addresses += [CodeAddress(s, True) for s in session.releases.get(finding.allocation.site, [])[:MAX_RELEASE_SITES]]
+    return addresses
+
+
+def _source_line(location: Location | None) -> tuple[str, int] | None:
+    return (location.file, location.line) if location and location.file and location.line else None
+
+
+def _released_at(session: _Session, finding: OwnershipLossFinding, symbols: Symbolized) -> list[Location]:
+    unique: dict[tuple, Location] = {}
+    for site in session.releases.get(finding.allocation.site, [])[:MAX_RELEASE_SITES]:
+        location = symbols.locations.get(CodeAddress(site, True))
+        if location is not None:
+            unique.setdefault((location.file, location.line, location.column, location.function), location)
+    return list(unique.values())
+
+
+def _candidate(session: _Session, case: str, finding: OwnershipLossFinding, symbols: Symbolized) -> TraceCandidate | None:
     allocation = symbols.locations.get(CodeAddress(finding.allocation.site, True))
-    function = symbols.functions.get(CodeAddress(finding.frame.function, False))
-    if allocation is None or function is None:
+    chain = [_source_line(symbols.locations.get(CodeAddress(s, True))) for s in finding.chain]
+    function = symbols.functions.get(CodeAddress(finding.frame.function, False)) if finding.frame else None
+    if allocation is None or any(line is None for line in chain) or (finding.frame is not None and function is None):
         return None
-    released = [
-        loc
-        for s in release_sites(runs, finding.allocation.site)[:MAX_RELEASE_SITES]
-        if (loc := symbols.locations.get(CodeAddress(s, True))) is not None
-    ]
-    return MemoryOwnershipTrace(
+    returned_to = None
+    if finding.frame is not None and not finding.inlined:
+        returned_to = symbols.locations.get(CodeAddress(finding.frame.call_site, True))
+    trace = MemoryOwnershipTrace(
         test_case=case,
         allocation=allocation,
-        released_at=released,
+        released_at=_released_at(session, finding, symbols),
         loss=finding.loss,
         function=function,
-        returned_to=symbols.locations.get(CodeAddress(finding.frame.call_site, True)),
+        returned_to=returned_to,
     )
+    return TraceCandidate(trace, (_source_line(allocation), *chain))
 
 
-def _same_site(trace: MemoryOwnershipTrace, failure: FailureReport) -> bool:
-    location = failure.location
-    return location is not None and (location.file, location.line) == (trace.allocation.file, trace.allocation.line)
+@dataclass
+class _CaseOutcome:
+    findings: list[OwnershipLossFinding] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
-def _attach(traces: list[MemoryOwnershipTrace], failures: list[FailureReport]) -> int:
-    attached = 0
-    for failure in failures:
-        trace = next((t for t in traces if _same_site(t, failure)), None)
-        if trace is not None and failure.ownership_trace is None:
-            failure.ownership_trace = trace
-            attached += 1
-    return attached
-
-
-def _loss_findings(session: _Session, index: int, case: TestCase, record: _Replay) -> list[OwnershipLossFinding] | str:
-    leaked = leaked_allocations(record.run, record.leaked_at_exit)
-    if not leaked:
-        return "the recording replay did not reproduce a leak allocated in instrumented code"
-    probe = _replay(session, index, case, probe_plan(record.run, leaked))
+def _loss_findings(session: _Session, index: int, case: TestCase, record: Replay) -> _CaseOutcome:
+    selection = leaked_allocations(record.run, record.leaked_at_exit.direct, record.leaked_at_exit.indirect)
+    outcome = _CaseOutcome()
+    if selection.indirect_only:
+        outcome.notes.append(f"{selection.indirect_only} indirect-only leak(s) not traced (reachable only from leaked blocks)")
+    if selection.dropped:
+        outcome.notes.append(f"{selection.dropped} further distinct leak(s) not traced (cap reached)")
+    if not selection.allocations:
+        outcome.notes.append("the recording replay did not reproduce a direct leak allocated in instrumented code")
+        return outcome
+    probe = replay(session.replays, index, case, probe_plan(record.run, selection.allocations))
     if probe.problem:
-        return probe.problem
-    return classify_losses(record.run, probe.run, leaked, probe.probes)
+        outcome.notes.append(probe.problem)
+        return outcome
+    findings = classify_losses(record.run, probe.run, selection.allocations, probe.probes)
+    if isinstance(findings, str):
+        outcome.notes.append(findings)
+        return outcome
+    outcome.findings = _unique_findings(findings)
+    return outcome
 
 
-def _trace_cases(session: _Session, targets: dict[str, list[FailureReport]], per_case: dict[str, str]) -> str | None:
-    cases = session.inputs.ctx.spec.tests.cases
-    records: dict[str, _Replay] = {}
-    budget_note = None
+def _trace_case(session: _Session, index: int, case: TestCase, record: Replay, failures: list[FailureReport]) -> list[str]:
+    outcome = _loss_findings(session, index, case, record)
+    if not outcome.findings or session.out_of_time():
+        return outcome.notes + ([BUDGET_EXHAUSTED] if session.out_of_time() else [])
+    addresses = [a for f in outcome.findings for a in _addresses(session, f)]
+    inputs = session.replays.inputs
+    symbols = symbolize(inputs.ctx, session.symbolizer, session.replays.binary, addresses, inputs.project_files)
+    session.replays.invocations.extend(symbols.invocations)
+    if symbols.problem:
+        return outcome.notes + [symbols.problem]
+    candidates = [c for f in outcome.findings if (c := _candidate(session, case.name, f, symbols)) is not None]
+    return outcome.notes + attach_traces(candidates, failures, inputs.project_files)
+
+
+def _record_all(session: _Session, cases: list[TestCase], targets: set[str]) -> tuple[dict[str, Replay], str | None]:
+    kept: dict[str, Replay] = {}
     for index, case in enumerate(cases):
-        if time.monotonic() > session.deadline:
-            budget_note = f"time budget exhausted after {len(records)} of {len(cases)} recording replays"
-            break
-        records[case.name] = _replay(session, index, case, None)
-    runs = [r.run for r in records.values() if r.run is not None]
+        if session.out_of_time():
+            return kept, f"{BUDGET_EXHAUSTED} after {index} of {len(cases)} recording replays"
+        record = replay(session.replays, index, case, None)
+        if record.run is not None:
+            session.add_releases(record.run)
+        if case.name in targets:
+            kept[case.name] = record
+    return kept, None
+
+
+def _trace_cases(session: _Session, targets: dict[str, list[FailureReport]], per_case: dict[str, list[str]]) -> str | None:
+    cases = session.replays.inputs.ctx.spec.tests.cases
+    records, budget_note = _record_all(session, cases, set(targets))
     for index, case in enumerate(cases):
+        if case.name not in targets:
+            continue
         record = records.get(case.name)
-        if case.name not in targets or record is None:
-            continue
-        if record.problem or time.monotonic() > session.deadline:
-            per_case[case.name] = record.problem or "time budget exhausted"
-            continue
-        findings = _loss_findings(session, index, case, record)
-        if isinstance(findings, str):
-            per_case[case.name] = findings
-            continue
-        addresses = [a for f in findings for a in _addresses(f, runs)]
-        symbols = symbolize(session.inputs.ctx, session.symbolizer, session.binary, addresses, session.inputs.project_files)
-        session.invocations.extend(symbols.invocations)
-        if symbols.problem:
-            per_case[case.name] = symbols.problem
-            continue
-        traces = [t for f in findings if (t := _trace_for(case.name, f, runs, symbols)) is not None]
-        per_case[case.name] = f"attached to {_attach(traces, targets[case.name])} leak failure(s)"
+        if record is None:
+            per_case[case.name] = [f"not recorded: {BUDGET_EXHAUSTED}"]
+        elif record.problem:
+            per_case[case.name] = [record.problem]
+        elif session.out_of_time():
+            per_case[case.name] = [BUDGET_EXHAUSTED]
+        else:
+            per_case[case.name] = _trace_case(session, index, case, record, targets[case.name])
     return budget_note
 
 
@@ -282,7 +214,7 @@ def attach_ownership_traces(
     targets = leak_failures_by_case(failures)
     if not targets:
         return
-    per_case: dict[str, str] = {}
+    per_case: dict[str, list[str]] = {}
     report: dict[str, object] = {"status": "", "cases": per_case}
     details[DETAILS_KEY] = report
     symbolizer = find_llvm_symbolizer(compiler(inputs.ctx), compiler_version(inputs.ctx))
@@ -301,9 +233,10 @@ def attach_ownership_traces(
     if build.binary is None:
         report["status"] = f"not traced: {build.problem}"
         return
-    deadline = time.monotonic() + ctx.timeout(BUDGET_S)
-    session = _Session(inputs, out_root, raw_root, build.binary, symbolizer, invocations, deadline)
+    replays = ReplaySession(inputs, out_root, raw_root, build.binary, invocations)
+    session = _Session(replays, symbolizer, time.monotonic() + ctx.timeout(BUDGET_S))
     budget_note = _trace_cases(session, targets, per_case)
-    report["status"] = "traced (evidence for the repair model, never part of the verdict)"
+    attached = sum(1 for f in failures if f.ownership_trace is not None)
+    report["status"] = f"{TRACED_STATUS}; evidence attached to {attached} of {sum(map(len, targets.values()))} leak failure(s)"
     if budget_note:
         report["budget"] = budget_note

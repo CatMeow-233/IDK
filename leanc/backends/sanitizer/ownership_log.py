@@ -22,6 +22,8 @@ _EVENT_RES = {
 _CHECK_RE = re.compile(rf"^C ({DECIMAL}) ({PHASE_IN}|{PHASE_AFTER}) ([01])$")
 _CHECK_MARKER_RE = re.compile(rf"^{CHECK_MARKER} ({DECIMAL}) ({PHASE_IN}|{PHASE_AFTER})$")
 _LEAKED_OBJECT_RE = re.compile(rf"^({HEX}) \({DECIMAL} bytes\)$")
+_LEAK_HEADER_RE = re.compile(r"^(Direct|Indirect) leak of ")
+DIRECT = "Direct"
 _REPORT_END_RE = re.compile(r"^SUMMARY: \w+Sanitizer: .*leaked in")
 
 
@@ -66,12 +68,30 @@ def parse_events(text: str) -> list[Event] | str:
     return events
 
 
-def _objects(lines: list[str]) -> frozenset[int] | str:
-    found = frozenset(int(m.group(1), 16) for line in lines if (m := _LEAKED_OBJECT_RE.match(line)))
-    return found if len(found) <= MAX_LEAKED_OBJECTS else f"more than {MAX_LEAKED_OBJECTS} leaked objects reported"
+@dataclass(frozen=True)
+class LeakedObjects:
+    direct: frozenset[int] = frozenset()
+    indirect: frozenset[int] = frozenset()
 
 
-def leaked_objects_at_exit(stderr: str) -> frozenset[int] | str:
+def _objects(lines: list[str]) -> LeakedObjects | str:
+    direct: set[int] = set()
+    indirect: set[int] = set()
+    kind = None
+    for line in lines:
+        header = _LEAK_HEADER_RE.match(line)
+        if header:
+            kind = header.group(1)
+            continue
+        found = _LEAKED_OBJECT_RE.match(line)
+        if found and kind is not None:
+            (direct if kind == DIRECT else indirect).add(int(found.group(1), 16))
+    if len(direct) + len(indirect) > MAX_LEAKED_OBJECTS:
+        return f"more than {MAX_LEAKED_OBJECTS} leaked objects reported"
+    return LeakedObjects(frozenset(direct), frozenset(indirect))
+
+
+def leaked_objects_at_exit(stderr: str) -> LeakedObjects | str:
     lines = stderr.splitlines()
     if any(_CHECK_MARKER_RE.match(line) for line in lines):
         return "a recording run printed probe markers"
@@ -114,5 +134,5 @@ def leaked_objects_per_probe(stderr: str, events: list[Event]) -> dict[ProbeKey,
         objects = _objects(report)
         if isinstance(objects, str):
             return objects
-        leaked[key] = objects
+        leaked[key] = objects.direct
     return leaked

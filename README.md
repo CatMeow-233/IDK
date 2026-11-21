@@ -164,12 +164,12 @@ For a LeakSanitizer failure in a C project, `ownership_trace` holds evidence fro
 
 - `allocation`: the allocation site.
 - `released_at`: where allocations from that site are freed on other paths.
-- `loss` and `function`: the function-level point at which the last reference disappeared. `loss` is one of:
-  - `inside-function`: gone before the function returned.
-  - `at-function-return`: gone when its frame ended.
-  - `after-return-by-caller`: a probe after the return still saw the block, so the caller dropped it.
-  - `at-or-after-return`: no later event could tell which.
-- `returned_to`: the call site the function returned to.
+- `loss` and `function`: an upper bound on when the last reference disappeared. Only a probe that lists the block as a Direct leak counts as evidence; a scan that still finds a pointer-like word proves nothing, because LeakSanitizer scans conservatively. `loss` is one of:
+  - `lost-during-call`: the block was allocated during the call to `function` and was already unreachable before `function` returned, so it was lost in `function` or a callee. This is the only strong claim.
+  - `unreachable-by-return`: no reference remained by the time `function` (not on the allocation stack) was about to return. This says nothing about where the block was lost.
+  - `unreachable-by-next-event`: the block was lost in `function` or its caller before the first traced event after `function` returned.
+  - `not-localised`: no probe found the block unreachable before the program exited. `released_at` is still reported.
+- `returned_to`: the call site `function` returned to. It is omitted when the callee was inlined.
 
 The repair prompt shows the same evidence with an explicit label. It does not identify which `return` statement ran.
 
