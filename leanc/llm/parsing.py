@@ -10,12 +10,13 @@ import yaml
 
 from leanc.foundation.errors import JSON_LOAD_ERRORS, ProviderError, WorkspaceError
 from leanc.foundation.redact import redact
-from leanc.foundation.text import lone_surrogate_paths
+from leanc.foundation.text import lone_surrogate_paths, nesting_depth_exceeds
 from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import GeneratedCode, RepairProposal, SpecDraft
 
 MAX_RESPONSE_CHARS = 4_000_000
 MAX_BRACE_POSITIONS_SCANNED = 2_000
+MAX_DOCUMENT_DEPTH = 64
 BYTE_ORDER_MARK = "﻿"
 
 _FENCE_RE = re.compile(r"(?P<fence>`{3,}|~{3,})[ \t]*(?P<tag>[A-Za-z0-9_+.-]*)[^\n]*\n(?P<body>.*?)(?P=fence)", re.S)
@@ -221,7 +222,9 @@ def _with_ignored_keys_note(notes: str, unknown: list[str]) -> str:
 
 
 def require_valid_unicode(obj: Any, where: str) -> None:
-    invalid = list(lone_surrogate_paths(obj))
+    if nesting_depth_exceeds(obj, MAX_DOCUMENT_DEPTH):
+        raise ProviderError(f"{where}: nested deeper than {MAX_DOCUMENT_DEPTH} levels")
+    invalid = lone_surrogate_paths(obj)
     if invalid:
         raise ProviderError(f"{where}: invalid Unicode (lone UTF-16 surrogate) at {', '.join(invalid[:5])}")
 

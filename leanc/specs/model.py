@@ -15,6 +15,7 @@ UNWINDSET_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*\.\d+$")
 PROVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.:+-]{1,40}$")
 LEAN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*(\.[A-Za-z_][A-Za-z0-9_']*)*$")
 MAX_UNWIND = 100000
+MAX_PATH_COMPONENT_BYTES = 200
 
 CheckName = Literal[
     "bounds",
@@ -88,9 +89,12 @@ def _model_text_problems(model: BaseModel, prefix: str) -> list[str]:
 
 def _validated_relpath(path: str) -> str:
     try:
-        return normalize_relpath(path)
+        clean = normalize_relpath(path)
     except WorkspaceError as exc:
         raise ValueError(str(exc)) from None
+    if any(len(part.encode("utf-8")) > MAX_PATH_COMPONENT_BYTES for part in clean.split("/")):
+        raise ValueError(f"path component longer than {MAX_PATH_COMPONENT_BYTES} bytes: {clean!r}")
+    return clean
 
 
 class _M(BaseModel):

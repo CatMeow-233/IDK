@@ -34,8 +34,9 @@ class ConfigError(LeanCError):
 YAML_LOAD_ERRORS: tuple[type[BaseException], ...] = (
     yaml.YAMLError,
     ValueError,
-    KeyError,
+    LookupError,
     AttributeError,
+    OverflowError,
     RecursionError,
 )
 JSON_LOAD_ERRORS: tuple[type[BaseException], ...] = (ValueError, RecursionError)

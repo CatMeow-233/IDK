@@ -13,6 +13,7 @@ from typing import Any, NamedTuple
 
 from leanc import __version__
 from leanc.foundation.errors import JSON_LOAD_ERRORS, ApprovalError, WorkspaceError
+from leanc.foundation.text import has_lone_surrogate
 from leanc.foundation.hashing import canonical_json, sha256_bytes
 from leanc.foundation.models import ApprovalCheck, utcnow
 from leanc.foundation.workspace import Workspace
@@ -281,6 +282,8 @@ def approve_spec(
 ) -> dict[str, Any]:
     if not approved_by.strip():
         raise ApprovalError("approver name is required")
+    if has_lone_surrogate(approved_by) or has_lone_surrogate(note):
+        raise ApprovalError("approver name and note must be valid Unicode text (not raw non-UTF-8 bytes)")
     key = load_key(create=True)
     assert key is not None
     content_hash = spec_hash(spec)

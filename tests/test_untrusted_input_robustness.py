@@ -12,7 +12,12 @@ from leanc.cli import main
 from leanc.foundation.errors import ConfigError, ProviderError, SpecError
 from leanc.foundation.text import safe_name, utf8_safe
 from leanc.llm.openai_compat import OpenAICompatProvider
-from leanc.llm.parsing import extract_json_object, parse_code_response, parse_repair_response
+from leanc.llm.parsing import (
+    extract_json_object,
+    parse_code_response,
+    parse_repair_response,
+    parse_spec_draft_response,
+)
 from leanc.pipeline.config import load_config
 from leanc.pipeline.generation import _untrusted_draft_data
 from leanc.specs.approval import _read_store, approvals_dir
@@ -77,6 +82,9 @@ def test_spec_allows_nul_in_test_stdin_and_expected_stdout():
         ("? [1]\n: 2\n", "spec.yaml"),
         ("{[1]: 2}\n", "spec.yaml"),
         ("[" * 100000, "spec.json"),
+        ("spec_id: !!int ''\n", "spec.yaml"),
+        ("spec_id: !!float\n", "spec.yaml"),
+        ("spec_id: " + ":".join(["59"] * 200) + ".0\n", "spec.yaml"),
     ],
 )
 def test_malformed_spec_documents_are_spec_errors(text, source):
@@ -209,3 +217,60 @@ def test_overlong_editable_path_keeps_integrity_gate_recorded(example_copy, caps
     stages = {s["stage"]: s["outcome"] for s in data["verification"]["stages"]}
     assert stages.get("integrity") == "PASS", stages
     assert rc == 20 and data["status"] == "UNKNOWN"
+
+
+DEEP = 1000
+
+
+def test_deeply_nested_llm_object_is_provider_error():
+    deep = "[" * DEEP + "]" * DEEP
+    with pytest.raises(ProviderError, match="nested deeper"):
+        parse_code_response('{"files": {"a.c": "int x;"}, "extra": ' + deep + "}")
+    with pytest.raises(ProviderError, match="nested deeper"):
+        parse_repair_response('{"root_cause": "x", "files": {"a.c": "int x;"}, "extra": ' + deep + "}")
+
+
+def test_deeply_nested_llm_spec_mapping_is_provider_error():
+    nested = '{"a": ' * 500 + "1" + "}" * 500
+    with pytest.raises(ProviderError, match="nested deeper"):
+        parse_spec_draft_response('{"spec_yaml": ' + nested + "}")
+
+
+def test_deeply_nested_llm_spec_yaml_is_provider_error():
+    with pytest.raises(ProviderError, match="nested deeper"):
+        _untrusted_draft_data("title: t\nextra: " + "[" * 350 + "]" * 350 + "\n", "r", "s1", "mock")
+
+
+@pytest.mark.parametrize("text", ["provider: !!int ''\n", "provider: !!float\n", "provider: " + ":".join(["59"] * 200) + ".0\n"])
+def test_project_config_scalar_overflows_are_config_errors(tmp_path, text):
+    (tmp_path / "leanc.yaml").write_text(text)
+    with pytest.raises(ConfigError, match="cannot parse"):
+        load_config(tmp_path)
+
+
+def test_outgoing_llm_messages_escape_lone_surrogates():
+    provider = OpenAICompatProvider("http://127.0.0.1:9/v1", None, "m")
+    messages = provider._messages_without_own_key([{"role": "user", "content": "sort \udcff"}])
+    assert json.dumps(messages, ensure_ascii=False).encode("utf-8")
+    assert messages[0]["content"] == "sort \\udcff"
+
+
+def test_llm_content_with_lone_surrogate_is_escaped_before_parsing():
+    provider = OpenAICompatProvider("http://127.0.0.1:9/v1", None, "m")
+    body = json.dumps({"choices": [{"message": {"content": "prose \ud83d {}"}, "finish_reason": "stop"}]})
+    content, _ = provider._extract_content(body)
+    assert content == "prose \\ud83d {}"
+
+
+def test_approver_with_raw_non_utf8_bytes_is_usage_error(example_copy, capsys):
+    spec = example_copy("safe_array_get") / "spec.yaml"
+    assert main(["spec", "approve", str(spec), "--by", "alice\udcff", "--yes"]) == 2
+    assert "valid Unicode" in capsys.readouterr().err
+
+
+def test_overlong_path_component_is_spec_error():
+    def mutate(data):
+        data["sources"]["editable"] = ["src/" + "a" * 251 + ".c"]
+
+    with pytest.raises(SpecError, match="path component longer than"):
+        parse_spec_text(_spec_json(mutate), source="spec.json")

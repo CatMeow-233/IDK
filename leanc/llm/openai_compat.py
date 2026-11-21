@@ -322,7 +322,7 @@ class OpenAICompatProvider(LLMProvider):
         self.last_transcript = path
 
     def _messages_without_own_key(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
-        return [{**m, "content": self._redact(m.get("content", ""))} for m in messages]
+        return [{**m, "content": utf8_safe(self._redact(m.get("content", "")))} for m in messages]
 
     def _request_body(self, messages: list[dict[str, str]], want_json: bool) -> dict[str, Any]:
         body: dict[str, Any] = {"model": self.model, "messages": self._messages_without_own_key(messages)}
@@ -481,7 +481,7 @@ class OpenAICompatProvider(LLMProvider):
         if not isinstance(content, str):
             raise ProviderError(f"LLM response content is not text ({type(content).__name__})")
         finish = choice.get("finish_reason")
-        return content, finish if isinstance(finish, str) else None
+        return utf8_safe(content), finish if isinstance(finish, str) else None
 
     def _complete(self, prompt: Prompt, purpose: str, parser: Callable[[str], Any]) -> Any:
         content, finish = self._chat(prompt, purpose, want_json=True)
