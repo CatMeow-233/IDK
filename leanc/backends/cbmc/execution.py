@@ -22,6 +22,12 @@ MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_LISTED_ITEMS = 3
 OUT_OF_MEMORY_MARKERS = ("out of memory", "bad_alloc", "cannot allocate memory", "memory exhausted")
 SIGNALS_HINTING_OUT_OF_MEMORY = (signal.SIGKILL, signal.SIGABRT, signal.SIGSEGV)
+INVARIANT_REPORT_BEGIN = "--- begin invariant violation report ---"
+INVARIANT_REPORT_END = "--- end invariant violation report ---"
+INVARIANT_FAILED_MARKER = "Invariant check failed"
+INVARIANT_REPORT_FIELDS = ("File:", "Condition:", "Reason:")
+MAX_INVARIANT_FIELD_CHARS = 300
+INTERNAL_ERROR_RULE = "cbmc-internal-error"
 
 ExpectedSection = Literal["result", "goals"]
 
@@ -134,6 +140,37 @@ def ran_out_of_memory(run: CbmcRun) -> bool:
     return any(marker in texts for marker in OUT_OF_MEMORY_MARKERS)
 
 
+def _invariant_report(text: str) -> str | None:
+    begin = text.find(INVARIANT_REPORT_BEGIN)
+    if begin < 0:
+        begin = text.find(INVARIANT_FAILED_MARKER)
+    if begin < 0:
+        return None
+    end = text.find(INVARIANT_REPORT_END, begin)
+    return text[begin:] if end < 0 else text[begin:end]
+
+
+def invariant_violation_excerpt(*texts: str) -> str | None:
+    for text in texts:
+        report = _invariant_report(text)
+        if report is None:
+            continue
+        fields = [
+            line.strip()[:MAX_INVARIANT_FIELD_CHARS]
+            for line in report.splitlines()
+            if line.strip().startswith(INVARIANT_REPORT_FIELDS)
+        ]
+        return "; ".join(fields) or INVARIANT_FAILED_MARKER
+    return None
+
+
+def _internal_error_problem(what: str, excerpt: str, signal_number: int | None) -> ToolProblem:
+    ending = f", killed by {_signal_name(signal_number)}" if signal_number is not None else ""
+    return ToolProblem(
+        Outcome.ERROR,
+        f"{what} failed with a CBMC internal error (invariant violation{ending}): {excerpt}; no verdict",
+        [Diagnostic(tool=TOOL, rule_id=INTERNAL_ERROR_RULE, severity="error", message=excerpt)],
+    )
 
 
 def _killed_problem(
@@ -193,9 +230,13 @@ def tool_problem(run: CbmcRun, limits: Limits, ctx: BackendContext, *, expect: E
         )
     out_of_memory = ran_out_of_memory(run)
     signal_number = trusted_tool_terminating_signal(proc)
+    section = output.results if expect == "result" else output.goals
+    if signal_number is not None or _verdicts_unusable(output, section):
+        invariant = invariant_violation_excerpt(proc.stderr, *output.error_texts())
+        if invariant is not None:
+            return _internal_error_problem(what, invariant, signal_number)
     if signal_number is not None:
         return _killed_problem(what, signal_number, out_of_memory, verification, output)
-    section = output.results if expect == "result" else output.goals
     if out_of_memory and _verdicts_unusable(output, section):
         return ToolProblem(
             Outcome.ERROR,

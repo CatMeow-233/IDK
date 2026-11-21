@@ -241,12 +241,22 @@ def test_undefined_target_function_is_inconclusive(tmp_path, needs_cbmc):
     assert any(d.rule_id == "no-body" and "arr_get" in d.message for d in res.diagnostics)
 
 
-def test_struct_inputs_and_undefined_helper(tmp_path, needs_cbmc):
+def test_undefined_helper_makes_its_violation_inconclusive(tmp_path, needs_cbmc):
     ctx = make_cbmc_project(tmp_path, src="point", harness="point_harness", function="point_ratio")
     res = run_cbmc(ctx)
-    assert res.outcome is Outcome.FAIL
+    assert res.outcome is Outcome.INCONCLUSIVE, res.summary
+    assert res.status is Status.UNKNOWN
+    assert "helper_without_body()" in res.summary
     assert any(d.rule_id == "no-body" and "helper_without_body" in d.message for d in res.diagnostics)
+    assert any(d.rule_id == "unmodelled-callee" and "division-by-zero" in d.message for d in res.diagnostics)
     assert any("helper_without_body" in a for a in res.details["assumptions"])
+    assert [f for f in res.failures if f.kind == "counterexample"] == []
+
+
+def test_struct_inputs_render_in_counterexample(tmp_path, needs_cbmc):
+    ctx = make_cbmc_project(tmp_path, src="point_defined_helper", harness="point_harness", function="point_ratio")
+    res = run_cbmc(ctx)
+    assert res.outcome is Outcome.FAIL, res.summary
     (f,) = _by_class(res, "division-by-zero")
     ins = _inputs(f)
     assert ins["q"].startswith("{.x=5, .y=") and ".tag={'a'," in ins["q"]
