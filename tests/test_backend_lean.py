@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends.lean import STANDARD_AXIOMS, parse_lean_messages, render_checker, run_lean
+from leanc.backends.lean import (
+    STANDARD_AXIOMS,
+    parse_lean_messages,
+    render_checker,
+    run_lean,
+)
 from leanc.backends.lean import gate as lean_gate
 from leanc.foundation.status import Outcome, Status
 from leanc.lang.lean_lexer import LeanSource

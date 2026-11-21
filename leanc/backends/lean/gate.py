@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 from leanc.backends.lean.checker import CHECKER_FILE, checker_reports, render_checker
-from leanc.backends.lean.messages import errors_of, message_diagnostic, message_location, parse_lean_messages
+from leanc.backends.lean.messages import (
+    errors_of,
+    message_diagnostic,
+    message_location,
+    parse_lean_messages,
+)
 from leanc.backends.lean.steps import (
     LEAN_HEAP_MB,
     MAX_LEAN_OUTPUT_BYTES,
@@ -21,9 +26,20 @@ from leanc.backends.lean.steps import (
     run_relative,
     signal_of,
 )
-from leanc.backends.lean.theorems import STANDARD_AXIOMS, TheoremResult, settle_theorem, unproved_theorem_failure
+from leanc.backends.lean.theorems import (
+    STANDARD_AXIOMS,
+    TheoremResult,
+    settle_theorem,
+    unproved_theorem_failure,
+)
 from leanc.backends.lean.vectors import VectorCheck
-from leanc.foundation.models import Diagnostic, FailureReport, Location, StageResult, ToolInvocation
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    StageResult,
+    ToolInvocation,
+)
 from leanc.foundation.status import Outcome, Status, outcome_to_status
 from leanc.rules.lean_rules import LeanLayout, lean_layout, lean_source_violations
 from leanc.toolchain.context import BackendContext

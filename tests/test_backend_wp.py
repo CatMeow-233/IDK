@@ -6,15 +6,21 @@ from pathlib import Path
 import pytest
 import yaml
 
-from leanc.backends.wp import gate as wp_gate
 from leanc.backends.counterexample import fingerprint
 from leanc.backends.wp import build_wp_argv, goal_kind, parse_console, run_wp
+from leanc.backends.wp import gate as wp_gate
 from leanc.foundation.runner import ProcResult
 from leanc.foundation.status import Outcome, Status
 from leanc.rules.source import source_violations
 from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext, make_context
-from leanc.toolchain.framac import INSTALL_HINT, MIN_FRAMAC_MAJOR, FramaC, find_framac, framac_version_key
+from leanc.toolchain.framac import (
+    INSTALL_HINT,
+    MIN_FRAMAC_MAJOR,
+    FramaC,
+    find_framac,
+    framac_version_key,
+)
 from leanc.toolchain.tools import tool_version
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"

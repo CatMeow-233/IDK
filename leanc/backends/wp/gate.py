@@ -17,9 +17,13 @@ from leanc.backends.wp.argv import (
     shell_unsafe_preprocessor_argument,
 )
 from leanc.backends.wp.assumptions import wp_assumptions
-from leanc.backends.wp.console import ConsoleSummary, contract_merge_warning, parse_console, warning_facts
+from leanc.backends.wp.console import (
+    ConsoleSummary,
+    contract_merge_warning,
+    parse_console,
+    warning_facts,
+)
 from leanc.backends.wp.failures import (
-    TOOL,
     SourceLines,
     contract_not_applied_failure,
     failure_diagnostic,
@@ -42,15 +46,32 @@ from leanc.backends.wp.installation import (
     tool_path,
     why3_config_provers,
 )
-from leanc.backends.wp.verdict import MAX_LISTED, ProofEvidence, Verdict, excerpt, final_verdict
-from leanc.foundation.models import Diagnostic, FailureReport, StageResult, ToolInvocation
+from leanc.backends.wp.verdict import (
+    MAX_LISTED,
+    ProofEvidence,
+    Verdict,
+    excerpt,
+    final_verdict,
+)
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    StageResult,
+    ToolInvocation,
+)
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome, outcome_to_status
 from leanc.lang.c_lexer import CSource
 from leanc.rules.acsl import TargetContract, acsl_violations, target_contracts
 from leanc.toolchain.context import BackendContext
-from leanc.toolchain.framac import INSTALL_HINT, MIN_FRAMAC_MAJOR, FramaC, find_framac, framac_version_key
+from leanc.toolchain.framac import (
+    INSTALL_HINT,
+    MIN_FRAMAC_MAJOR,
+    FramaC,
+    find_framac,
+    framac_version_key,
+)
 from leanc.toolchain.tools import tool_version
 
 STAGE = "wp"
