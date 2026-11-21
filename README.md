@@ -266,11 +266,11 @@ The script copies each example to a temporary project and approves it with a tem
 
 ## Developing Lean C
 
-Agent directives are in [`CLAUDE.md`](CLAUDE.md), and `tests/test_architecture.py` enforces them:
+The rules are declared in [`constraints.toml`](constraints.toml). It plays the role a yarn constraints file plays in a yarn project, and it is the single source of truth. `scripts/constraints.py` checks those rules, and `tests/test_architecture.py` runs the same engine. Agent directives are in [`CLAUDE.md`](CLAUDE.md); its layer block is generated from `constraints.toml`.
 
 - Strict one-way layering, an acyclic module graph, and top-level imports only:
   ```
-  foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < pipeline < cli
+  foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < pipeline < cli < __main__
   ```
   Shared code moves down. A package `__init__` may re-export only its own submodules.
 - No comments or docstrings in `leanc/`, `tests/` or `scripts/`. Express intent through names, constants, Enums and frozen dataclasses.
@@ -294,12 +294,23 @@ Agent directives are in [`CLAUDE.md`](CLAUDE.md), and `tests/test_architecture.p
 Checks:
 
 ```bash
+python scripts/constraints.py                       # all rules from constraints.toml; exit 1 on violations; --json
+python scripts/constraints.py --fix                 # remove comments/docstrings only if the AST stays identical; regenerate the CLAUDE.md layer block
 python scripts/affected_tests.py --run              # after a change: tests selected through the import graph vs HEAD
 python scripts/affected_tests.py --base main --run  # for a whole branch
-python -m pytest tests/test_architecture.py -q      # layering, cycles, comments, docstrings, handlers, file size
-python -m pytest -q                                 # full suite (~9 min), before merge/release
-python scripts/run_experiments.py                   # must report N/N
+python scripts/merge_gate.py                        # before creating or merging a PR (~20 min)
 ```
+
+`merge_gate.py` enforces fix → test → merge on the exact HEAD that will be merged. It runs these steps in order and stops at the first failure; there is no skip option:
+
+1. Fetch the base and require a clean tree that contains the base.
+2. Run `constraints.py`.
+3. Run the full suite.
+4. Run `run_experiments.py`, which must report N/N.
+5. Check `spec_hash` stability: every spec file unchanged since the base must hash identically under the base code and the HEAD code, so existing approvals keep working.
+6. Confirm that HEAD has not moved.
+
+On success it prints `MERGE GATE PASS <sha>`. Merge only that sha (use `expectedHeadSha` and a merge commit). Any new commit requires running the gate again.
 
 The full suite needs clang-18, CBMC and bwrap. WP tests need Frama-C >= 27 and Lean tests need Lean 4; when a tool is absent, its tests are skipped.
 

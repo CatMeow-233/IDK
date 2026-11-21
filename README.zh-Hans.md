@@ -266,11 +266,11 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 
 ## 开发 Lean C
 
-agent 指令写在 [`CLAUDE.md`](CLAUDE.md)，并由 `tests/test_architecture.py` 强制执行：
+规则声明在 [`constraints.toml`](constraints.toml) 中。它的作用相当于 yarn 项目里的 constraints 文件，是唯一的规则来源。`scripts/constraints.py` 检查这些规则，`tests/test_architecture.py` 运行的是同一个引擎。agent 指令写在 [`CLAUDE.md`](CLAUDE.md) 中，其中的分层区块由 `constraints.toml` 自动生成。
 
 - 严格的单向分层、无环的模块图，且只允许顶层 import：
   ```
-  foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < pipeline < cli
+  foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < pipeline < cli < __main__
   ```
   共享代码往下层移。包的 `__init__` 只能 re-export 自己的子模块。
 - `leanc/`、`tests/`、`scripts/` 中不得有注释或 docstring。意图要用名称、常量、Enum 与 frozen dataclass 表达。
@@ -294,12 +294,23 @@ agent 指令写在 [`CLAUDE.md`](CLAUDE.md)，并由 `tests/test_architecture.py
 检查：
 
 ```bash
+python scripts/constraints.py                       # 检查 constraints.toml 的全部规则；有违规时 exit 1；支持 --json
+python scripts/constraints.py --fix                 # 仅在 AST 不变时删除注释/docstring；重新生成 CLAUDE.md 的分层区块
 python scripts/affected_tests.py --run              # 修改后：按 import 图相对于 HEAD 选出受影响的测试
 python scripts/affected_tests.py --base main --run  # 整个分支
-python -m pytest tests/test_architecture.py -q      # 分层、循环、注释、docstring、handler、文件大小
-python -m pytest -q                                 # 完整测试（约 9 分钟），合并或发布前运行
-python scripts/run_experiments.py                   # 必须报告 N/N
+python scripts/merge_gate.py                        # 创建或合并 PR 之前运行（约 20 分钟）
 ```
+
+`merge_gate.py` 在即将被合并的那个 HEAD 上强制执行“修复 → 测试 → 合并”。它按以下顺序执行，第一个失败就停止，没有跳过选项：
+
+1. 获取基准分支，要求工作区干净且包含基准分支。
+2. 运行 `constraints.py`。
+3. 运行完整测试。
+4. 运行 `run_experiments.py`，必须报告 N/N。
+5. 检查 `spec_hash` 稳定性：自基准分支以来未改动的规格文件，用基准代码和 HEAD 代码算出的哈希必须相同，这样既有的批准才不会失效。
+6. 确认 HEAD 没有移动。
+
+成功时输出 `MERGE GATE PASS <sha>`。只合并这个 sha（使用 `expectedHeadSha` 和 merge commit）。之后有任何新 commit，都必须重新运行闸门。
 
 完整测试需要 clang-18、CBMC 与 bwrap；WP 测试需要 Frama-C >= 27，Lean 测试需要 Lean 4。缺少某个工具时，相关测试会被跳过。
 

@@ -1,0 +1,31 @@
+[package]
+name = "leanc"
+python_trees = ["leanc", "tests", "scripts"]
+excluded_dirs = ["fixtures", "__pycache__"]
+
+[layers]
+foundation = []
+specs = ["foundation"]
+lang = ["foundation"]
+rules = ["foundation", "specs", "lang"]
+toolchain = ["foundation", "specs"]
+reports = ["foundation"]
+llm = ["foundation", "specs"]
+backends = ["foundation", "specs", "lang", "rules", "toolchain"]
+repair = ["foundation", "specs", "lang", "rules"]
+pipeline = ["foundation", "specs", "lang", "rules", "toolchain", "reports", "llm", "backends", "repair"]
+cli = ["foundation", "specs", "lang", "rules", "toolchain", "reports", "llm", "backends", "repair", "pipeline"]
+__main__ = ["cli"]
+
+[source]
+max_file_lines = 600
+
+[exceptions]
+catch_all_types = ["Exception", "BaseException"]
+catch_all_entry_point = "leanc/cli.py:main"
+swallow_allowed = ["ProcessLookupError", "FileNotFoundError", "FileExistsError", "BlockingIOError", "BrokenPipeError"]
+
+[directives]
+file = "CLAUDE.md"
+layer_block_begin = "<!-- constraints:layers -->"
+layer_block_end = "<!-- /constraints:layers -->"
