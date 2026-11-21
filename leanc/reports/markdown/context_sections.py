@@ -1,5 +1,3 @@
-"""Report sections that frame a verdict: the verdict itself, its scope, the spec and approval, the environment."""
-
 from __future__ import annotations
 
 from leanc.foundation.models import ApprovalCheck, VerificationResult

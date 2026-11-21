@@ -61,8 +61,10 @@ def scope_assumptions(
         "checked property classes: "
         + ", ".join(verification.effective_checks())
         + " - plus every assertion of the approved harness; other properties are not checked",
-        f"inputs as constrained by the approved harness {verification.harness} (its LEANC_ASSUME preconditions) "
-        f"calling {ctx.spec.target.function}(); executions outside these constraints are not covered",
+        (
+            f"inputs as constrained by the approved harness {verification.harness} (its LEANC_ASSUME preconditions) "
+            f"calling {ctx.spec.target.function}(); executions outside these constraints are not covered"
+        ),
     ]
     statements += [
         "input bound (documented in the spec, enforced by the harness): " + _bound_text(bound)

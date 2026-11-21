@@ -1,5 +1,3 @@
-"""Verification statuses, stage outcomes and the rules for combining them (see docs/status-semantics.md)."""
-
 from __future__ import annotations
 
 from enum import Enum
@@ -24,8 +22,6 @@ class Status(str, Enum):
 
 
 class Outcome(str, Enum):
-    """Outcome of a single pipeline stage (gate)."""
-
     PASS = "PASS"
     FAIL = "FAIL"
     INCONCLUSIVE = "INCONCLUSIVE"
@@ -108,7 +104,6 @@ _STATUS_OF_UNDECIDED_OUTCOME: dict[Outcome, Status] = {
 
 
 def rank(status: Status) -> int:
-    """Lower rank = worse; REPAIR_EXHAUSTED ranks right after SPEC_UNAPPROVED, so it is never mistaken for success."""
     return _RANK_ORDER.index(status)
 
 
@@ -128,7 +123,6 @@ def exit_code(status: Status) -> int:
 
 
 def outcome_to_status(stage: str, outcome: Outcome) -> Status | None:
-    """Global status a stage outcome contributes; None for PASS (the controller handles passing formal stages)."""
     if outcome is Outcome.PASS:
         return None
     if outcome in _STATUS_OF_UNDECIDED_OUTCOME:

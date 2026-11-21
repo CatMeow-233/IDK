@@ -1,5 +1,3 @@
-"""Per-command plumbing: project root and spec resolution, options, provider, run directory and run record."""
-
 from __future__ import annotations
 
 import logging
@@ -35,7 +33,6 @@ UNSANDBOXED_WARNING = "leanc: WARNING: --allow-unsandboxed: untrusted test progr
 
 
 def is_unverified_generation(record: RunRecord) -> bool:
-    """A successful ``generate`` run: its record honestly says UNKNOWN (nothing was verified) yet it exits 0."""
     return record.command == "generate" and record.status is GENERATED_UNVERIFIED_STATUS
 
 
@@ -66,7 +63,6 @@ def _selected_gates(args) -> list[str] | None:
 
 
 def verify_options(args, root: Path) -> VerifyOptions:
-    """Verification options from the CLI flags; ``leanc.yaml`` can only choose the sandbox preference."""
     config = load_config(root)
     gates = _selected_gates(args)
     sandbox_preference = "none" if getattr(args, "no_sandbox", False) else config.sandbox
@@ -85,7 +81,6 @@ def verify_options(args, root: Path) -> VerifyOptions:
 
 
 def make_provider(args, root: Path, run_dir: Path) -> LLMProvider:
-    """The configured LLM provider; a ProviderError raised here is an input error (exit 2)."""
     config = load_config(root)
     name = getattr(args, "provider", None) or config.provider
     if getattr(args, "llm_timeout", None):
@@ -119,7 +114,6 @@ def new_run(root: Path, prefix: str) -> tuple[str, Path]:
 
 
 def record_aborted_run(message: str) -> None:
-    """Give a run directory created before an input error a run.json / report.md saying why it stopped."""
     run = _ACTIVE.run
     if run is None or (run.run_dir / "run.json").exists():
         return
@@ -168,7 +162,6 @@ def _payload(record: RunRecord, run_dir: Path, exit_status: int) -> dict:
 
 
 def finish_run(record: RunRecord, run_dir: Path, console: Console, *, exit_override: int | None = None) -> int:
-    """Write run.json and report.md, print the result and return the command's exit code."""
     record.finished_at = utcnow()
     record.artifacts.setdefault("run_json", "run.json")
     record.artifacts.setdefault("report_md", "report.md")

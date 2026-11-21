@@ -1,5 +1,3 @@
-"""The resolved toolchain of a verification run and the environment report (tool paths and versions)."""
-
 from __future__ import annotations
 
 import platform
@@ -22,7 +20,6 @@ class Toolchain:
     cbmc: str | None
     clang_version: str | None
     cbmc_version: str | None
-    #: clang++ matching ``clang`` (used for C++ specs; see leanc.toolchain.cxx)
     clangxx: str | None = None
     clangxx_version: str | None = None
 
@@ -41,22 +38,22 @@ def toolchain(preferred_compiler: str = "clang") -> Toolchain:
     )
 
 
+def _framac_info() -> ToolInfo:
+    fc = find_framac()
+    if fc is None:
+        return ToolInfo(name="frama-c", path=None, version=None, available=False)
+    return ToolInfo(name="frama-c", path=fc.frama_c, version=tool_version(fc.real, "-version"), available=True)
+
+
+def _lean_info() -> ToolInfo:
+    lean = find_lean()
+    if lean is None:
+        return ToolInfo(name="lean", path=None, version=None, available=False)
+    return ToolInfo(name="lean", path=lean.lean, version=lean.version, available=bool(lean.leanchecker))
+
+
 def _v2_tool_infos() -> list[ToolInfo]:
-    """Optional V2 tools (Frama-C/WP, Lean 4), reported for reproducibility."""
-    out: list[ToolInfo] = []
-    try:
-        fc = find_framac()
-        out.append(ToolInfo(name="frama-c", path=fc.frama_c if fc else None,
-                            version=tool_version(fc.real, "-version") if fc else None, available=bool(fc)))
-    except Exception:  # pragma: no cover - reporting only
-        pass
-    try:
-        lt = find_lean()
-        out.append(ToolInfo(name="lean", path=lt.lean if lt else None, version=lt.version if lt else None,
-                            available=bool(lt and lt.leanchecker)))
-    except Exception:  # pragma: no cover - reporting only
-        pass
-    return out
+    return [_framac_info(), _lean_info()]
 
 
 def environment_info(sandbox: Sandbox, tc: Toolchain | None = None) -> EnvironmentInfo:

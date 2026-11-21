@@ -1,5 +1,3 @@
-"""Find constructs in editable sources that could configure, suppress or detect the sanitizers judging them."""
-
 from __future__ import annotations
 
 import re
@@ -77,7 +75,6 @@ def _control_diagnostic(rel: str, line_number: int, line: str, match: re.Match) 
 
 
 def scan_sanitizer_control(snapshot: Path, editable: Iterable[str]) -> list[Diagnostic]:
-    """Constructs in editable sources that could switch sanitizer checks off or detect that they are on."""
     diagnostics: list[Diagnostic] = []
     for rel in editable:
         path = snapshot / rel

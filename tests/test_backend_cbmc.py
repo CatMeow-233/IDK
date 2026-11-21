@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends.cbmc import execution as cbmc_execution
 from leanc.backends.cbmc import (
     CHECK_FLAGS,
     build_cbmc_argv,
@@ -23,6 +22,7 @@ from leanc.backends.cbmc import (
     run_cbmc,
     strip_c_comments,
 )
+from leanc.backends.cbmc import execution as cbmc_execution
 from leanc.backends.counterexample import fingerprint
 from leanc.foundation.status import Outcome, Status
 from leanc.specs.model import CheckName, Spec

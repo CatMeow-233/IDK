@@ -1,5 +1,3 @@
-"""Counterexample-driven repair loop: propose, policy-check, deduplicate, verify in a snapshot, keep or revert."""
-
 from __future__ import annotations
 
 import json
@@ -44,8 +42,6 @@ _LINE_NUMBER_IN_FINGERPRINT_RE = re.compile(r"@(.*?):(?:\d+|\?):")
 
 @dataclass
 class RepairOutcome:
-    """Final workflow status (a success status, REPAIR_EXHAUSTED or the unrepairable status) and its evidence."""
-
     status: Status
     final: VerificationResult
     rounds: list[RepairRound] = field(default_factory=list)
@@ -73,7 +69,6 @@ def _inconclusive_failure_counter(vr: VerificationResult) -> Counter:
 
 
 def stage_regressions(before: VerificationResult, after: VerificationResult) -> list[str]:
-    """Required gates that lost their definite verdict, plus newly introduced unwind / vacuity failures."""
     regressions: list[str] = []
     for stage_before in before.stages:
         if stage_before.stage == "spec" or not stage_before.required or stage_before.outcome not in _DEFINITE_OUTCOMES:
@@ -93,7 +88,6 @@ def _required_gates(vr: VerificationResult) -> list[StageResult]:
 
 
 def all_gates_pass(vr: VerificationResult) -> bool:
-    """Every required gate passed: the repair goal for specs without a formal gate (never a success status)."""
     if vr.approval is not None and not vr.approval.approved:
         return False
     required = _required_gates(vr)
@@ -105,7 +99,6 @@ def _goal_reached(vr: VerificationResult) -> bool:
 
 
 def proof_repairable(vr: VerificationResult) -> bool:
-    """UNKNOWN only because WP / Lean proof obligations are still open while every other required gate passed."""
     if vr.status is not Status.UNKNOWN:
         return False
     still_open = [s for s in _required_gates(vr) if s.outcome is not Outcome.PASS]
@@ -120,7 +113,6 @@ def _is_proof_improvement(before: VerificationResult, after: VerificationResult)
 
 
 def is_improvement(before: VerificationResult, after: VerificationResult) -> bool:
-    """Keep a candidate that verifies, or a strictly better definite failure with no gate regression."""
     if _goal_reached(after):
         return True
     if proof_repairable(before):
@@ -449,7 +441,6 @@ def repair_loop(
     max_rounds: int | None = None,
     write_back: bool = True,
 ) -> RepairOutcome:
-    """Repair until a goal status or ``max_rounds``; only a candidate that reached the goal is written back."""
     options = options or VerifyOptions()
     max_rounds = spec.repair.max_rounds if max_rounds is None else max_rounds
     ws = Workspace(project_root)

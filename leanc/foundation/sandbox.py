@@ -1,5 +1,3 @@
-"""Bubblewrap sandbox detection and argv wrapping; ``kind="none"`` with a note when bwrap is missing or broken."""
-
 from __future__ import annotations
 
 import os
@@ -33,8 +31,6 @@ BWRAP_MISSING_NOTE = (
 
 @dataclass
 class SandboxMounts:
-    """Extra bind mounts.  Paths are bound at the same location inside."""
-
     ro: list[str] = field(default_factory=list)
     rw: list[str] = field(default_factory=list)
 
@@ -170,7 +166,6 @@ def _broken_bwrap(failed_probe: subprocess.CompletedProcess[bytes]) -> Sandbox:
 
 @lru_cache(maxsize=4)
 def detect_sandbox(preference: str = "auto") -> Sandbox:
-    """Return the best available sandbox for ``preference`` ``"auto"`` (bwrap if functional) or ``"none"``."""
     if preference == "none":
         return Sandbox(kind="none", note="sandbox disabled by configuration")
     executable = shutil.which("bwrap")
@@ -191,8 +186,6 @@ def detect_sandbox(preference: str = "auto") -> Sandbox:
 
 
 class NetworkIsolation(Enum):
-    """What a process inside the sandbox can see of the network (``leanc doctor``)."""
-
     BLOCKED = "blocked"
     VISIBLE = "VISIBLE"
     UNCONFIRMED = "COULD NOT CONFIRM isolation"
@@ -204,7 +197,6 @@ def _interface_names(proc_net_dev: bytes) -> list[str]:
 
 
 def network_probe_blocked(sandbox: Sandbox, work_dir: Path) -> NetworkIsolation:
-    """Probe whether a process in the sandbox sees no network interface other than loopback."""
     if not sandbox.active:
         return NetworkIsolation.UNCONFIRMED
     cat = shutil.which("cat") or "/usr/bin/cat"

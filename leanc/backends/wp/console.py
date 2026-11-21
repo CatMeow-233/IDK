@@ -1,5 +1,3 @@
-"""Frama-C console output: goal totals, warnings, errors, cache hits and the facts WP warnings reveal."""
-
 from __future__ import annotations
 
 import re
@@ -57,7 +55,6 @@ class WarningFacts:
 
 
 def parse_console(text: str) -> ConsoleSummary:
-    """Totals, warnings and errors from Frama-C's console output."""
     summary = ConsoleSummary()
     lines = text.splitlines()
     _read_last_totals(text, lines, summary)
@@ -120,13 +117,11 @@ def _record_message(message: str, summary: ConsoleSummary) -> None:
 
 
 def contract_merge_warning(console_text: str) -> str | None:
-    """Frama-C's report that it merged a second ACSL contract into an existing one, if it made one."""
     merge = _CONTRACT_MERGE_RE.search(console_text)
     return merge.group(0) if merge else None
 
 
 def warning_facts(warnings: list[str]) -> WarningFacts:
-    """Memory-model hypotheses and functions lacking code or specification, as WP warnings name them."""
     facts = WarningFacts()
     for warning in warnings:
         hypothesis = _MEMORY_MODEL_HYPOTHESIS_RE.search(warning)

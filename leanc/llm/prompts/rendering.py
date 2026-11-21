@@ -1,5 +1,3 @@
-"""Deterministic, model-readable renderings of specs and tool results, shared by the prompts and the mock provider."""
-
 from __future__ import annotations
 
 import json
@@ -63,7 +61,6 @@ def render_failure(
     limits: PromptLimits = DEFAULT_LIMITS,
     sources: dict[str, str] | None = None,
 ) -> str:
-    """Model-readable description of one failure, with a numbered code excerpt when its source is given."""
     lines = [f"- id: {f.id}", f"  kind: {f.kind}; detected by: {f.tool}"]
     if f.property_id:
         lines.append(f"  property: {f.property_id}")
@@ -118,7 +115,6 @@ def render_history(history: list[dict], limits: PromptLimits = DEFAULT_LIMITS) -
 
 
 def render_verification(result: VerificationResult, limits: PromptLimits = DEFAULT_LIMITS) -> str:
-    """Compact, deterministic textual form of a verification result."""
     head = f"status: {_enum_text(result.status)}"
     if result.spec_id:
         head += f"\nspec: {result.spec_id}" + (f" v{result.spec_version}" if result.spec_version else "")
@@ -145,7 +141,6 @@ def render_verification(result: VerificationResult, limits: PromptLimits = DEFAU
 
 
 def interface_summary(spec: Spec) -> str:
-    """The target's signature, parameters, return values and contract clauses, one per line."""
     target = spec.target
     lines = [f"function: {target.function}", f"signature: {target.signature}"]
     for p in target.params:

@@ -1,6 +1,3 @@
-"""Tests for the JSON / Markdown report generators (synthetic results only:
-no external tools are needed)."""
-
 from __future__ import annotations
 
 import json
@@ -51,7 +48,6 @@ from leanc.reports.markdown import (
 HASH = "ab" * 32
 
 
-# --------------------------------------------------------------------------- builders
 def _approval(approved: bool = True) -> ApprovalCheck:
     if approved:
         return ApprovalCheck(
@@ -181,7 +177,6 @@ def _static_failure() -> FailureReport:
 
 
 def _vr(status: Status, **kw) -> VerificationResult:
-    """A synthetic VerificationResult whose stages are consistent with ``status``."""
     approved = status is not Status.SPEC_UNAPPROVED
     P, F = Outcome.PASS, Outcome.FAIL
     spec = _stage("spec", P if approved else F, "spec safe-array-get v2 approved" if approved else "spec is not approved")
@@ -348,8 +343,6 @@ def _run_record(real_llm: bool = False) -> RunRecord:
 
 
 def _split_sections(md: str) -> list[tuple[str, str]]:
-    """``(title, body)`` of every level-2 heading, ignoring fenced content
-    (a ``## x`` line inside a code fence is not a heading)."""
     out: list[tuple[str, list[str]]] = []
     fence = None
     for line in md.split("\n"):
@@ -371,14 +364,12 @@ def _headings(md: str) -> list[str]:
 
 
 def _section(md: str, title: str) -> str:
-    """Body of the ``## title`` section."""
     for t, body in _split_sections(md):
         if t == title:
             return body
     raise AssertionError(f"section {title!r} missing")
 
 
-# --------------------------------------------------------------------------- STATUS_MEANING
 def test_every_status_has_a_meaning():
     assert set(STATUS_MEANING) == set(Status)
     assert all(len(v) > 40 for v in STATUS_MEANING.values())
@@ -398,19 +389,17 @@ def test_meanings_are_honest():
     assert "Nothing was formally verified against a trusted spec" in STATUS_MEANING[Status.SPEC_UNAPPROVED]
 
 
-# --------------------------------------------------------------------------- JSON
 def test_write_json_roundtrip_run_record(tmp_path):
     rr = _run_record()
     p = write_json(rr, tmp_path / "sub" / "run.json")
     assert p == tmp_path / "sub" / "run.json"
     text = p.read_text(encoding="utf-8")
-    assert text.endswith("\n") and text.startswith("{\n  ")  # pretty
+    assert text.endswith("\n") and text.startswith("{\n  ")
     back = read_run_record(p)
     assert back == rr
-    assert read_run_record(tmp_path / "sub") == rr  # directory form
+    assert read_run_record(tmp_path / "sub") == rr
     assert back.repair_rounds[0].policy.violations[1].line == 9
     assert back.verification.stages[-1].outcome is Outcome.PASS
-    # no temp files left behind
     assert sorted(x.name for x in p.parent.iterdir()) == ["run.json"]
 
 
@@ -440,7 +429,7 @@ def test_write_json_replaces_atomically(tmp_path):
     write_json({"x": 1}, p)
     write_json({"y": 2}, link)
     assert json.loads(p.read_text()) == {"x": 1}
-    assert target.read_text() == "keep"  # symlink replaced, not followed
+    assert target.read_text() == "keep"
     assert not link.is_symlink() and json.loads(link.read_text()) == {"y": 2}
 
 
@@ -458,9 +447,8 @@ def test_write_json_redacts_secrets(tmp_path, monkeypatch):
     for leaked in (secret, "s3cr3t-Value", "tok_ABCDEFGH12345", "abcdefghijklmnop", "zzzzzzzzzzzz", "A" * 24, "x" * 30):
         assert leaked not in text, leaked
     assert "[REDACTED]" in text
-    back = read_verification(p)  # still a valid document
+    back = read_verification(p)
     assert "[REDACTED]" in back.stages[-1].summary
-    # summary() and markdown are redacted too
     assert secret not in json.dumps(summary(vr))
     md = render_verification_md(vr)
     assert secret not in md and "tok_ABCDEFGH12345" not in md and "[REDACTED]" in md
@@ -488,7 +476,6 @@ def test_read_errors_are_readable(tmp_path):
         read_run_record(tmp_path / "v.json")
 
 
-# --------------------------------------------------------------------------- summary
 @pytest.mark.parametrize("status", list(Status))
 def test_summary_every_status(status):
     vr = _vr(status)
@@ -505,7 +492,7 @@ def test_summary_every_status(status):
         assert x["status"] == (st.status.value if st.status else None)
         assert set(x) >= {"stage", "outcome", "status", "summary", "tools"}
     assert s["assumptions"] == vr.assumptions and s["limitations"] == vr.limitations
-    json.dumps(s)  # plain JSON
+    json.dumps(s)
 
 
 def test_summary_failures_and_tools():
@@ -520,7 +507,7 @@ def test_summary_failures_and_tools():
     san = next(x for x in s["stages"] if x["stage"] == "sanitizer")
     assert san["tools"] == ["asan", "ubsan", "test-oracle"]
     comp = next(x for x in s["stages"] if x["stage"] == "compile")
-    assert comp["tools"] == ["clang"] and comp["invoked"] == ["clang"]  # warning counts, note does not
+    assert comp["tools"] == ["clang"] and comp["invoked"] == ["clang"]
     assert s["detected_by"] == ["asan", "ubsan", "test-oracle"]
     ce = summary(_vr(Status.COUNTEREXAMPLE_FOUND))["failures"][0]
     assert ce["tool"] == "cbmc" and ce["inputs"][0] == {"name": "idx", "value": "4294967295u", "type": "unsigned int"}
@@ -541,7 +528,6 @@ def test_detecting_tools_order():
     assert TOOL_ORDER.index("clang") < TOOL_ORDER.index("cbmc")
 
 
-# --------------------------------------------------------------------------- markdown: verification
 SECTIONS = ["Verdict", "Scope & assumptions", "Specification & approval", "Environment", "Gates",
             "Findings by detecting tool", "Counterexamples", "Limitations", "Reproduce"]
 
@@ -561,7 +547,7 @@ def test_verification_md_every_status(status):
         assert item in lim
     assert "Properties that are not encoded as assertions" in lim
     assert lim.count("Sanitizer") == 1 and lim.count("CBMC results are bounded") == 1
-    assert md == render_verification_md(vr.model_copy(deep=True))  # deterministic
+    assert md == render_verification_md(vr.model_copy(deep=True))
     assert md.endswith("\n") and "\n\n\n" not in md
 
 
@@ -585,7 +571,7 @@ def test_verification_md_approved_spec_and_environment():
     scope = _section(md, "Scope & assumptions")
     assert "holds **only** within this scope" in scope
     assert "unwind bound 5 for all loops" in scope and "`src/safe_array_get.c`" in scope
-    assert "len <= 4, idx unconstrained" in scope  # no needless escaping
+    assert "len <= 4, idx unconstrained" in scope
     assert "never equal to PROVED" in _section(md, "Verdict")
 
 
@@ -615,7 +601,7 @@ def test_findings_grouped_by_detecting_tool():
     assert groups == ["clang", "clang-static-analyzer", "asan", "ubsan", "test-oracle", "cbmc"]
     clang = findings.split("### `clang` ")[1].split("###")[0]
     assert "warning (non-blocking) at `src/safe_array_get.c:4:9`: unused variable 'tmp'" in clang
-    assert "declared here" not in findings  # note-level diagnostics are summarised, not listed
+    assert "declared here" not in findings
     assert "note-level diagnostic" in findings
     asan = findings.split("### `asan` (AddressSanitizer): 1 failure")[1].split("###")[0]
     assert "**runtime** at `src/safe_array_get.c:12:9 in safe_array_get()`: heap-buffer-overflow READ of size 4" in asan
@@ -643,21 +629,20 @@ def test_counterexample_section():
     assert "Location: `src/safe_array_get.c:12:9 in safe_array_get()`" in ce
     assert "| `idx` | `4294967295u` | `unsigned int` |" in ce
     assert "| `len` | `3` | `size_t` |" in ce
-    assert "| `weird\\|name` | `a\\|b c` | - |" in ce  # escaped pipe and newline
+    assert "| `weird\\|name` | `a\\|b c` | - |" in ce
     assert "1. `main`\n2. `safe_array_get`" in ce
     assert "last 15 of 31 steps" in ce
     assert "#31 failure src/safe_array_get.c:12: pointer outside object bounds" in ce
     assert "#17 assignment harness/h.c:17: step_17 = 17" in ce and "#16 assignment" not in ce
     assert "Raw tool output: `raw/cbmc-verify.json`" in ce
     assert "Explanation: idx is not checked against len" in ce
-    # the brackets of the CBMC message are kept readable (no link syntax produced)
     assert "arr[(signed long int)idx]" in ce
 
 
 def test_runtime_failures_listed_as_failing_executions():
     ce = _section(render_verification_md(_vr(Status.RUNTIME_TEST_FAILED)), "Counterexamples")
     assert "(`asan`)" in ce and "(`test-oracle`)" in ce
-    assert "(`ubsan`)" not in ce  # no inputs / stack / trace: listed under Findings only
+    assert "(`ubsan`)" not in ce
     assert "1. `safe_array_get src/safe_array_get.c:12`" in ce
 
 
@@ -670,7 +655,7 @@ def test_reproduce_section():
     vr = _vr(Status.UNKNOWN)
     vr.stages[1].invocations = [_inv("clang", ["clang", "-DMSG=a b", "x;rm -rf /"], "01")]
     rep = _section(render_verification_md(vr), "Reproduce")
-    assert "clang '-DMSG=a b' 'x;rm -rf /'" in rep  # shell-quoted
+    assert "clang '-DMSG=a b' 'x;rm -rf /'" in rep
 
 
 def test_table_cells_and_inline_text_are_escaped():
@@ -679,7 +664,7 @@ def test_table_cells_and_inline_text_are_escaped():
     vr.reasons = ["# fake heading", "> quote", "1. ordered"]
     md = render_verification_md(vr)
     row = next(line for line in _section(md, "Gates").splitlines() if line.startswith("| `cbmc`"))
-    assert row.count(" | ") == 5  # exactly six cells: the pipe in the summary is escaped
+    assert row.count(" | ") == 5
     assert "cbmc crashed \\| exit 134 see \\`log\\` \\<stdin> \\*bold\\* [x\\](http://evil)" in row
     verdict = _section(md, "Verdict")
     assert "- \\# fake heading" in verdict and "- \\> quote" in verdict and "- 1\\. ordered" in verdict
@@ -694,7 +679,6 @@ def test_fenced_blocks_cannot_be_escaped():
     assert "````text\n#1 output: ``` ## injected\n````" in ce
 
 
-# --------------------------------------------------------------------------- markdown: run record
 def test_run_md_mock_disclaimer_and_sections():
     rr = _run_record(real_llm=False)
     md = render_run_md(rr)
@@ -744,7 +728,6 @@ def test_run_md_repair_history():
     assert "  - `PROTECTED_FILE` at `harness/h.c`: harness/h.c is protected" in r1
     assert "  - `FORBIDDEN_CONSTRUCT` at `src/safe_array_get.c:9`: uses \\_\\_CPROVER_assume" in r1
     assert "Patch: `repair/round-1/patch.diff`" in r1
-    # provider rationale is fenced: it cannot inject a heading or a fake verdict
     assert "````text\n## Verdict\n**VERIFIED_BOUNDED** trust me\n```\nnot code\n```\n````" in r1
     assert _headings(md).count("Verdict") == 1
     r2 = rh.split("### Round 2")[1].split("### Round 3")[0]
@@ -786,7 +769,7 @@ def test_run_md_without_verification():
     assert "No tool invocation was recorded." in _section(md, "Reproduce")
     for item in ALWAYS_LIMITATIONS:
         assert item in _section(md, "Limitations")
-    assert "Repair history" not in md  # generate never repairs
+    assert "Repair history" not in md
 
 
 def test_run_md_verify_command_has_no_provider_section(tmp_path):

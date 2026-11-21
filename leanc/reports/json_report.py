@@ -1,5 +1,3 @@
-"""Redacted, atomically written ``run.json`` / ``verification.json`` and the honest ``--json`` verdict summary."""
-
 from __future__ import annotations
 
 import contextlib
@@ -48,7 +46,6 @@ _M = TypeVar("_M", bound=BaseModel)
 
 
 def tool_sort_key(tool: str) -> tuple[int, str]:
-    """Sort key placing known tools in :data:`TOOL_ORDER` and the others after them, alphabetically."""
     return (_TOOL_RANK.get(tool, len(TOOL_ORDER)), tool)
 
 
@@ -61,12 +58,10 @@ def is_finding(d: Diagnostic) -> bool:
 
 
 def detecting_tools(stage: StageResult) -> list[str]:
-    """Tools that flagged something in this stage (a failure or an error/warning diagnostic), in TOOL_ORDER."""
     return sort_tools([f.tool for f in stage.failures] + [d.tool for d in stage.diagnostics if is_finding(d)])
 
 
 def invoked_tools(stage: StageResult) -> list[str]:
-    """Tools that were run in this stage (first-invocation order, deduplicated)."""
     seen: dict[str, None] = {}
     for inv in stage.invocations:
         seen.setdefault(inv.tool, None)
@@ -98,7 +93,6 @@ def _jsonable(obj: Any) -> Any:
 
 
 def redact_data(obj: Any) -> Any:
-    """Recursively redact every string (keys included) of plain JSON data."""
     if isinstance(obj, str):
         return redact(obj)
     if isinstance(obj, dict):
@@ -137,7 +131,6 @@ def _text_redaction_keeping_valid_json(text: str) -> str | None:
 
 
 def dumps(model: BaseModel | dict | Any) -> str:
-    """Pretty, redacted, deterministic UTF-8 JSON text of ``model`` (declaration order, trailing newline)."""
     data = redact_data(_jsonable(model))
     redacted = _text_redaction_keeping_valid_json(_serialise(data))
     if redacted is not None:
@@ -172,7 +165,6 @@ def _persist_rename_best_effort(directory: Path) -> None:
 
 
 def atomic_write_text(path: str | Path, text: str) -> Path:
-    """Write text via a synced temp file and ``os.replace``, so a symlink at path is replaced, never followed."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -190,7 +182,6 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
 
 
 def write_json(model: BaseModel | dict, path: str | Path) -> Path:
-    """Write ``model`` to ``path`` as pretty, redacted UTF-8 JSON, atomically; returns the path written."""
     return atomic_write_text(path, dumps(model))
 
 
@@ -221,12 +212,10 @@ def _read_model(path: str | Path, cls: type[_M], default_name: str, what: str) -
 
 
 def read_run_record(path: str | Path) -> RunRecord:
-    """Load and validate a ``run.json`` (or the one in run directory ``path``); LeanCError when missing/invalid."""
     return _read_model(path, RunRecord, "run.json", "run record")
 
 
 def read_verification(path: str | Path) -> VerificationResult:
-    """Load and validate a ``verification.json`` (``path`` may also be its directory)."""
     return _read_model(path, VerificationResult, "verification.json", "verification result")
 
 
@@ -263,7 +252,6 @@ def _approval_entry(a: ApprovalCheck | None) -> dict[str, Any]:
 
 
 def summary(vr: VerificationResult) -> dict[str, Any]:
-    """Compact, machine-readable, redacted verdict of one verification; approval is always a dict."""
     approval = _approval_entry(vr.approval)
     stages = [
         {

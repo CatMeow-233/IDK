@@ -1,5 +1,3 @@
-"""Status vocabulary and controller aggregation rules (no external tools)."""
-
 from __future__ import annotations
 
 import pytest

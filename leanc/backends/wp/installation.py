@@ -1,5 +1,3 @@
-"""The Frama-C installation seen by the WP gate: tool PATH, provers, Why3 configuration and sandbox mounts."""
-
 from __future__ import annotations
 
 import os
@@ -46,7 +44,6 @@ def _is_inside_any(directory: str, mounts: list[str]) -> bool:
 
 
 def extra_read_only_mounts(fc: FramaC, provers: list[str]) -> list[str]:
-    """Directories outside ``/usr`` that Frama-C, Why3 and the provers need inside the sandbox."""
     mounts: list[str] = []
     why3_dir = os.path.dirname(os.path.realpath(fc.why3)) if fc.why3 else None
     for directory in [fc.prefix, why3_dir]:
@@ -62,7 +59,6 @@ def extra_read_only_mounts(fc: FramaC, provers: list[str]) -> list[str]:
 
 
 def why3_config_provers(conf_text: str) -> list[dict]:
-    """The ``[partial_prover]`` / ``[prover]`` sections of a Why3 configuration."""
     provers: list[dict] = []
     for section in _WHY3_SECTION_START_RE.split(conf_text):
         if not section.startswith(_WHY3_PROVER_SECTIONS):

@@ -1,5 +1,3 @@
-"""Parse clang driver, frontend, analyzer-text and linker output into diagnostics, and recognise compiler crashes."""
-
 from __future__ import annotations
 
 import os
@@ -74,7 +72,6 @@ def _base_dir_spellings(base_dir: Path) -> list[str]:
 
 
 def relative_to_base(path: str, base_dir: Path | None) -> str:
-    """``path`` relative to ``base_dir`` (POSIX form) when it lies inside it, otherwise normalised."""
     candidate = path.strip()
     if not candidate:
         return candidate
@@ -105,7 +102,6 @@ def _rule_from_option_item(item: str) -> str | None:
 
 
 def split_option_group(message: str) -> tuple[str, str | None]:
-    """Split a trailing ``[-Wflag]`` / ``[-Werror,-Wflag]`` / ``[checker.Name]`` group off a message."""
     match = _TRAILING_OPTION_GROUP_RE.match(message)
     if not match:
         return message, None
@@ -262,7 +258,6 @@ class _DiagnosticCollector:
 
 
 def parse_clang_diagnostics(text: str, tool: str = "clang", *, base_dir: Path | None = None) -> list[Diagnostic]:
-    """Parse clang and linker output; ``note:`` lines become path steps of the preceding diagnostic."""
     collector = _DiagnosticCollector(tool=tool, base_dir=base_dir)
     for raw_line in (text or "").splitlines():
         collector.feed(raw_line.rstrip("\r\n"))
@@ -284,7 +279,6 @@ def _has_crash_marker_outside_source_diagnostics(stderr: str) -> bool:
 
 
 def looks_like_crash(proc_stderr: str, signal: int | None, exit_code: int | None = None) -> bool:
-    """Whether clang itself crashed, as opposed to rejecting the input."""
     if crash_signal(signal, exit_code) is not None:
         return True
     return _has_crash_marker_outside_source_diagnostics(proc_stderr)

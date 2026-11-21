@@ -1,5 +1,3 @@
-"""Prompt container, context caps and the bounded-text helpers shared by every prompt builder."""
-
 from __future__ import annotations
 
 import re
@@ -21,8 +19,6 @@ _FENCE_LANGUAGES: tuple[tuple[tuple[str, ...], str], ...] = (
 
 @dataclass(frozen=True)
 class PromptLimits:
-    """Context caps in characters; the defaults keep a prompt well below ~100k tokens."""
-
     max_requirement_chars: int = 8_000
     max_spec_chars: int = 30_000
     max_file_chars: int = 40_000
@@ -50,7 +46,6 @@ class Prompt:
     user: str
 
     def messages(self) -> list[dict[str, str]]:
-        """OpenAI-style chat messages."""
         return [{"role": "system", "content": self.system}, {"role": "user", "content": self.user}]
 
     @property
@@ -63,7 +58,6 @@ def _head_length(limit: int) -> int:
 
 
 def truncate(text: str | None, limit: int, *, label: str = "text") -> str:
-    """Cut text to about limit characters, keeping head and tail around an explicit marker (never a silent cut)."""
     if not text:
         return ""
     if len(text) <= limit:
@@ -78,7 +72,6 @@ def truncate(text: str | None, limit: int, *, label: str = "text") -> str:
 
 
 def fence(content: str, lang: str = "") -> str:
-    """Markdown code block whose fence cannot be closed by the content."""
     longest = max((len(run) for run in re.findall(r"`+", content or "")), default=0)
     ticks = "`" * max(MIN_FENCE_TICKS, longest + 1)
     body = content if (content or "").endswith("\n") else (content or "") + "\n"
@@ -93,13 +86,11 @@ def fence_language(path: str) -> str:
 
 
 def finish_prompt(system: str, user: str, limits: PromptLimits) -> Prompt:
-    """Redacted prompt whose user part is capped at ``limits.max_prompt_chars``."""
     capped_user = truncate(user.strip() + "\n", limits.max_prompt_chars, label="prompt")
     return Prompt(system=redact(system.strip() + "\n"), user=redact(capped_user))
 
 
 def numbered_excerpt(content: str, line: int, radius: int = EXCERPT_RADIUS_LINES) -> str:
-    """Lines ``line-radius .. line+radius`` of content with line numbers, the marked line prefixed with ``>``."""
     lines = content.splitlines()
     if not lines or line < 1 or line > len(lines):
         return ""
@@ -113,7 +104,6 @@ def numbered_excerpt(content: str, line: int, radius: int = EXCERPT_RADIUS_LINES
 
 
 def render_files(files: dict[str, str], per_file: int, total: int, *, label: str) -> tuple[str, list[str]]:
-    """Fenced blocks of files under a shared character budget, plus the paths that had to be truncated."""
     out: list[str] = []
     truncated: list[str] = []
     budget = total

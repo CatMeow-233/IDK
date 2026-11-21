@@ -1,5 +1,3 @@
-"""Per-theorem results of the Lean gate and how the trusted checker's report settles each one."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -63,7 +61,6 @@ def _settle_unproved(theorem: TheoremResult, detail: str, failed_files: dict[str
 
 
 def settle_theorem(theorem: TheoremResult, report: dict, failed_files: dict[str, str]) -> None:
-    """Record the checker's verdict on ``theorem``; ``failed_files`` explains proofs that are not defined."""
     status = report.get("status")
     detail = str(report.get("detail") or "")
     axioms = [str(axiom) for axiom in report.get("axioms") or []]

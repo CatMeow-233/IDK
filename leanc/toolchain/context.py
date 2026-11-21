@@ -1,5 +1,3 @@
-"""Project discovery and the per-verification context handed to every backend."""
-
 from __future__ import annotations
 
 import os
@@ -8,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
+from typing import Literal
 
 from leanc.foundation.hashing import sha256_bytes
 from leanc.foundation.runner import Limits, ProcResult, minimal_env, run_command
@@ -18,10 +17,10 @@ from leanc.toolchain.environment import Toolchain, toolchain
 
 PROJECT_MARKER = "leanc.yaml"
 
+SandboxPreference = Literal["auto", "none"]
+
 
 def find_project_root(spec_path: Path) -> Path:
-    """Nearest ancestor of the spec containing ``leanc.yaml``; otherwise the
-    spec's own directory.  All paths inside a spec are relative to this root."""
     start = spec_path.resolve().parent
     for d in (start, *start.parents):
         if (d / PROJECT_MARKER).is_file():
@@ -30,7 +29,6 @@ def find_project_root(spec_path: Path) -> Path:
 
 
 def leanc_include_dir() -> Path:
-    """Directory holding ``leanc.h`` (package data)."""
     return Path(str(resources.files("leanc") / "data" / "include"))
 
 
@@ -45,26 +43,16 @@ def runs_dir(root: Path) -> Path:
 
 @dataclass
 class VerifyOptions:
-    allow_unsandboxed: bool = False  # permit dynamic execution without a sandbox (explicit opt-in)
-    sandbox_preference: str = "auto"  # "auto" | "none"
-    timeout_scale: float = 1.0  # multiply every tool timeout (CLI --timeout-scale)
-    gates: list[str] | None = None  # restrict to a subset (cannot add gates the spec lacks)
+    allow_unsandboxed: bool = False
+    sandbox_preference: SandboxPreference = "auto"
+    timeout_scale: float = 1.0
+    gates: list[str] | None = None
     fail_fast: bool = False
-    # Run the gates even if the spec is not approved (informational only: the
-    # overall status stays SPEC_UNAPPROVED).
     check_unapproved: bool = False
 
 
 @dataclass
 class BackendContext:
-    """Everything a backend needs.  Backends must:
-
-    * read inputs only from ``snapshot_dir`` (a verified copy of the project
-      files, laid out with the same relative paths as the workspace),
-    * write outputs only under ``build_dir`` / ``raw_dir`` / ``run_dir/logs``,
-    * execute tools via :meth:`run` (sandboxed, bounded, no shell).
-    """
-
     spec: Spec
     project_root: Path
     ws: Workspace
@@ -77,7 +65,6 @@ class BackendContext:
     options: VerifyOptions = field(default_factory=VerifyOptions)
     _counter: int = 0
 
-    # ---------------------------------------------------------------- helpers
     @property
     def include_dir(self) -> Path:
         return leanc_include_dir()
@@ -112,11 +99,6 @@ class BackendContext:
         sandboxed: bool = True,
         mounts: SandboxMounts | None = None,
     ) -> ProcResult:
-        """Run a tool.  ``sandboxed=True`` uses the sandbox when one is
-        available; callers that execute *untrusted programs* must additionally
-        check :meth:`may_execute_untrusted` first.  ``mounts`` replaces the
-        default bind set (:meth:`mounts`) so untrusted programs can be given
-        less than the tools (e.g. a single writable per-test directory)."""
         env = minimal_env(env_extra, home="/tmp")
         return run_command(
             argv,
@@ -149,12 +131,6 @@ def make_context(
     run_dir: Path,
     options: VerifyOptions | None = None,
 ) -> BackendContext:
-    """Create run directories and snapshot the project files the spec names.
-
-    The snapshot is what the tools see; hashes of the snapshot are what get
-    recorded (and what the approval check compares against), which closes the
-    time-of-check / time-of-use gap between checking and verifying.
-    """
     options = options or VerifyOptions()
     ws = Workspace(project_root)
     run_dir.mkdir(parents=True, exist_ok=True)

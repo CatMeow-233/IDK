@@ -1,5 +1,3 @@
-"""Unified-diff parsing/applying, proposal handling and diff statistics (leanc.repair.patch), no external tools."""
-
 from __future__ import annotations
 
 import random

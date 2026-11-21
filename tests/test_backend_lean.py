@@ -1,13 +1,6 @@
-"""Tests for the V2 Lean 4 model-proof gate (leanc.backends.lean) and the Lean
-proof-file policy (leanc.rules.lean_rules, hooked into leanc.repair.policy).
-
-Gate tests compile tiny Lean projects with the real toolchain inside the real
-sandbox and are skipped when Lean (or bwrap / clang for the vector tests) is
-missing; the policy and parser tests need no tools.
-"""
-
 from __future__ import annotations
 
+import dataclasses
 import json
 import shutil
 import textwrap
@@ -16,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from leanc.backends.lean import STANDARD_AXIOMS, parse_lean_messages, render_checker, run_lean
+from leanc.backends.lean import gate as lean_gate
 from leanc.foundation.status import Outcome, Status
 from leanc.lang.lean_lexer import LeanSource
 from leanc.repair.policy import RULES, check_candidate, check_generated
@@ -34,7 +28,6 @@ def needs_lean(needs_bwrap):
         pytest.skip("Lean 4 toolchain not installed")
 
 
-# ----------------------------------------------------------------------------- tiny project
 SPEC_LEAN = textwrap.dedent(
     """\
     namespace T
@@ -128,7 +121,6 @@ def unproved(res) -> dict[str, str]:
     return {f.property_id: f.description for f in res.failures if f.kind == "unproved"}
 
 
-# ============================================================================ gate: proofs
 def test_proved_theorems_pass(tmp_path, needs_lean):
     root, spec = project(tmp_path)
     res, ctx = gate(root, spec)
@@ -140,7 +132,6 @@ def test_proved_theorems_pass(tmp_path, needs_lean):
     (assumption,) = res.details["assumptions"]
     assert "MODEL" in assumption and "lean/Spec.lean" in assumption and "NOT linked" in assumption
     assert all(inv.sandbox == "bwrap" for inv in res.invocations)
-    # the trusted checker was generated into the build dir, never into the snapshot
     assert (ctx.build_dir / "lean" / "check" / "LeancCheck.lean").is_file()
     assert not list(ctx.snapshot_dir.rglob("*.olean"))
 
@@ -160,7 +151,6 @@ def test_sorry_proof_is_inconclusive(tmp_path, needs_lean):
 
 
 def test_wrong_statement_type_is_inconclusive(tmp_path, needs_lean):
-    # double_mono_proof proves a *different* (weaker) proposition than the approved statement
     proofs = GOOD_PROOFS.replace(
         "theorem double_mono_proof : double_mono := by\n  intro a b h; unfold double; omega",
         "theorem double_mono_proof : ∀ a : Nat, double a ≤ double a := by\n  intro a; exact Nat.le_refl _",
@@ -172,7 +162,6 @@ def test_wrong_statement_type_is_inconclusive(tmp_path, needs_lean):
 
 
 def test_unfolded_statement_is_accepted_by_the_kernel(tmp_path, needs_lean):
-    # stating the theorem with the definition unfolded is definitionally equal: accepted
     proofs = GOOD_PROOFS.replace(
         "theorem four_proof : four := by unfold four; decide", "theorem four_proof : (2 : Nat) + 2 = 4 := rfl"
     )
@@ -191,12 +180,11 @@ def test_missing_proof_constant_and_missing_file(tmp_path, needs_lean):
     root2, spec2 = project(tmp_path / "b", {"lean/Proofs.lean": GOOD_PROOFS, "lean/More.lean": "import Spec\n"})
     (root2 / "lean" / "More.lean").unlink()
     res2, _ = gate(root2, spec2)
-    assert res2.outcome is Outcome.PASS  # all proof constants live in the existing file
+    assert res2.outcome is Outcome.PASS
     assert res2.details["proof_files"]["lean/More.lean"] == "missing"
 
 
 def test_custom_axiom_is_never_accepted(tmp_path, needs_lean):
-    # even an axiom in the *trusted* spec file does not count as a proof
     spec_lean = SPEC_LEAN.replace("end T", "axiom cheat : False\n\nend T")
     proofs = GOOD_PROOFS.replace("intro a b h; unfold double; omega", "exact cheat.elim")
     root, spec = project(tmp_path, proofs, spec_lean=spec_lean)
@@ -207,13 +195,11 @@ def test_custom_axiom_is_never_accepted(tmp_path, needs_lean):
 
 
 def test_native_decide_is_never_accepted(tmp_path, needs_lean):
-    # native_decide in the trusted spec file (the policy forbids it in proof files)
     spec_lean = SPEC_LEAN.replace("end T", "theorem four_by_eval : four := by unfold four; native_decide\n\nend T")
     proofs = GOOD_PROOFS.replace("theorem four_proof : four := by unfold four; decide", "theorem four_proof : four := four_by_eval")
     root, spec = project(tmp_path, proofs, spec_lean=spec_lean)
     res, _ = gate(root, spec)
     assert res.outcome is Outcome.INCONCLUSIVE
-    # Lean 4.35 records each native_decide use as an auxiliary axiom (older versions: Lean.ofReduceBool)
     axioms = theorem(res, "four")["axioms"]
     assert any(a == "Lean.ofReduceBool" or "native_decide" in a for a in axioms), axioms
     assert "non-standard axioms" in unproved(res)["four"]
@@ -237,8 +223,8 @@ def test_gate_rejects_forbidden_constructs_without_compiling(tmp_path, needs_lea
     pol = [f for f in res.failures if f.kind == "policy"]
     assert pol and pol[0].tool == "leanc-policy" and pol[0].property_id == rule
     assert pol[0].location and pol[0].location.file == "lean/Proofs.lean" and pol[0].location.line
-    assert not any(s["step"].startswith("compile-lean/") for s in res.details["steps"])  # never executed
-    assert len(unproved(res)) == 3  # nothing was proved
+    assert not any(s["step"].startswith("compile-lean/") for s in res.details["steps"])
+    assert len(unproved(res)) == 3
 
 
 def test_proof_compile_error_only_affects_that_file(tmp_path, needs_lean):
@@ -260,7 +246,7 @@ def test_proof_compile_error_only_affects_that_file(tmp_path, needs_lean):
 def test_unapproved_layout_and_spec_errors_are_tool_errors(tmp_path, needs_lean):
     root, spec = project(tmp_path, theorems=[{"name": "nope", "statement": "T.double", "proof": "T.P.four_proof"}])
     res, _ = gate(root, spec)
-    assert res.outcome is Outcome.ERROR and "not a `Prop`" in res.summary  # a human must fix the spec
+    assert res.outcome is Outcome.ERROR and "not a `Prop`" in res.summary
 
     root2, spec2 = project(tmp_path / "b", spec_lean="namespace T\ndef oops : Prop := Nat\nend T\n")
     res2, _ = gate(root2, spec2)
@@ -268,9 +254,6 @@ def test_unapproved_layout_and_spec_errors_are_tool_errors(tmp_path, needs_lean)
 
 
 def test_compile_time_io_is_sandboxed(tmp_path, needs_lean):
-    """Lean runs `#eval` at compile time.  In the (trusted) spec file it is
-    allowed, but it still runs in the sandbox: no network, no writes outside
-    the step's output directory.  (In a proof file the policy rejects it.)"""
     outside = tmp_path / "pwned.txt"
     snapshot_spec = tmp_path / "proj" / ".leanc" / "run" / "snapshot" / "lean" / "Spec.lean"
     probe = textwrap.dedent(
@@ -294,17 +277,15 @@ def test_compile_time_io_is_sandboxed(tmp_path, needs_lean):
     assert res.outcome is Outcome.PASS, res.summary
     step = next(s for s in res.details["steps"] if s["step"] == "compile-spec")
     text = (ctx.run_dir / step["raw"]).read_text()
-    # /tmp inside the sandbox is a private tmpfs: a "successful" write there never reaches the host
     assert "WRITE-OUTSIDE" in text and not outside.exists()
     assert "WRITE-PROJECT-FAILED" in text and "WRITE-PROJECT-OK" not in text
-    assert "WRITE-SNAPSHOT-FAILED" in text and "WRITE-SNAPSHOT-OK" not in text  # snapshot is read-only
+    assert "WRITE-SNAPSHOT-FAILED" in text and "WRITE-SNAPSHOT-OK" not in text
     assert (root / "lean" / "Spec.lean").read_text().startswith("namespace T")
     assert snapshot_spec.read_text().startswith("namespace T")
     netdev = json.loads(next(ln for ln in text.splitlines() if "NETDEV" in ln))["data"]
     ifaces = [ln.split(":", 1)[0].strip() for ln in netdev.splitlines()[1:] if ":" in ln]
-    assert ifaces == ["lo"]  # no network interface but loopback
+    assert ifaces == ["lo"]
 
-    # the same probe in an editable proof file never runs: the policy rejects it
     root2, spec2 = project(tmp_path / "b", GOOD_PROOFS + probe)
     res2, _ = gate(root2, spec2)
     assert res2.outcome is Outcome.INCONCLUSIVE
@@ -329,7 +310,6 @@ def test_lean_discovery_via_env(monkeypatch, needs_lean):
     assert find_lean() == tc and tc.version and tc.leanchecker
 
 
-# ============================================================================ gate: vectors
 @pytest.fixture
 def clamp_project(tmp_path, needs_lean, needs_clang):
     root = tmp_path / "lean_clamp"
@@ -358,7 +338,7 @@ def test_vector_mismatch_is_fail(clamp_project):
     assert mism and all(f.kind == "test-oracle" and f.property_id == "vector-mismatch" for f in mism)
     names = {i.name for i in mism[0].inputs}
     assert {"x", "lo", "hi", "expected"} <= names
-    assert all(t["proved"] for t in res.details["theorems"])  # the model is fine; the C code is not
+    assert all(t["proved"] for t in res.details["theorems"])
 
 
 def test_driver_must_report_vector_count(clamp_project):
@@ -369,7 +349,6 @@ def test_driver_must_report_vector_count(clamp_project):
     assert res.outcome is Outcome.ERROR and "LEANC-VECTORS-CHECKED" in res.summary
 
 
-# ============================================================================ controller
 def _approve_and_verify(root: Path, capsys) -> dict:
     from leanc.cli import main
 
@@ -381,9 +360,8 @@ def _approve_and_verify(root: Path, capsys) -> dict:
 
 def test_lean_pass_never_upgrades_to_proved(clamp_project, capsys, needs_cbmc):
     data = _approve_and_verify(clamp_project, capsys)
-    assert data["status"] == "VERIFIED_BOUNDED"  # CBMC is the formal C gate; Lean is model-level
+    assert data["status"] == "VERIFIED_BOUNDED"
 
-    # without a formal C gate a passing lean gate cannot even give VERIFIED_BOUNDED
     spec = clamp_project / "spec.yaml"
     spec.write_text(spec.read_text().replace("gates: [compile, static_analysis, sanitizer, cbmc, lean]",
                                              "gates: [compile, sanitizer, lean]").replace("version: 1", "version: 2"))
@@ -404,7 +382,6 @@ def test_sorry_proofs_are_proof_repairable(tmp_path, capsys, needs_lean, needs_t
     assert vr.status is Status.UNKNOWN and proof_repairable(vr)
 
 
-# ============================================================================ policy (no tools needed)
 PROOF_SPEC = make_spec(proofs=["lean/Proofs.lean"])
 P = "lean/Proofs.lean"
 
@@ -465,7 +442,7 @@ def test_forbidden_lean_constructs(snippet, rule):
         ("import Std.Data.HashMap", True),
         ("import Lean", False),
         ("import Mathlib.Tactic", False),
-        ("import Proofs", False),  # a file cannot import itself
+        ("import Proofs", False),
         ("prelude\nimport Spec", False),
         ("module\nimport Spec", False),
         ("public import Spec", False),
@@ -506,26 +483,20 @@ def test_allowed_lean_constructs_have_no_false_positives():
 def test_policy_hook_treats_proofs_as_editable_and_applies_lean_rules():
     spec = PROOF_SPEC
     old = {"src/f.c": '#include "f.h"\nint f(int x) { return x; }\n', P: GOOD_PROOFS.replace("by unfold four; decide", "by sorry")}
-    # removing a sorry is fine, and C content rules never run on .lean text (system( / __CPROVER_ in comments)
     new = dict(old)
     new[P] = GOOD_PROOFS + "-- system(\"x\") __CPROVER_assume(0) #pragma GCC\n"
     d = check_candidate(spec, old, new)
     assert d.allowed, d.violations
-    # adding a sorry is not
     new[P] = old[P].replace("intro n; unfold double; omega", "sorry")
     d = check_candidate(spec, old, new)
     assert not d.allowed and [v.rule for v in d.violations] == ["LEAN_SORRY"]
     assert d.violations[0].file == P and d.violations[0].line
-    # forbidden Lean constructs are absolute rules
     new[P] = GOOD_PROOFS + "\naxiom x : False\n"
     assert {v.rule for v in check_candidate(spec, old, new).violations} == {"LEAN_AXIOM"}
-    # the trusted spec file is protected
     new = dict(old)
     new["lean/Spec.lean"] = "-- weakened\n"
     d = check_candidate(spec, old, new)
     assert [v.rule for v in d.violations] == ["PATH_NOT_EDITABLE"] and "protected" in d.violations[0].message
-    # generated Lean files: absolute rules only (placeholders are allowed: the gate never accepts sorryAx);
-    # the C target rules ignore .lean files
     g = check_generated(spec, {"src/f.c": old["src/f.c"], P: GOOD_PROOFS})
     assert g.allowed, g.violations
     assert check_generated(spec, {"src/f.c": old["src/f.c"], P: old[P]}).allowed
@@ -553,7 +524,6 @@ def test_checker_rendering_and_message_parsing():
     assert len(msgs) == 1 and other == ["noise", "{bad json"]
 
 
-# ============================================================================ defence in depth
 FORGED = textwrap.dedent(
     """\
     import Spec
@@ -572,14 +542,9 @@ FORGED = textwrap.dedent(
 
 
 def test_forged_declaration_is_caught_by_kernel_replay(tmp_path, needs_lean, monkeypatch):
-    """Simulate a policy bypass: a proof file that adds a 'theorem' without
-    kernel checking.  The trusted checker alone would accept it (it trusts the
-    imported .olean); the independent leanchecker replay rejects the module."""
-    import leanc.backends.lean as lean_backend
-
     assert {v.rule for v in lean_source_violations(PROOF_SPEC, P, FORGED)} >= {"LEAN_IMPORT", "LEAN_OPTION",
                                                                                "LEAN_METAPROGRAM"}
-    monkeypatch.setattr(lean_backend, "lean_source_violations", lambda *a, **k: [])
+    monkeypatch.setattr(lean_gate, "lean_source_violations", lambda *a, **k: [])
     root, spec = project(tmp_path, FORGED)
     res, _ = gate(root, spec)
     assert res.outcome is Outcome.INCONCLUSIVE
@@ -590,12 +555,8 @@ def test_forged_declaration_is_caught_by_kernel_replay(tmp_path, needs_lean, mon
 
 
 def test_no_pass_without_kernel_replay(tmp_path, needs_lean, monkeypatch):
-    import dataclasses
-
-    import leanc.backends.lean as lean_backend
-
     tc = dataclasses.replace(find_lean(), leanchecker=None)
-    monkeypatch.setattr(lean_backend, "find_lean", lambda: tc)
+    monkeypatch.setattr(lean_gate, "find_lean", lambda: tc)
     root, spec = project(tmp_path)
     res, _ = gate(root, spec)
     assert res.outcome is Outcome.ERROR and "leanchecker" in res.summary and "refusing to PASS" in res.summary
@@ -607,16 +568,12 @@ def test_budget_exhaustion_is_timeout(tmp_path, needs_lean):
         "set_option maxHeartbeats 0 in\nset_option maxRecDepth 100000 in\n"
         "theorem slow : (List.range 20000).foldl (· + ·) 0 = 199990000 := by decide\nend T.P",
     )
-    root, spec = project(tmp_path, slow, timeout_s=0.1)  # ctx.timeout() rounds up to 1 s
+    root, spec = project(tmp_path, slow, timeout_s=0.1)
     res, _ = gate(root, spec)
     assert res.outcome is Outcome.TIMEOUT and res.status is Status.TIMEOUT
 
 
 def test_proof_module_cannot_shadow_checker_or_spec_names(tmp_path, needs_lean):
-    """A proof file that (without importing the spec) redefines a model function
-    or a name the trusted checker uses makes the checker's imports clash: Lean
-    refuses to merge environments with duplicate declarations, so nothing is
-    proved (fail-safe), instead of the forged definition being used."""
     forged = textwrap.dedent(
         """\
         namespace Lean.Json

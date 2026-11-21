@@ -1,5 +1,3 @@
-"""Extraction and validation of model JSON answers: tolerates fences, prose and raw newlines, never guesses."""
-
 from __future__ import annotations
 
 import json
@@ -29,7 +27,6 @@ class _Decoding(Enum):
 
 
 def excerpt(text: str, limit: int = 300) -> str:
-    """Short, redacted, single-line excerpt of a response for error messages."""
     s = redact(text or "").strip().replace("\r", "")
     s = re.sub(r"\s+", " ", s)
     return s if len(s) <= limit else s[:limit] + "..."
@@ -89,7 +86,6 @@ def _answered_with_json_array(body: str) -> bool:
 
 
 def extract_json_object(text: str, *, expect_keys: Iterable[str] = ()) -> dict[str, Any]:
-    """The first candidate object (whole text, fences, embedded) having all expect_keys, else the first object."""
     if not isinstance(text, str):
         raise ProviderError(f"model response is not text (got {type(text).__name__})")
     if len(text) > MAX_RESPONSE_CHARS:
@@ -121,7 +117,6 @@ def check_keys(
     strict: bool = False,
     where: str = "response",
 ) -> list[str]:
-    """Check that the required keys are present and return the unknown ones (an error when strict)."""
     if not isinstance(obj, dict):
         raise ProviderError(f"{where}: expected a JSON object, got {type(obj).__name__}")
     req = list(required)
@@ -144,7 +139,6 @@ def expect_str(
     allow_empty: bool = True,
     where: str = "response",
 ) -> str:
-    """``obj[key]`` as a string (a list of strings joined by newlines; null/absent gives default unless required)."""
     if key not in obj or obj[key] is None:
         if required:
             raise ProviderError(f"{where}: missing required string {key!r}")
@@ -160,7 +154,6 @@ def expect_str(
 
 
 def strip_code_fence(content: str) -> str:
-    """Remove one markdown fence wrapping an entire value (models sometimes fence code inside a JSON string)."""
     s = content.strip()
     match = re.fullmatch(r"(`{3,}|~{3,})[^\n]*\n(.*?)\n?\1", s, re.S)
     if match:
@@ -190,7 +183,6 @@ def expect_files(
     clean: bool = True,
     where: str = "response",
 ) -> dict[str, str] | None:
-    """Validate a ``{relative path: full content}`` map (None when absent/empty and not required)."""
     value = obj.get(key)
     if value is None or value == {}:
         if required:
@@ -263,7 +255,6 @@ def spec_draft_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str =
 
 
 def repair_proposal_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> RepairProposal:
-    """Validate a repair answer whose change is in exactly one of files/patch (neither: no change, with a note)."""
     where = "repair response"
     if strict:
         check_keys(obj, required=REPAIR_KEYS, optional=REPAIR_OPTIONAL, strict=True, where=where)

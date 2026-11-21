@@ -1,5 +1,3 @@
-"""The Frama-C/WP gate run: the only gate whose PASS lets the controller report PROVED."""
-
 from __future__ import annotations
 
 import json

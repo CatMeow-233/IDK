@@ -85,8 +85,10 @@ def _format_inputs(inputs: Iterable[CounterexampleInput], limit: int = MAX_EXPLA
 
 def _explain_violation(failure: FailureReport, where: str) -> str:
     parts = [
-        f"CBMC found an execution of the approved harness that violates property "
-        f"{failure.property_id or '?'} ({failure.description}){where}."
+        (
+            f"CBMC found an execution of the approved harness that violates property "
+            f"{failure.property_id or '?'} ({failure.description}){where}."
+        )
     ]
     hint = _hint(property_class(failure.property_id, failure.description), failure.description)
     if hint:
@@ -105,8 +107,10 @@ def _explain_insufficient_unwind(failure: FailureReport, where: str, unwind: int
     unwound = "recursion" if property_class(failure.property_id, failure.description) == "recursion" else "loop"
     bound = f"the unwind bound {unwind}" if unwind is not None else "the unwind bound"
     parts = [
-        f"CBMC's unwinding assertion {failure.property_id or '?'} for the {unwound}{where} failed: some execution "
-        f"allowed by the harness needs more iterations than {bound} permits."
+        (
+            f"CBMC's unwinding assertion {failure.property_id or '?'} for the {unwound}{where} failed: some execution "
+            f"allowed by the harness needs more iterations than {bound} permits."
+        )
     ]
     if failure.inputs:
         parts.append(f"For example: {_format_inputs(failure.inputs)}.")

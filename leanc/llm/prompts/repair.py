@@ -1,5 +1,3 @@
-"""Prompt for one repair round: hard rules, tool evidence and the protected context the agent must not change."""
-
 from __future__ import annotations
 
 from leanc.llm.base import RepairRequest

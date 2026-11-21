@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from leanc.foundation.models import Diagnostic, FailureReport, Location, PolicyViolation, StageResult, ToolInvocation
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    PolicyViolation,
+    StageResult,
+    ToolInvocation,
+)
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits
 from leanc.foundation.status import Outcome, Status, outcome_to_status
@@ -27,10 +34,10 @@ from leanc.rules.c_rules import (
 from leanc.rules.cpp_rules import (
     CPP_ALLOWED_RUNTIME_IMPORTS,
     CPP_RULES,
-    _defines_target,
     check_cpp_object_symbols,
     cpp_preprocessed_violations,
     cpp_source_violations,
+    defines_target,
     header_facts,
 )
 from leanc.rules.findings import violation
@@ -78,7 +85,7 @@ CPP_RUNTIME_IMPORT_FAMILIES = (
 
 _STACK_DIAG_RE = re.compile(
     r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
-    re.M,
+    re.MULTILINE,
 )
 
 
@@ -175,7 +182,7 @@ class _IntegrityGate(ABC):
     def symbol_violations(self, rel: str, checked: _CheckedFile, elsewhere: set[str]) -> list[PolicyViolation]: ...
 
     @abstractmethod
-    def defines_target(self, symbols: list) -> bool: ...
+    def object_defines_target(self, symbols: list) -> bool: ...
 
     @abstractmethod
     def missing_target_message(self) -> str: ...
@@ -308,7 +315,7 @@ class _IntegrityGate(ABC):
                 self.violations += self.symbol_violations(rel, file, _defined_elsewhere(defined_per_file, rel))
         every_file_has_symbols = all(file.symbols is not None for file in self.checked.values())
         if self.checked and every_file_has_symbols and not any(
-            self.defines_target(file.symbols) for file in self.checked.values()
+            self.object_defines_target(file.symbols) for file in self.checked.values()
         ):
             self.violations.append(violation("MISSING_TARGET", self.missing_target_message(), None, None))
 
@@ -447,7 +454,7 @@ class _CIntegrityGate(_IntegrityGate):
             src=checked.source,
         )
 
-    def defines_target(self, symbols: list) -> bool:
+    def object_defines_target(self, symbols: list) -> bool:
         return (self.spec.target.function, STRONG_TEXT_TYPE) in symbols
 
     def missing_target_message(self) -> str:
@@ -479,7 +486,7 @@ class _CppIntegrityGate(_IntegrityGate):
                 "violations": 0,
             }
         )
-        self.facts = header_facts({})
+        self.facts = None
 
     def load_headers(self) -> None:
         super().load_headers()
@@ -535,8 +542,8 @@ class _CppIntegrityGate(_IntegrityGate):
             self.spec, rel, checked.symbols, facts=self.facts, defined_elsewhere=elsewhere, src=checked.source
         )
 
-    def defines_target(self, symbols: list) -> bool:
-        return _defines_target(symbols, self.spec.target.function)
+    def object_defines_target(self, symbols: list) -> bool:
+        return defines_target(symbols, self.spec.target.function)
 
     def missing_target_message(self) -> str:
         return (

@@ -1,5 +1,3 @@
-"""Verification Controller: run an approved spec's gates in order and combine them into one honest result."""
-
 from __future__ import annotations
 
 import logging
@@ -117,7 +115,6 @@ def _run_gate(name: str, ctx: BackendContext) -> StageResult:
 
 
 def _recheck_protected(spec: Spec, ws: Workspace, ctx: BackendContext, when: str) -> StageResult | None:
-    """A protected file that changed during verification must never be followed by a verdict relying on it."""
     chk = check_approval(spec, ws, files_ws=Workspace(ctx.snapshot_dir))
     if chk.approved:
         return None
@@ -131,7 +128,6 @@ def _recheck_protected(spec: Spec, ws: Workspace, ctx: BackendContext, when: str
 
 
 def ensure_runs_dir(root: Path) -> Path:
-    """Create ``<root>/.leanc/runs`` refusing symlinked components, so run artefacts never leave the project."""
     root = Path(root)
     for directory in (root / ".leanc", root / ".leanc" / "runs"):
         if directory.is_symlink():
@@ -150,7 +146,6 @@ def _unapproved_reasons(stages: list[StageResult]) -> list[str]:
 
 
 def aggregate(stages: list[StageResult], approved: bool) -> tuple[Status, list[str]]:
-    """Combine stage results into the overall status and the reasons for it."""
     if not approved:
         return Status.SPEC_UNAPPROVED, _unapproved_reasons(stages)
     contributed: list[Status] = []
@@ -318,7 +313,6 @@ def verify(
     candidate: dict[str, str] | None = None,
     spec: Spec | None = None,
 ) -> VerificationResult:
-    """Verify the editable sources, or ``candidate`` contents for them without touching the workspace."""
     options = options or VerifyOptions()
     spec_path = Path(spec_path)
     spec = spec or load_spec(spec_path)

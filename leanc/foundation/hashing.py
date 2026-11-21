@@ -1,5 +1,3 @@
-"""Hashing helpers (SHA-256) used for spec locking and reproducibility."""
-
 from __future__ import annotations
 
 import hashlib
@@ -27,7 +25,6 @@ def sha256_file(path: str | Path) -> str:
 
 
 def canonical_json(obj: Any) -> str:
-    """Deterministic JSON: sorted keys, no insignificant whitespace, UTF-8."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 

@@ -1,5 +1,3 @@
-"""Provider selection by name (``--provider`` / ``leanc.yaml``)."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,7 +15,6 @@ _NAMES = (MOCK_PROVIDER, *OPENAI_COMPATIBLE_ALIASES)
 
 
 def available_providers() -> list[str]:
-    """Accepted provider names (``openai`` is an alias of ``openai-compatible``)."""
     return list(_NAMES)
 
 
@@ -36,7 +33,6 @@ def get_provider(
     mock_dir: Path | None = None,
     transcript_dir: Path | None = None,
 ) -> LLMProvider:
-    """Instantiate a provider: mock fixtures (relative to project_root) or an OpenAI-compatible endpoint from env."""
     key = (name or "").strip().lower()
     if key == MOCK_PROVIDER:
         return MockProvider(_mock_fixture_dir(project_root, mock_dir))

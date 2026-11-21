@@ -1,11 +1,3 @@
-"""Tests for the sanitizer test gate (leanc.backends.sanitizer).
-
-The end-to-end tests build tiny C programs against trusted drivers in
-temporary projects and run them under ASan/UBSan/LSan inside the real bwrap
-sandbox; parser tests use canned sanitizer output (captured from clang 18,
-paths rewritten to a neutral prefix).
-"""
-
 from __future__ import annotations
 
 import os
@@ -34,11 +26,9 @@ from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
 from leanc.toolchain.context import VerifyOptions, make_context
 
-# ----------------------------------------------------------------------------- helpers
 
 HEADER = "#ifndef F_H\n#define F_H\nint f(int n);\n#endif\n"
 
-# Generic trusted driver: f(atoi(argv[1])) must return 42.
 DRIVER = textwrap.dedent(
     """\
     #include <stdio.h>
@@ -101,9 +91,6 @@ def line_of(src: str, needle: str) -> int:
     raise AssertionError(needle)
 
 
-# ----------------------------------------------------------------------------- end to end
-
-
 def test_passing_program(tmp_path, needs_clang, needs_bwrap):
     ctx, res = run_gate(tmp_path, GOOD_SRC, [{"name": "ok", "args": ["10"], "expect_stdout": "r=42\n"}])
     assert res.stage == "sanitizer"
@@ -124,7 +111,6 @@ def test_passing_program(tmp_path, needs_clang, needs_bwrap):
     assert case["status"] == "pass" and case["duration_s"] >= 0
     assert "detect_leaks=1" in d["env"]["ASAN_OPTIONS"]
     assert d["counts"] == {"cases": 1, "passed": 1, "failed": 0, "timed_out": 0, "errors": 0, "findings": 0}
-    # build + one case, all recorded; the case ran inside bwrap
     assert [i.tool for i in res.invocations] == ["clang", "sanitizer-test"]
     assert res.invocations[1].sandbox == "bwrap"
     assert (ctx.run_dir / res.invocations[1].stdout_path).read_text() == "r=42\n"
@@ -156,7 +142,6 @@ def test_heap_buffer_overflow_located_by_asan(tmp_path, needs_clang, needs_bwrap
     assert len(asan) == 1, res.diagnostics
     d = asan[0]
     assert d.rule_id == "heap-buffer-overflow"
-    # symbolisation works inside the sandbox: exact workspace-relative file:line
     assert d.location.file == "src/f.c"
     assert d.location.line == line_of(HBO_SRC, "one past the end")
     assert d.location.function == "f"
@@ -168,7 +153,6 @@ def test_heap_buffer_overflow_located_by_asan(tmp_path, needs_clang, needs_bwrap
     assert fr.call_stack and fr.call_stack[0].startswith("#0 f src/f.c:")
     assert fr.raw_ref and (ctx.run_dir / fr.raw_ref).is_file()
     assert "heap-buffer-overflow" in (ctx.run_dir / fr.raw_ref).read_text()
-    # the sanitizer finding explains the failure: no redundant exit-code oracle report
     assert not [d for d in res.diagnostics if d.tool == "test-oracle"]
     assert res.details["cases"][0]["findings"][0]["rule_id"] == "heap-buffer-overflow"
     assert "oob" in res.summary and "heap-buffer-overflow" in res.summary
@@ -233,7 +217,6 @@ def test_memory_leak_reported_by_lsan(tmp_path, needs_clang, needs_bwrap):
     assert (d.location.file, d.location.line) == ("src/f.c", line_of(LEAK_SRC, "leaked"))
     fr = next(f for f in res.failures if f.tool == "lsan")
     assert fr.kind == "runtime"
-    # LSan exits through _exit() (buffered stdout is lost): stdout is not judged
     assert res.details["cases"][0]["stdout_matches"] is None
     assert not [d for d in res.diagnostics if d.tool == "test-oracle"]
 
@@ -287,7 +270,7 @@ def test_expected_stdout_mismatch(tmp_path, needs_clang, needs_bwrap):
     _, res = run_gate(tmp_path, GOOD_SRC, [{"name": "out", "args": ["10"], "expect_stdout": "r=43\n"}])
     assert res.outcome is Outcome.FAIL
     diags = [d for d in res.diagnostics if d.tool == "test-oracle"]
-    assert [d.rule_id for d in diags] == ["stdout"]  # the exit code itself was right
+    assert [d.rule_id for d in diags] == ["stdout"]
     assert "line 1" in diags[0].message and "'r=43'" in diags[0].message and "'r=42'" in diags[0].message
     assert res.details["cases"][0]["stdout_matches"] is False
 
@@ -325,8 +308,6 @@ def test_infinite_loop_times_out(tmp_path, needs_clang, needs_bwrap):
 
 
 def test_cpu_limit_is_reported_as_timeout(tmp_path, needs_clang, needs_bwrap):
-    """With timeout_scale the CPU limit and the wall clock are the same number
-    of seconds; whichever fires first, the case is a timeout, not a failure."""
     _, res = run_gate(tmp_path, LOOP_SRC, [{"name": "spin", "args": ["1"], "timeout_s": 2}])
     assert res.outcome is Outcome.TIMEOUT
     assert res.details["cases"][0]["timeout_reason"] in ("CPU time limit", "wall-clock timeout")
@@ -344,7 +325,7 @@ def test_link_failure_is_compile_error(tmp_path, needs_clang, needs_bwrap):
     assert any(d.rule_id == "link-error" for d in res.diagnostics)
     fr = res.failures[0]
     assert fr.kind == "compile" and fr.tool == "clang" and fr.id == "sanitizer:build"
-    assert res.details["cases"] == []  # nothing was executed
+    assert res.details["cases"] == []
 
 
 def test_second_main_is_compile_error(tmp_path, needs_clang, needs_bwrap):
@@ -368,7 +349,7 @@ def test_no_sandbox_and_not_allowed_is_skipped(tmp_path, needs_clang):
     assert res.status is Status.UNKNOWN
     assert "refusing" in res.summary and "test" in res.summary
     assert res.details["cases"] == []
-    assert [i.tool for i in res.invocations] == ["clang"]  # built, never executed
+    assert [i.tool for i in res.invocations] == ["clang"]
 
 
 def test_allowed_unsandboxed_runs_with_warning(tmp_path, needs_clang):
@@ -384,7 +365,7 @@ def test_allowed_unsandboxed_runs_with_warning(tmp_path, needs_clang):
     assert res.outcome is Outcome.FAIL
     d = next(d for d in res.diagnostics if d.tool == "asan")
     assert (d.location.file, d.location.line) == ("src/f.c", line_of(HBO_SRC, "one past the end"))
-    assert "UNSANDBOXED" not in res.summary  # FAIL summary names the failing case
+    assert "UNSANDBOXED" not in res.summary
     _, ok = run_gate(
         tmp_path / "b", GOOD_SRC, [{"name": "ok", "args": ["10"]}],
         sandbox=Sandbox(kind="none", note="test"), options=VerifyOptions(allow_unsandboxed=True),
@@ -434,8 +415,6 @@ def test_mixed_cases_stdin_and_per_case_dirs(tmp_path, needs_clang, needs_bwrap)
 
 
 def test_sandboxed_test_cannot_touch_other_run_files(tmp_path, needs_clang, needs_bwrap):
-    """Only the per-case directory is writable; the snapshot and raw/ are not
-    even visible."""
     driver = textwrap.dedent(
         """\
         #include <stdio.h>
@@ -509,7 +488,7 @@ def test_sanitizer_control_in_editable_source_fails(tmp_path, needs_clang, needs
     pol = [d for d in res.diagnostics if d.tool == "leanc-policy"]
     assert len(pol) == 1 and pol[0].location.line == 3
     assert any(f.kind == "policy" for f in res.failures)
-    assert res.details["cases"][0]["status"] == "pass"  # the tests themselves still ran
+    assert res.details["cases"][0]["status"] == "pass"
 
 
 def test_missing_editable_source_is_compile_error(tmp_path, needs_clang):
@@ -540,9 +519,6 @@ def test_example_safe_array_get_passes(example_copy, needs_clang, needs_bwrap):
     assert res.details["sandbox"] == "bwrap"
 
 
-# ----------------------------------------------------------------------------- configuration
-
-
 def test_sanitizer_plan_mapping():
     p = sanitizer_plan(["address", "undefined", "leak"])
     assert p.fsanitize == ("address", "undefined") and p.detect_leaks and p.uses_shadow_runtime
@@ -550,7 +526,7 @@ def test_sanitizer_plan_mapping():
     p = sanitizer_plan(["leak"])
     assert p.fsanitize == ("leak",) and p.effective == ("leak",) and p.uses_shadow_runtime
     p = sanitizer_plan(["leak", "undefined"])
-    assert p.fsanitize == ("address", "undefined") and p.notes  # cannot be linked otherwise
+    assert p.fsanitize == ("address", "undefined") and p.notes
     p = sanitizer_plan(["undefined"])
     assert p.fsanitize == ("undefined",) and not p.detect_leaks and not p.uses_shadow_runtime
     assert sanitizer_plan([]).compile_flags == []
@@ -592,8 +568,6 @@ def test_symbolizer_is_under_usr():
         pytest.skip("llvm-symbolizer not installed")
     assert sym.startswith("/usr/") and os.access(sym, os.X_OK)
 
-
-# ----------------------------------------------------------------------------- parser (canned output)
 
 SNAP = "/w/run/snapshot"
 PF = {"src/f.c", "include/f.h", "tests/driver.c"}
@@ -700,7 +674,7 @@ def test_parse_asan_heap_buffer_overflow():
     assert (d.tool, d.rule_id, d.severity) == ("asan", "heap-buffer-overflow", "error")
     assert (d.location.file, d.location.line, d.location.column, d.location.function) == ("src/f.c", 6, 13, "f")
     assert "READ of size 4" in d.message and "0 bytes after 16-byte region" in d.message
-    assert "0x502000000020" not in d.message  # run-specific addresses are not part of the message
+    assert "0x502000000020" not in d.message
     assert d.raw.startswith("==2==ERROR: AddressSanitizer: heap-buffer-overflow")
     assert "Shadow bytes" not in d.raw and "SUMMARY" in d.raw
 
@@ -712,7 +686,7 @@ def test_parse_location_without_base_dir_uses_suffix_match():
 
 def test_parse_location_without_project_files_uses_first_non_system_frame():
     d = parse_sanitizer_output(ASAN_DOUBLE_FREE)[0]
-    assert d.location.file == f"{SNAP}/src/f.c" and d.location.line == 11  # frame #0 (free) has no source
+    assert d.location.file == f"{SNAP}/src/f.c" and d.location.line == 11
     d = parse_sanitizer_output(ASAN_DOUBLE_FREE, base_dir=SNAP)[0]
     assert d.location.file == "src/f.c"
 
@@ -720,7 +694,7 @@ def test_parse_location_without_project_files_uses_first_non_system_frame():
 def test_parse_location_prefers_project_frame_over_other_files():
     text = ASAN_HBO.replace(f"in f {SNAP}/src/f.c:6:13", "in helper /home/x/other/lib.c:3:1")
     d = parse_sanitizer_output(text, project_files=PF, base_dir=SNAP)[0]
-    assert d.location.file == "tests/driver.c"  # first *project* frame of the access stack
+    assert d.location.file == "tests/driver.c"
 
 
 def test_parse_double_free_and_segv_and_stack_overflow():
@@ -872,7 +846,6 @@ def test_parse_frame_without_line_info():
         "null-pointer", "src/sensor.c", 14, "sensor_read"
     )
     assert f.call_stack()[:2] == ["#0 sensor_read src/sensor.c", "#1 main tests/driver.c:42:16"]
-    # the same frame shape in an ASan stack still yields a (line-less) project location
     asan = "==1==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000008\n" \
            f"    #0 0x1 in sensor_read {SNAP}/src/sensor.c\n"
     d = parse_sanitizer_output(asan, project_files={"src/sensor.c"}, base_dir=SNAP)[0]
@@ -884,5 +857,4 @@ def test_parse_ubsan_without_location_and_no_false_positive():
     assert len(d) == 1 and d[0].rule_id == "division-by-zero" and d[0].location is None
     d = parse_sanitizer_output("(/w/bin/test_bin+0x1234): runtime error: load of null pointer of type 'int'\n")
     assert len(d) == 1 and d[0].rule_id == "null-pointer" and d[0].location is None
-    # ordinary program diagnostics that merely contain the words are not findings
     assert parse_sanitizer_output("mytool: runtime error: config file missing\n") == []

@@ -1,5 +1,3 @@
-"""The trusted Lean checker generated per run, and the nonce-tagged results it logs."""
-
 from __future__ import annotations
 
 import json
@@ -29,7 +27,6 @@ def _import_line(module: str) -> str:
 
 
 def render_checker(nonce: str, spec_module: str, proof_modules: list[str], theorems: list[tuple[str, str]]) -> str:
-    """The trusted checker source; ``nonce`` tags the results it logs."""
     imports = "\n".join(_import_line(module) for module in [spec_module, *proof_modules])
     proof_module_names = ", ".join(_lean_name(module) for module in proof_modules)
     calls = "\n".join(
@@ -148,7 +145,6 @@ def _is_checker_report(message: dict) -> bool:
 
 
 def checker_reports(messages: list[dict], nonce: str, theorem_count: int) -> dict[int, dict]:
-    """The checker's per-theorem reports carrying this run's ``nonce``, by theorem index."""
     reports: dict[int, dict] = {}
     for message in messages:
         if not _is_checker_report(message):

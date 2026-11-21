@@ -1,5 +1,3 @@
-"""Failure reports and diagnostics for WP goals that are refuted, unproved or vacuous."""
-
 from __future__ import annotations
 
 import os
@@ -27,8 +25,6 @@ SMOKE_TEST_EXPLANATION = (
 
 
 class SourceLines:
-    """Snapshot source lines quoted in descriptions instead of line numbers, so fingerprints survive edits."""
-
     def __init__(self, root: Path):
         self.root = root
         self._cache: dict[str, list[str]] = {}

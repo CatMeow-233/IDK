@@ -1,5 +1,3 @@
-"""Messages printed by ``lean --json`` (one JSON object per line) and the diagnostics made from them."""
-
 from __future__ import annotations
 
 import json
@@ -13,7 +11,6 @@ MAX_MESSAGE_CHARS = 2000
 
 
 def json_object(text: str) -> dict | None:
-    """``text`` decoded as a JSON object, or None when it is not one."""
     try:
         value = json.loads(text)
     except ValueError:
@@ -26,7 +23,6 @@ def _is_lean_message(candidate: dict | None) -> bool:
 
 
 def parse_lean_messages(stdout: str) -> tuple[list[dict], list[str]]:
-    """The JSON messages of ``lean --json`` output and the other non-blank lines, kept for the raw log only."""
     messages: list[dict] = []
     other: list[str] = []
     for line in stdout.splitlines():

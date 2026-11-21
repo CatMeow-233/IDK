@@ -1,5 +1,3 @@
-"""Report sections of tool evidence: gates, findings grouped by detecting tool, counterexamples and coverage."""
-
 from __future__ import annotations
 
 from enum import Enum
@@ -217,7 +215,6 @@ def _coverage_row(file: str, entry: object) -> str:
 
 
 def coverage_section(vr: VerificationResult | None) -> list[str]:
-    """CBMC ``--cover location`` results, present only when the spec enables ``verification.coverage``."""
     if vr is None:
         return []
     stage = vr.stage("cbmc")

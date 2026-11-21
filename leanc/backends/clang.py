@@ -1,5 +1,3 @@
-"""Clang compile gate: compile every editable source to an object file and report structured diagnostics."""
-
 from __future__ import annotations
 
 import os
@@ -41,12 +39,10 @@ def define_args(defines: list[str]) -> list[str]:
 
 
 def sandbox_visible_path(path: Path) -> str:
-    """The canonical path, because the sandbox binds directories at their real location."""
     return os.path.realpath(path)
 
 
 def compile_command(ctx: BackendContext, source_rel: str, obj_path: Path) -> list[str]:
-    """argv compiling ``source_rel`` (snapshot-relative) to ``obj_path``; Lean C's flags follow the spec's."""
     language_compiler = compiler(ctx)
     if not language_compiler:
         raise ValueError("no C compiler available (ctx.tools.clang is None)")
@@ -66,7 +62,6 @@ def compile_command(ctx: BackendContext, source_rel: str, obj_path: Path) -> lis
 
 
 def safe_name(rel: str, max_length: int = SAFE_NAME_MAX_LENGTH) -> str:
-    """A flat, filesystem-safe name for a relative path (used for logs and raw files)."""
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in rel)[:max_length]
 
 
@@ -108,7 +103,6 @@ def failure_from_diagnostic(
 
 
 def problem_tail(timeouts: list[str], tool_errors: list[str], *extra: str) -> str:
-    """`` [timed out: ...; tool errors: ...]`` appended to a summary, or nothing."""
     problems = []
     if timeouts:
         problems.append(f"timed out: {', '.join(timeouts)}")
@@ -365,7 +359,6 @@ def _stage_result(started: float, details: dict, outcome: Outcome, summary: str,
 
 
 def run_compile(ctx: BackendContext) -> StageResult:
-    """Compile every editable source from the snapshot into ``build/obj``; definite evidence dominates the outcome."""
     started = time.monotonic()
     details = _initial_details(ctx)
     compiler_problem = _compiler_problem(ctx)

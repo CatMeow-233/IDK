@@ -1,5 +1,3 @@
-"""Deterministic fixture-replaying provider: it demonstrates the pipeline offline, never model performance."""
-
 from __future__ import annotations
 
 import json
@@ -144,7 +142,6 @@ class MockProvider(LLMProvider):
 
 
 def deterministic_summary(result: VerificationResult) -> str:
-    """Short, deterministic explanation built only from the tool results."""
     status = result.status.value
     lines = [f"[{MOCK_DISCLAIMER}: deterministic summary]", f"Verification status: {status}."]
     if result.reasons:

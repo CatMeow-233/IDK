@@ -1,5 +1,3 @@
-"""Judge one executed trusted test case: sanitizer findings and oracle mismatches dominate tool problems and timeouts."""
-
 from __future__ import annotations
 
 import shlex

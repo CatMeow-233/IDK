@@ -1,5 +1,3 @@
-"""In-memory, fuzz-free application of parsed file patches (no subprocess, no file-system access)."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -121,7 +119,6 @@ def apply_file_patches(
     *,
     max_offset: int = DEFAULT_MAX_OFFSET,
 ) -> dict[str, str]:
-    """Apply already-parsed file patches in order (several patches of one file apply in sequence)."""
     results: dict[str, str] = {}
     for patch in patches:
         _reject_unsupported(patch)
@@ -136,5 +133,4 @@ def apply_unified_diff(
     *,
     max_offset: int = DEFAULT_MAX_OFFSET,
 ) -> dict[str, str]:
-    """New content of every path a unified diff touches; exact context within ``max_offset`` lines, else PatchError."""
     return apply_file_patches(parse_unified_diff(text), read_file, max_offset=max_offset)

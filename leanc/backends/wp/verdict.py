@@ -1,5 +1,3 @@
-"""The WP gate's verdict once every goal of the report is accounted for."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

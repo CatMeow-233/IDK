@@ -1,5 +1,3 @@
-"""The structured spec schema (YAML / JSON); unknown keys are rejected so nothing bypasses validation or the hash."""
-
 from __future__ import annotations
 
 import re
@@ -207,7 +205,6 @@ class VerificationConfig(_M):
         return v
 
     def effective_checks(self) -> list[str]:
-        """Mandatory checks plus the spec's extra checks (stable order)."""
         out = list(MANDATORY_CHECKS)
         for c in self.checks:
             if c not in out:
@@ -216,8 +213,6 @@ class VerificationConfig(_M):
 
 
 class WPConfig(_M):
-    """Frama-C/WP (V2): proves the ACSL contract of the protected header, always with ``-wp-rte`` and smoke tests."""
-
     provers: list[str] = Field(default_factory=lambda: ["alt-ergo"], min_length=1)
     prover_timeout_s: float = Field(default=10, gt=0, le=3600)
     timeout_s: float = Field(default=600, gt=0, le=86400)
@@ -254,8 +249,6 @@ class LeanVectors(_M):
 
 
 class LeanConfig(_M):
-    """Lean 4 model proofs (V2): editable ``proofs`` prove the statements of the trusted ``spec_file`` model."""
-
     spec_file: str
     proofs: list[str] = Field(min_length=1)
     theorems: list[LeanTheorem] = Field(min_length=1)
@@ -387,7 +380,6 @@ class Spec(_M):
             raise ValueError("duplicate test case names")
 
     def protected_paths(self) -> list[str]:
-        """Files of the trusted specification: hash-locked on approval, never writable by generation or repair."""
         out = [*([self.verification.harness] if self.verification else []), *self.sources.headers]
         if self.tests.driver:
             out.append(self.tests.driver)
@@ -398,5 +390,4 @@ class Spec(_M):
         return out
 
     def editable_paths(self) -> list[str]:
-        """Everything generation / repair may write: C sources and Lean proofs."""
         return [*self.sources.editable, *(self.lean.proofs if self.lean else [])]

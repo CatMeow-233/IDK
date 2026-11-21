@@ -1,5 +1,3 @@
-"""Frama-C discovery: locate ``frama-c`` (and the ``why3`` of the same installation)."""
-
 from __future__ import annotations
 
 import glob
@@ -21,10 +19,10 @@ INSTALL_HINT = (
 
 @dataclass(frozen=True)
 class FramaC:
-    frama_c: str  # executable as found
-    real: str  # realpath of the executable
-    bin_dir: str  # directory of the real executable (opam switch bin/)
-    prefix: str  # installation prefix bound into the sandbox
+    frama_c: str
+    real: str
+    bin_dir: str
+    prefix: str
     why3: str | None
 
 
@@ -35,16 +33,17 @@ def _first_existing(cands: list[str]) -> str | None:
     return None
 
 
-#: Oldest Frama-C release whose WP output (JSON report, smoke tests, terminates /
-#: exits handling) this backend understands; the parsing is tested with 33.0.
 MIN_FRAMAC_MAJOR = 27
+UNKNOWN_VERSION_KEY = (-1, -1)
 
 
 def framac_version_key(version_line: str | None) -> tuple[int, int]:
-    """``(major, minor)`` of a ``frama-c -version`` line such as
-    ``33.0 (Arsenic)``; ``(-1, -1)`` when unknown."""
     m = re.match(r"^\s*(\d+)\.(\d+)", version_line or "")
-    return (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
+    return (int(m.group(1)), int(m.group(2))) if m else UNKNOWN_VERSION_KEY
+
+
+def _why3_of_same_installation(bin_dir: str) -> str | None:
+    return _first_existing([os.path.join(bin_dir, "why3")])
 
 
 def _candidates() -> list[str]:
@@ -65,10 +64,6 @@ def _candidates() -> list[str]:
 
 
 def find_framac() -> FramaC | None:
-    """Locate frama-c: ``LEANC_FRAMAC`` (an executable path or name) if set;
-    otherwise every ``frama-c`` on PATH (parent + standard directories) and
-    ``/opt/opam/*/bin/frama-c``, preferring the newest version (a distribution
-    package can be much older than the opam switch Lean C is tested with)."""
     env = os.environ.get("LEANC_FRAMAC")
     exe: str | None
     if env:
@@ -83,7 +78,4 @@ def find_framac() -> FramaC | None:
     real = os.path.realpath(exe)
     bin_dir = os.path.dirname(real)
     prefix = os.path.dirname(bin_dir) if os.path.basename(bin_dir) == "bin" else bin_dir
-    # only the why3 of the same installation: its config format matches the
-    # Why3 library linked into this frama-c
-    why3 = _first_existing([os.path.join(bin_dir, "why3")])
-    return FramaC(frama_c=exe, real=real, bin_dir=bin_dir, prefix=prefix, why3=why3)
+    return FramaC(frama_c=exe, real=real, bin_dir=bin_dir, prefix=prefix, why3=_why3_of_same_installation(bin_dir))

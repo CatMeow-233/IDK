@@ -1,20 +1,14 @@
-"""Optional project configuration (``leanc.yaml``), which can never weaken verification or isolation."""
-
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from leanc.foundation.errors import ConfigError
 
 CONFIG_FILE = "leanc.yaml"
-IGNORED_ALLOW_UNSANDBOXED = (
-    "accepted for backward compatibility but ignored: the project file is not covered by the spec approval, "
-    "so only the --allow-unsandboxed CLI flag can disable isolation"
-)
 
 
 class ProjectConfig(BaseModel):
@@ -23,7 +17,7 @@ class ProjectConfig(BaseModel):
     provider: str = "mock"
     mock_dir: str = "mock"
     sandbox: Literal["auto", "none"] = "auto"
-    allow_unsandboxed: bool = Field(default=False, description=IGNORED_ALLOW_UNSANDBOXED)
+    allow_unsandboxed: bool = False
 
 
 def load_config(root: Path) -> ProjectConfig:

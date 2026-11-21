@@ -1,5 +1,3 @@
-"""Safe process execution: argv only (never a shell), minimal environment, rlimits, timeout and capped output."""
-
 from __future__ import annotations
 
 import os
@@ -66,7 +64,6 @@ class ProcResult:
         log_name: str | None = None,
         note: str | None = None,
     ) -> ToolInvocation:
-        """Convert to a ToolInvocation, writing redacted ``logs/<log_name>.{stdout,stderr}.txt`` under ``run_dir``."""
         out_rel = err_rel = None
         if run_dir is not None and log_name:
             out_rel, err_rel = self._write_redacted_logs(Path(run_dir), log_name)
@@ -97,7 +94,6 @@ class ProcResult:
 
 
 def minimal_env(extra: Mapping[str, str] | None = None, home: str | None = None) -> dict[str, str]:
-    """A small explicit environment: nothing is inherited, so parent credentials never reach child processes."""
     env = {
         "PATH": DEFAULT_PATH,
         "LANG": "C.UTF-8",
@@ -136,8 +132,6 @@ def _make_preexec(limits: Limits):
 
 
 class GroupKill(Enum):
-    """What sending SIGKILL to a child's process group achieved."""
-
     KILLED = "killed"
     ALREADY_GONE = "already-gone"
     NOT_PERMITTED = "not-permitted"
@@ -302,7 +296,6 @@ def run_command(
     sandbox: "Sandbox | None" = None,
     mounts: "SandboxMounts | None" = None,
 ) -> ProcResult:
-    """Run ``argv`` (never through a shell) and capture bounded output."""
     display_argv = _validated_argv(argv)
     limits = limits or Limits()
     cwd = str(cwd)

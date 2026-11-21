@@ -1,5 +1,3 @@
-"""Credential redaction for logs, reports and prompts."""
-
 from __future__ import annotations
 
 import os

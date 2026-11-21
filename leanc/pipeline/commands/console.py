@@ -1,5 +1,3 @@
-"""Command output: human text or pure JSON on stdout, errors on stderr, and the per-run log file."""
-
 from __future__ import annotations
 
 import json
@@ -25,8 +23,6 @@ SHOWN_ROUND_NOTE_CHARS = 100
 
 
 class Console:
-    """Human-readable lines unless ``--json``, in which case stdout carries only the JSON document."""
-
     def __init__(self, as_json: bool):
         self.as_json = as_json
 
@@ -43,7 +39,6 @@ class Console:
 
 
 def setup_logging(log_file: Path | None, verbose: bool) -> None:
-    """Log everything to ``log_file``; on stderr only warnings, or everything with ``verbose``."""
     root = logging.getLogger(LOGGER_NAME)
     root.setLevel(logging.DEBUG)
     for handler in list(root.handlers):

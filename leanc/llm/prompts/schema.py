@@ -1,5 +1,3 @@
-"""Outline of the Lean C spec schema, derived from the pydantic model so it cannot drift from the validator."""
-
 from __future__ import annotations
 
 import json
@@ -127,7 +125,6 @@ def _describe_model(model: type[BaseModel], indent: int, out: list[str]) -> None
 
 @lru_cache(maxsize=1)
 def spec_schema_summary() -> str:
-    """Field outline of Spec derived from the pydantic model, followed by the rules the validator enforces."""
     lines = ["Lean C spec schema (YAML mapping; field: type (constraints) = default):"]
     _describe_model(Spec, 1, lines)
     lines.append("")

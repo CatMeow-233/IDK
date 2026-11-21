@@ -8,7 +8,11 @@ from leanc.backends.cbmc.execution import TOOL, CbmcRun, ToolProblem, messages_e
 from leanc.backends.cbmc.harness import probe_occurrences
 from leanc.backends.cbmc.output import PROPERTY_HOLDS, PROPERTY_VIOLATED
 from leanc.backends.counterexample.locations import location_from_cbmc
-from leanc.backends.counterexample.properties import REACH_PREFIX, VACUITY_ID_PREFIX, is_reach_probe
+from leanc.backends.counterexample.properties import (
+    REACH_PREFIX,
+    VACUITY_ID_PREFIX,
+    is_reach_probe,
+)
 from leanc.backends.counterexample.reports import vacuity_failure
 from leanc.foundation.models import FailureReport, Location
 from leanc.foundation.status import Outcome

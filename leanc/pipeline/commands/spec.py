@@ -1,5 +1,3 @@
-"""``leanc spec draft|approve|status|show``."""
-
 from __future__ import annotations
 
 import sys

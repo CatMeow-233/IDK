@@ -1,5 +1,3 @@
-"""Parse ASan / UBSan / LSan reports from a test program's stderr into findings that keep their stack."""
-
 from __future__ import annotations
 
 import os
@@ -112,7 +110,6 @@ _ASAN_KIND_BY_PHRASE = (
 
 
 def ubsan_rule(message: str) -> str:
-    """Rule id for a UBSan ``runtime error:`` message."""
     for pattern, rule in _UBSAN_RULES_FIRST_MATCH_WINS:
         if pattern.search(message):
             return rule
@@ -132,12 +129,10 @@ def _asan_kind(header_rest: str) -> str:
 
 
 def runtime_internal_error_line(stderr: str) -> str | None:
-    """First stderr line showing that the sanitizer runtime itself failed (a tool problem, not a finding)."""
     return next((line for line in stderr.splitlines() if _RUNTIME_INTERNAL_ERROR_RE.search(line)), None)
 
 
 def strip_run_specific_details(text: str, base_dir: str | None) -> str:
-    """Drop addresses and the absolute snapshot prefix from a message (the raw excerpt keeps them)."""
     cleaned = _ADDRESS_GROUP_RE.sub("", text)
     cleaned = _ADDRESS_RE.sub("<addr>", cleaned)
     if base_dir:
@@ -321,8 +316,6 @@ def _excerpt(lines: list[str], block: ReportBlock) -> str:
 
 @dataclass
 class SanitizerFinding:
-    """A parsed sanitizer report: the diagnostic plus the stack, which ``Diagnostic`` has no field for."""
-
     diagnostic: Diagnostic
     frames: list[StackFrame] = field(default_factory=list)
     base_dir: str | None = None
@@ -458,7 +451,6 @@ def parse_sanitizer_findings(
     project_files: set[str] | None = None,
     base_dir: str | os.PathLike[str] | None = None,
 ) -> list[SanitizerFinding]:
-    """Like :func:`parse_sanitizer_output` but keeps each report's stack."""
     base = str(base_dir) if base_dir is not None else None
     normalised_files = {posixpath.normpath(p) for p in project_files} if project_files is not None else None
     lines = (text or "").splitlines()
@@ -479,5 +471,4 @@ def parse_sanitizer_output(
     project_files: set[str] | None = None,
     base_dir: str | os.PathLike[str] | None = None,
 ) -> list[Diagnostic]:
-    """Parse ASan / UBSan / LSan reports, located at the first project frame (else the first non-system frame)."""
     return [f.diagnostic for f in parse_sanitizer_findings(text, project_files=project_files, base_dir=base_dir)]

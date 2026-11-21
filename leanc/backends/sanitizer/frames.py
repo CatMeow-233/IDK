@@ -1,5 +1,3 @@
-"""Sanitizer stack frames and how their source paths map onto workspace-relative project files."""
-
 from __future__ import annotations
 
 import posixpath
@@ -25,8 +23,6 @@ _SUMMARY_TAIL_LOCATION_RE = re.compile(r"^(?P<file>\S+?):(?P<line>\d+)(?::(?P<co
 
 @dataclass
 class StackFrame:
-    """One ``#N 0x... in func file:line:col`` line of a sanitizer stack trace."""
-
     index: int
     function: str | None = None
     file: str | None = None
@@ -84,7 +80,6 @@ def parse_frame(line: str) -> StackFrame | None:
 
 
 def relative_to_snapshot(path: str, base_dir: str | None) -> str | None:
-    """``path`` made relative to ``base_dir`` when it lies below it, else ``None``."""
     if not base_dir:
         return None
     prefix = base_dir.rstrip("/") + "/"
@@ -129,7 +124,6 @@ def _longest_project_suffix(path: str, project_files: set[str] | None) -> str | 
 
 
 def project_relative_path(path: str, project_files: set[str] | None, base_dir: str | None) -> str | None:
-    """Workspace-relative name of ``path`` if it is a project file (also matched by suffix in copied run dirs)."""
     normalised = path.replace("\\", "/")
     return (
         _listed_below_snapshot(normalised, project_files, base_dir)
@@ -145,7 +139,6 @@ def display_path(path: str | None, base_dir: str | None) -> str | None:
 
 
 def reportable_path(path: str, project_files: set[str] | None, base_dir: str | None) -> str | None:
-    """The project-relative path, else the displayed path of a non-system file, else ``None``."""
     project_path = project_relative_path(path, project_files, base_dir)
     if project_path is not None:
         return project_path
@@ -155,7 +148,6 @@ def reportable_path(path: str, project_files: set[str] | None, base_dir: str | N
 def pick_frame(
     frames: list[StackFrame], project_files: set[str] | None, base_dir: str | None
 ) -> tuple[StackFrame | None, str | None]:
-    """First frame in a project file, else the first frame with a non-system source path."""
     for frame in frames:
         if frame.file:
             project_path = project_relative_path(frame.file, project_files, base_dir)
@@ -176,7 +168,6 @@ def location_from_frame(frame: StackFrame | None, path: str | None) -> Location 
 def location_from_summary_tail(
     text: str | None, project_files: set[str] | None, base_dir: str | None
 ) -> Location | None:
-    """Location of a ``SUMMARY:`` tail of the form ``file:line[:col][ in func]``."""
     if not text:
         return None
     match = _SUMMARY_TAIL_LOCATION_RE.match(text.strip())

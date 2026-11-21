@@ -1,5 +1,3 @@
-"""Clang Static Analyzer gate: SARIF findings per editable unit, checked against stderr, with a recorded text fallback."""
-
 from __future__ import annotations
 
 import json
@@ -56,7 +54,6 @@ class AnalyzerOutput(StrEnum):
 def analyzer_command(
     ctx: BackendContext, source_rel: str, output_path: Path | None, *, output_format: str = AnalyzerOutput.SARIF
 ) -> list[str]:
-    """argv analysing ``source_rel``: SARIF written to ``output_path``, or findings with bug paths on stderr."""
     language_compiler = compiler(ctx)
     if not language_compiler:
         raise ValueError("no clang available (ctx.tools.clang is None)")
@@ -392,7 +389,6 @@ def _stage_result(started: float, details: dict, outcome: Outcome, summary: str,
 
 
 def run_static_analysis(ctx: BackendContext) -> StageResult:
-    """Run the Clang Static Analyzer on every editable source; with ``policy: block`` any finding fails the stage."""
     started = time.monotonic()
     details = _initial_details(ctx)
     setup_problem = _setup_problem(ctx)

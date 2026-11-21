@@ -1,5 +1,3 @@
-"""Path spellings inside unified diffs: git C-style quoting, ``a/``/``b/`` prefixes, ``/dev/null`` and safety checks."""
-
 from __future__ import annotations
 
 import re
@@ -38,7 +36,6 @@ def _is_git_quoted(spelling: str) -> bool:
 
 
 def unquote_git_path(spelling: str) -> str:
-    """Undo git's C-style quoting of unusual path names (``"a/x\\ty"``)."""
     if not _is_git_quoted(spelling):
         return spelling
     body = spelling[1:-1]
@@ -67,7 +64,6 @@ def _needs_git_quoting(path: str) -> bool:
 
 
 def quote_path(path: str) -> str:
-    """Quote a path the way git does when it contains tabs, newlines, quotes, backslashes or control characters."""
     if not _needs_git_quoting(path):
         return path
     escaped = (
@@ -77,7 +73,6 @@ def quote_path(path: str) -> str:
 
 
 def header_path(raw: str) -> str | None:
-    """Path from a ``---``/``+++`` line (a timestamp after a TAB is dropped); ``None`` for ``/dev/null``."""
     spelling = raw.rstrip("\r\n")
     if not spelling.startswith(_QUOTE) and HEADER_TIMESTAMP_SEPARATOR in spelling:
         spelling = spelling.split(HEADER_TIMESTAMP_SEPARATOR, 1)[0]
@@ -88,7 +83,6 @@ def header_path(raw: str) -> str | None:
 
 
 def strip_git_prefixes(old: str | None, new: str | None) -> tuple[str | None, str | None]:
-    """Strip ``a/``/``b/`` only when every side that is not ``/dev/null`` has its prefix (``-p0`` diffs stay verbatim)."""
     old_prefixed = old is None or old.startswith(GIT_OLD_PREFIX)
     new_prefixed = new is None or new.startswith(GIT_NEW_PREFIX)
     if old_prefixed and new_prefixed:
@@ -100,7 +94,6 @@ def strip_git_prefixes(old: str | None, new: str | None) -> tuple[str | None, st
 
 
 def safe_path(path: str | None, lineno: int) -> str | None:
-    """Normalise a diff path; an absolute or ``..`` path is a PatchError, never something passed to a reader."""
     if path is None:
         return None
     try:
@@ -121,7 +114,6 @@ def _identical_unquoted_names(rest: str) -> tuple[str, str] | None:
 
 
 def git_header_paths(rest: str) -> tuple[str | None, str | None]:
-    """Best-effort paths from ``diff --git a/X b/Y``, needed only for git patches without ``---``/``+++`` lines."""
     rest = rest.rstrip("\r\n")
     pair = _GIT_HEADER_PAIR_RE.match(rest)
     if pair:

@@ -1,5 +1,3 @@
-"""Few-shot example for spec drafting: the approved safe_array_get example, embedded so no examples dir is needed."""
-
 from __future__ import annotations
 
 FEW_SHOT_SPEC_YAML = """\

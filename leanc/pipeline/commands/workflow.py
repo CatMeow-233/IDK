@@ -1,5 +1,3 @@
-"""``leanc generate|verify|repair|run``: generation, verification and the repair loop as recorded runs."""
-
 from __future__ import annotations
 
 from pathlib import Path

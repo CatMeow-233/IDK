@@ -1,5 +1,3 @@
-"""Deterministic multi-file unified diffs, change statistics and candidate hashes."""
-
 from __future__ import annotations
 
 import difflib
@@ -62,12 +60,10 @@ def _file_diff(path: str, old: str | None, new: str | None, context: int) -> lis
 
 
 def changed_paths(old: dict[str, str], new: dict[str, str]) -> list[str]:
-    """Sorted paths whose content differs (added, removed or modified)."""
     return sorted(p for p in set(old) | set(new) if old.get(p) != new.get(p))
 
 
 def make_unified_diff(old: dict[str, str], new: dict[str, str], *, context: int = DEFAULT_CONTEXT_LINES) -> str:
-    """Sorted, ``a/``/``b/``-prefixed multi-file diff that apply_unified_diff applies back exactly (``""`` if equal)."""
     out: list[str] = []
     for path in changed_paths(old, new):
         out.extend(_file_diff(path, old.get(path), new.get(path), context))
@@ -75,7 +71,6 @@ def make_unified_diff(old: dict[str, str], new: dict[str, str], *, context: int 
 
 
 def diff_stats(old: dict[str, str], new: dict[str, str]) -> tuple[int, int]:
-    """``(lines_added, lines_removed)`` over all changed files, counted exactly as in make_unified_diff."""
     added = removed = 0
     for path in changed_paths(old, new):
         old_lines = split_lines(old.get(path) or "")
@@ -89,5 +84,4 @@ def diff_stats(old: dict[str, str], new: dict[str, str]) -> tuple[int, int]:
 
 
 def candidate_hash(files: dict[str, str]) -> str:
-    """SHA-256 of the canonical JSON of sorted ``[path, content]`` pairs (order-independent, no concatenation games)."""
     return canonical_hash([[path, files[path]] for path in sorted(files)])

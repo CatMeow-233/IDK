@@ -1,5 +1,3 @@
-"""Prompts asking for prose: the root cause of one failure, and an explanation of a verification result."""
-
 from __future__ import annotations
 
 from leanc.foundation.models import FailureReport, VerificationResult

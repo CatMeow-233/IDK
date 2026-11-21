@@ -1,5 +1,3 @@
-"""Sanitizer build command and a small, tolerant parser that explains why the sanitized build failed."""
-
 from __future__ import annotations
 
 import os
@@ -44,7 +42,6 @@ _COMPILER_CRASH_RE = re.compile(
 
 
 def build_command(ctx: BackendContext, binary: Path, plan: SanitizerPlan) -> list[str]:
-    """argv building the sanitized test binary (cwd = snapshot, relative sources)."""
     spec = ctx.spec
     language_driver = compiler(ctx)
     assert language_driver and spec.tests.driver
@@ -131,7 +128,6 @@ def _driver_diagnostic(match: re.Match, line: str) -> Diagnostic:
 
 
 def parse_build_diagnostics(text: str, *, base_dir: str | None = None) -> list[Diagnostic]:
-    """Compiler and linker messages of the sanitizer build; notes become path steps of the preceding diagnostic."""
     diagnostics: list[Diagnostic] = []
     linker_function: str | None = None
     for raw_line in (text or "").splitlines():

@@ -1,5 +1,3 @@
-"""System prompts for C++ specs (V2): what judges C++ code here, and that C++ has no formal gate."""
-
 from __future__ import annotations
 
 from typing import Literal
@@ -96,7 +94,6 @@ _CPP_SYSTEMS: dict[PromptKind, str] = {
 
 
 def cpp_system(spec: Spec, kind: PromptKind, c_system: str) -> str:
-    """The system prompt of kind for spec: c_system unchanged for C specs, the C++ variant for C++ specs."""
     if not spec.language.is_cpp:
         return c_system
     return _CPP_SYSTEMS[kind].replace(STANDARD_PLACEHOLDER, spec.language.standard.upper())

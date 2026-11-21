@@ -1,5 +1,3 @@
-"""End-to-end tests of the ``leanc`` CLI (in-process ``main(argv)``)."""
-
 from __future__ import annotations
 
 import json
@@ -82,8 +80,8 @@ def test_init_then_full_lifecycle(capsys, tmp_path, needs_toolchain):
     rc, data = run(capsys, "generate", spec, "--json", "--force")
     assert rc == 40 and data["status"] == "SPEC_UNAPPROVED"
 
-    rc, _ = run(capsys, "spec", "approve", spec, "--by", "alice")  # non-interactive without --yes
-    assert rc == 2
+    rc, _ = run(capsys, "spec", "approve", spec, "--by", "alice")
+    assert rc == 2, "approval without --yes is refused non-interactively"
 
     rc, data = run(capsys, "spec", "approve", spec, "--by", "alice", "--yes", "--json")
     assert rc == 0 and data["approved_by"] == "alice"
@@ -106,9 +104,8 @@ def test_init_then_full_lifecycle(capsys, tmp_path, needs_toolchain):
     data = json.loads(capsys.readouterr().out)
     assert rc2 == 0 and data["status"] == "VERIFIED_BOUNDED"
 
-    # Weaken the trusted harness after approval -> SPEC_UNAPPROVED, nothing claimed.
-    h = proj / "harness/safe_array_get_harness.c"
-    h.write_text(h.read_text().replace("assert(out_cell == storage[idx]);", ""))
+    weakened_after_approval = proj / "harness/safe_array_get_harness.c"
+    weakened_after_approval.write_text(weakened_after_approval.read_text().replace("assert(out_cell == storage[idx]);", ""))
     rc, data = run(capsys, "verify", spec, "--json")
     assert rc == 40 and data["status"] == "SPEC_UNAPPROVED"
     assert any("modified since approval" in r for r in data["verification"]["approval"]["reasons"])
@@ -211,7 +208,7 @@ def test_init_is_atomic_and_keeps_gitignore_lines(capsys, tmp_path):
     (proj / "spec.yaml").write_text("mine\n")
     (proj / ".gitignore").write_text("build")
     rc = main(["init", str(proj)])
-    assert rc == 2 and not (proj / "README.md").exists()  # nothing copied on conflict
+    assert rc == 2 and not (proj / "README.md").exists(), "nothing is copied on conflict"
     assert main(["init", str(proj), "--force"]) == 0
     assert (proj / ".gitignore").read_text().splitlines() == ["build", ".leanc/runs/"]
     assert main(["init", str(tmp_path / "q"), "--template", ""]) == 2

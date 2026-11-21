@@ -1,5 +1,3 @@
-"""Lean steps run in the sandbox within one shared time budget, and the check of what each step wrote."""
-
 from __future__ import annotations
 
 import os
@@ -33,8 +31,6 @@ _UNSAFE_FILE_NAME_CHARS_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 class GateAbort(Exception):
-    """Stops the Lean gate with an ERROR or TIMEOUT outcome."""
-
     def __init__(self, outcome: Outcome, summary: str):
         super().__init__(summary)
         self.outcome = outcome
@@ -70,7 +66,6 @@ def module_olean_path(module: str) -> str:
 
 
 def check_outputs(out_dir: Path, expected: set[str], what: str) -> None:
-    """Refuse a step that wrote anything besides ``expected`` (paths relative to ``out_dir``)."""
     found = {path.relative_to(out_dir).as_posix() for path in out_dir.rglob("*") if not path.is_dir()}
     unexpected = sorted(found - expected)
     if unexpected:
@@ -86,8 +81,6 @@ def _raw_file_name(index: int, what: str) -> str:
 
 
 class StepRunner:
-    """Runs Lean steps in the sandbox within one shared time budget."""
-
     def __init__(
         self,
         ctx: BackendContext,

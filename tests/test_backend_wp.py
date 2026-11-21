@@ -1,5 +1,3 @@
-"""Tests for the Frama-C/WP gate on tiny projects, with the real Frama-C and with canned tool output."""
-
 from __future__ import annotations
 
 import json
@@ -232,7 +230,6 @@ def test_no_approved_contract_is_inconclusive(tmp_path, needs_framac):
 
 
 def test_contract_not_seen_by_frama_c_is_not_pass(tmp_path, needs_framac):
-    """A target defined without including the protected header has only RTE goals: never a PASS."""
     src = "int add(int a, int b)\n{\n    return a / 2 + b / 2;\n}\n"
     res = run_wp(make_project(tmp_path, header=ADD_H.format(contract=GOOD_CONTRACT), src=src))
     assert res.outcome is Outcome.INCONCLUSIVE, res.summary
@@ -240,7 +237,6 @@ def test_contract_not_seen_by_frama_c_is_not_pass(tmp_path, needs_framac):
 
 
 def test_extra_contract_on_target_in_editable_code_is_rejected(tmp_path, needs_framac):
-    """Frama-C merges contracts, so an extra `requires \\false` is rejected before WP runs."""
     cheat = ADD_C.replace("int add(int a, int b)\n", "/*@ requires \\false; */\nint add(int a, int b)\n").replace(
         "return a + b;", "return 0;"
     )
@@ -294,7 +290,6 @@ def test_too_old_frama_c_is_tool_error(tmp_path, monkeypatch):
 
 
 def test_no_stale_cache_results_across_runs(tmp_path, needs_framac, monkeypatch):
-    """A second run on changed code never reuses proofs, even when the environment asks for a shared cache."""
     shared = tmp_path / "shared-cache"
     monkeypatch.setenv("FRAMAC_WP_CACHE", "update")
     monkeypatch.setenv("FRAMAC_WP_CACHEDIR", str(shared))

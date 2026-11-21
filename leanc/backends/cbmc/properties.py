@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 
 from leanc.backends.cbmc.output import PROPERTY_HOLDS, PROPERTY_VIOLATED
 from leanc.backends.counterexample.locations import location_from_cbmc
-from leanc.backends.counterexample.properties import HARNESS_ASSERTION_CLASS, is_unwinding_property, property_class
+from leanc.backends.counterexample.properties import (
+    HARNESS_ASSERTION_CLASS,
+    is_unwinding_property,
+    property_class,
+)
 
 HARNESS_ENTRY_POINT = "main"
 

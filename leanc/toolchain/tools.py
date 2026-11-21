@@ -1,6 +1,3 @@
-"""External tool discovery and version reporting (used by every backend and by
-``leanc doctor``)."""
-
 from __future__ import annotations
 
 import os
@@ -27,8 +24,6 @@ def tool_version(path: str, flag: str = "--version") -> str | None:
 
 
 def find_tool(name: str, env_var: str | None = None) -> str | None:
-    """Locate a tool.  ``env_var`` (e.g. LEANC_CLANG) may point at an explicit
-    executable; otherwise PATH (parent + standard dirs) is searched."""
     if env_var and os.environ.get(env_var):
         cand = os.environ[env_var]
         if os.path.isabs(cand) and os.access(cand, os.X_OK):

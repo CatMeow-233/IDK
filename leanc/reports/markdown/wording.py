@@ -1,5 +1,3 @@
-"""Fixed report wording: what each status does and does not establish, and the limitations every report prints."""
-
 from __future__ import annotations
 
 import re

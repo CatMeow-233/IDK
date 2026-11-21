@@ -1,5 +1,3 @@
-"""Code generation for approved specs and UNTRUSTED spec drafts from natural-language requirements."""
-
 from __future__ import annotations
 
 import json
@@ -105,7 +103,6 @@ def generate_sources(
     run_dir: Path,
     force: bool = False,
 ) -> GenerationRecord:
-    """Generate the missing (or, with ``force``, all) editable sources of an approved spec after the policy check."""
     ws = Workspace(project_root)
     approval = check_approval(spec, ws)
     if not approval.approved:
@@ -200,7 +197,6 @@ def draft_spec(
     title: str | None = None,
     force: bool = False,
 ) -> dict[str, str]:
-    """Produce an UNTRUSTED spec draft under ``drafts/<spec_id>/``; returns the relative paths written."""
     if not _SAFE_ID.match(spec_id):
         raise SpecError(f"spec id must match {SAFE_SPEC_ID_PATTERN}")
     ws = Workspace(project_root)

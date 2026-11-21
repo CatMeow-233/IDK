@@ -5,7 +5,12 @@ from leanc.backends.counterexample.inputs import extract_inputs
 from leanc.backends.counterexample.json_fields import as_dict
 from leanc.backends.counterexample.locations import location_from_cbmc
 from leanc.backends.counterexample.properties import CBMC_TOOL, VACUITY_ID_PREFIX
-from leanc.backends.counterexample.trace import call_stack_at_failure, failure_index, steps_of, summarize_trace
+from leanc.backends.counterexample.trace import (
+    call_stack_at_failure,
+    failure_index,
+    steps_of,
+    summarize_trace,
+)
 from leanc.foundation.models import FailureReport, Location
 
 MAX_UNWIND_TRACE_STEPS = 30

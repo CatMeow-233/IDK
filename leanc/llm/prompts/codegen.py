@@ -1,5 +1,3 @@
-"""Prompt for implementing the editable files of an approved spec."""
-
 from __future__ import annotations
 
 from leanc.llm.base import CodeGenRequest

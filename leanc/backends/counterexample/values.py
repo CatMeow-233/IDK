@@ -5,7 +5,11 @@ import re
 from typing import Any
 
 from leanc.backends.counterexample.json_fields import as_dict, as_int, as_list
-from leanc.backends.counterexample.names import clean_name, clean_type, strip_decorations
+from leanc.backends.counterexample.names import (
+    clean_name,
+    clean_type,
+    strip_decorations,
+)
 
 MAX_VALUE_CHARS = 200
 MAX_ELEMENTS = 16

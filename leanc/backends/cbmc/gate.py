@@ -23,12 +23,25 @@ from leanc.backends.cbmc.execution import (
 )
 from leanc.backends.cbmc.harness import count_harness_assertions, find_probes
 from leanc.backends.cbmc.output import program_version
-from leanc.backends.cbmc.properties import PropertyTally, count_listed_harness_assertions, tally_properties
+from leanc.backends.cbmc.properties import (
+    PropertyTally,
+    count_listed_harness_assertions,
+    tally_properties,
+)
 from leanc.backends.cbmc.vacuity import evaluate_probes
 from leanc.backends.counterexample.locations import location_from_cbmc
 from leanc.backends.counterexample.properties import property_class
-from leanc.backends.counterexample.reports import failure_from_cbmc_property, unwind_failure
-from leanc.foundation.models import Diagnostic, FailureReport, Location, StageResult, ToolInvocation
+from leanc.backends.counterexample.reports import (
+    failure_from_cbmc_property,
+    unwind_failure,
+)
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    StageResult,
+    ToolInvocation,
+)
 from leanc.foundation.runner import Limits
 from leanc.foundation.status import Outcome, outcome_to_status
 from leanc.toolchain.context import BackendContext
@@ -337,8 +350,10 @@ def _check_vacuity(gate: _Gate, harness_text: str, unwind_insufficient: bool) ->
     if not has_probes:
         gate.details["vacuity"] = {"status": "unchecked", "probes": {}}
         return None, [
-            f"no LEANC_REACH probes in the harness {verification.harness}; vacuity cannot be checked "
-            '(add LEANC_REACH("label") after the call under verification)'
+            (
+                f"no LEANC_REACH probes in the harness {verification.harness}; vacuity cannot be checked "
+                '(add LEANC_REACH("label") after the call under verification)'
+            )
         ]
     vacuity_run, problem = gate.execute_checked("vacuity")
     if problem is not None:

@@ -9,9 +9,17 @@ from leanc.backends.counterexample.properties import (
     is_unwinding_property,
     property_class,
 )
-from leanc.backends.counterexample.reports import failure_from_cbmc_property, unwind_failure, vacuity_failure
+from leanc.backends.counterexample.reports import (
+    failure_from_cbmc_property,
+    unwind_failure,
+    vacuity_failure,
+)
 from leanc.backends.counterexample.trace import call_stack_at_failure, summarize_trace
-from leanc.backends.counterexample.values import MAX_ELEMENTS, MAX_VALUE_CHARS, render_value
+from leanc.backends.counterexample.values import (
+    MAX_ELEMENTS,
+    MAX_VALUE_CHARS,
+    render_value,
+)
 
 __all__ = [
     "MAX_ELEMENTS",

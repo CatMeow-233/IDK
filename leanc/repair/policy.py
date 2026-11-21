@@ -1,5 +1,3 @@
-"""Defence-in-depth policy for AI-generated and AI-repaired code, applied before any verifier runs."""
-
 from __future__ import annotations
 
 from collections import Counter
@@ -317,7 +315,6 @@ def check_candidate(
     *,
     max_changed_lines: int | None = None,
 ) -> PolicyDecision:
-    """Path rules for every changed path, count-based content rules and the integrity gate's absolute rules."""
     changed = changed_paths(old, new)
     if not changed:
         return _decision(
@@ -364,7 +361,6 @@ def check_candidate(
 
 
 def check_generated(spec: Spec, files: dict[str, str]) -> PolicyDecision:
-    """The candidate rules against empty old files, plus MISSING_TARGET when no generated file defines the target."""
     violations: list[PolicyViolation] = []
     content_paths: list[str] = []
     for path in sorted(files):

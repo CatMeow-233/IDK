@@ -1,5 +1,3 @@
-"""Repair-prompt section for specs that use the Frama-C/WP gate (V2)."""
-
 from __future__ import annotations
 
 from leanc.specs.model import Spec
@@ -27,7 +25,6 @@ TERMINATION_REQUIREMENT = " Termination is required: every loop needs a `loop va
 
 
 def wp_repair_note(spec: Spec) -> str | None:
-    """Extra repair-prompt section for specs with the ``wp`` gate (else None)."""
     if "wp" not in spec.gates or spec.wp is None:
         return None
     termination = TERMINATION_REQUIREMENT if spec.wp.require_termination else ""

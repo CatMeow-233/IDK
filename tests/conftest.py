@@ -1,5 +1,3 @@
-"""Shared fixtures: an isolated LEANC_HOME for every test and ``needs_*`` fixtures that skip when a tool is missing."""
-
 from __future__ import annotations
 
 import shutil
@@ -49,8 +47,6 @@ def needs_toolchain(needs_clang, needs_cbmc, needs_bwrap):
 
 @pytest.fixture
 def example_copy(tmp_path):
-    """Return a function copying ``examples/<name>`` into a fresh tmp project."""
-
     def _copy(name: str) -> Path:
         src = EXAMPLES / name
         dst = tmp_path / name

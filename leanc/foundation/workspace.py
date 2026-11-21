@@ -1,5 +1,3 @@
-"""Workspace boundary: relative, symlink-free paths inside the project root and atomic, non-following writes."""
-
 from __future__ import annotations
 
 import os
@@ -24,11 +22,9 @@ class Workspace:
         self.root = Path(os.path.realpath(root_path))
 
     def normalize(self, rel: str | os.PathLike[str]) -> str:
-        """Validate a workspace-relative path and return it in POSIX form."""
         return normalize_relpath(rel)
 
     def resolve(self, rel: str | os.PathLike[str], *, must_exist: bool = False) -> Path:
-        """Resolve a relative path inside the workspace, rejecting symlinks."""
         norm = self.normalize(rel)
         self._reject_symlinked_components(norm, must_exist=must_exist)
         full = self.root / norm
@@ -49,7 +45,6 @@ class Workspace:
                 raise WorkspaceError(f"symbolic links are not allowed in workspace paths: {norm}")
 
     def relpath(self, path: str | os.PathLike[str]) -> str:
-        """Convert an absolute path inside the workspace to a relative one."""
         real = Path(os.path.realpath(path))
         if not _is_within(real, self.root):
             raise WorkspaceError(f"path is outside the workspace: {path}")
@@ -88,7 +83,6 @@ class Workspace:
         return self.write_bytes(rel, content.encode("utf-8"), mode=mode)
 
     def write_bytes(self, rel: str, data: bytes, *, mode: int | None = None) -> Path:
-        """Atomically replace ``rel``; ``mode=None`` keeps an existing file's permission bits (0644 for new files)."""
         target = self._resolve_again_after_creating_parents(rel)
         if target.exists() and (target.is_symlink() or not target.is_file()):
             raise WorkspaceError(f"refusing to overwrite non-regular file: {rel}")
@@ -109,7 +103,6 @@ class Workspace:
         return self.resolve(rel)
 
     def copy_into(self, rels: list[str], dest_dir: str | os.PathLike[str]) -> dict[str, Path]:
-        """Copy workspace files into ``dest_dir`` keeping their relative layout; returns rel -> destination path."""
         dest = Path(dest_dir)
         out: dict[str, Path] = {}
         for rel in rels:
@@ -146,7 +139,6 @@ def _is_absolute_or_drive_path(path: str) -> bool:
 
 
 def normalize_relpath(rel: str | os.PathLike[str]) -> str:
-    """Validate a relative path (not absolute, no ``..``) and return it in normalised POSIX form; pure string check."""
     s = os.fspath(rel)
     if not isinstance(s, str) or not s or "\x00" in s:
         raise WorkspaceError(f"invalid path {s!r}")
@@ -169,7 +161,6 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def safe_rmtree(path: str | os.PathLike[str], within: str | os.PathLike[str]) -> None:
-    """Remove ``path`` only if it lies inside ``within`` (defence in depth)."""
     p = Path(os.path.realpath(path))
     w = Path(os.path.realpath(within))
     if p == w or not _is_within(p, w):

@@ -1,5 +1,3 @@
-"""Markdown primitives that render untrusted tool and provider text inertly: escaping, code spans, fences, tables."""
-
 from __future__ import annotations
 
 import re
@@ -59,7 +57,6 @@ def shorten(text: str, limit: int) -> str:
 
 
 def escape_inline(text: object, limit: int | None = None) -> str:
-    """Escape untrusted text for inline use (single line, no markup)."""
     s = flatten(text)
     if limit:
         s = shorten(s, limit)
@@ -80,7 +77,6 @@ def _needs_padding_inside_code_span(s: str) -> bool:
 
 
 def code_span(text: object, limit: int | None = None) -> str:
-    """Inline code span that is safe for any content (backticks included)."""
     s = flatten(text)
     if limit:
         s = shorten(s, limit)
@@ -96,14 +92,12 @@ def _unix_newlines(text: str | None) -> str:
 
 
 def table_cell(text: str) -> str:
-    """Make already-escaped inline markdown safe inside a GFM table cell."""
     s = _unix_newlines(text).strip()
     s = s.replace("|", "\\|").replace("\n", "<br>")
     return s or " "
 
 
 def fenced_block(text: str, lang: str = "text") -> list[str]:
-    """Fenced block whose fence cannot be closed by the content."""
     body = _unix_newlines(text).rstrip("\n")
     fence = "`" * max(MIN_FENCE_TICKS, _longest_backtick_run(body) + 1)
     return [f"{fence}{lang}", *body.split("\n"), fence]
@@ -160,5 +154,4 @@ def _collapse_blank_runs_outside_fences(lines: list[str]) -> list[str]:
 
 
 def finish_document(lines: list[str]) -> str:
-    """Join report lines (fenced content verbatim, other blank-line runs collapsed) and redact the text."""
     return redact("\n".join(_collapse_blank_runs_outside_fences(lines)) + "\n")

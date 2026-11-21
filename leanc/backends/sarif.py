@@ -1,5 +1,3 @@
-"""Convert SARIF 2.1.0 logs of the Clang Static Analyzer into diagnostics, tolerating missing or malformed fields."""
-
 from __future__ import annotations
 
 import json
@@ -206,7 +204,6 @@ def _result_diagnostic(run: _SarifRun, result: dict, tool: str) -> Diagnostic:
 
 
 def parse_sarif(data: dict, *, base_dir: Path | None = None, tool: str = ANALYZER_TOOL) -> list[Diagnostic]:
-    """Convert a SARIF 2.1.0 log into diagnostics; code flows become the bug path."""
     diagnostics: list[Diagnostic] = []
     for raw_run in _as_list(_as_dict(data).get("runs")):
         sarif_run = _as_dict(raw_run)

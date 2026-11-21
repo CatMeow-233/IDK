@@ -1,5 +1,3 @@
-"""Sanitizer gate: check inputs, build the sanitized test binary, run every trusted case sandboxed and summarise."""
-
 from __future__ import annotations
 
 import math
@@ -436,7 +434,6 @@ def _final_result(run: _SanitizerRun) -> StageResult:
 
 
 def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
-    """Build the sanitized test binary and run every trusted test case (definite evidence dominates the outcome)."""
     plan = sanitizer_plan(ctx.spec.tests.sanitizers)
     run = _SanitizerRun(ctx=ctx, plan=plan, details=_initial_details(ctx, plan))
     tests = ctx.spec.tests

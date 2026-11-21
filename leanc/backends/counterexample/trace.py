@@ -5,8 +5,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from leanc.backends.counterexample.json_fields import as_dict, as_list
-from leanc.backends.counterexample.locations import is_cprover_pseudo_file, location_from_cbmc
-from leanc.backends.counterexample.names import clean_name, is_internal_function, is_internal_name
+from leanc.backends.counterexample.locations import (
+    is_cprover_pseudo_file,
+    location_from_cbmc,
+)
+from leanc.backends.counterexample.names import (
+    clean_name,
+    is_internal_function,
+    is_internal_name,
+)
 from leanc.backends.counterexample.values import render_value
 from leanc.foundation.models import Location, TraceStep
 

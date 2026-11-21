@@ -1,5 +1,3 @@
-"""System and user prompts for every provider method: pure, deterministic, bounded and redacted."""
-
 from __future__ import annotations
 
 from leanc.llm.prompts.analysis import ANALYZE_SYSTEM, EXPLAIN_SYSTEM, build_analyze_prompt, build_explain_prompt

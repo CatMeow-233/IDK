@@ -1,5 +1,3 @@
-"""The Frama-C/WP command line: preprocessor arguments, RTE guard flags and prover settings."""
-
 from __future__ import annotations
 
 import math
@@ -43,7 +41,6 @@ _SHELL_SAFE_DEFINE_RE = re.compile(r"^(?:-D)?[A-Za-z_]\w*(?:=[A-Za-z0-9_.+-]*)?$
 
 
 def shell_unsafe_preprocessor_argument(ctx: BackendContext) -> str | None:
-    """Why an include directory or define cannot go into the shell command Frama-C runs as its preprocessor."""
     spec = ctx.spec
     for directory in spec.sources.include_dirs:
         if not _SHELL_SAFE_INCLUDE_DIR_RE.match(directory):
@@ -65,7 +62,6 @@ def preprocessor_args(ctx: BackendContext) -> list[str]:
 
 
 def rte_flags(ctx: BackendContext) -> tuple[list[str], list[str]]:
-    """Frama-C ``-warn-*`` flags and the names of the spec checks they honour beyond the defaults."""
     flags = [ALWAYS_ON_RTE_FLAG]
     honoured: list[str] = []
     verification = ctx.spec.verification
@@ -83,7 +79,6 @@ def prover_timeout(ctx: BackendContext) -> int:
 
 
 def prover_parallelism() -> int:
-    """Parallel prover processes: smoke tests pass by timing out, so each one costs a full prover timeout."""
     return max(MIN_PROVER_PROCESSES, min(MAX_PROVER_PROCESSES, os.cpu_count() or MIN_PROVER_PROCESSES))
 
 
@@ -99,7 +94,6 @@ def build_wp_argv(
     work_dir: Path,
     why3_conf: Path | None,
 ) -> list[str]:
-    """Argv of the Frama-C/WP run, to be started with ``cwd`` set to ``ctx.snapshot_dir``."""
     spec = ctx.spec
     wp = spec.wp
     cpp = preprocessor_args(ctx)

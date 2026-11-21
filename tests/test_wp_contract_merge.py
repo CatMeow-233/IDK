@@ -1,5 +1,3 @@
-"""A macro-hidden re-declaration of the target that makes Frama-C merge contracts is rejected lexically and by WP."""
-
 from __future__ import annotations
 
 import json

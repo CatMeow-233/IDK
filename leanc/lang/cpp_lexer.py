@@ -1,5 +1,3 @@
-"""C++ lexical forms (digit separators, raw string literals) rewritten so the C front end reads C++ files."""
-
 from __future__ import annotations
 
 import re
@@ -41,7 +39,6 @@ def _digit_separators_as_zeros(number: str) -> str:
 
 
 def cpp_normalize(text: str) -> str:
-    """Rewrite C++-only digit separators and raw strings into C-lexable text, keeping every offset and line break."""
     out: list[str] = []
     pos = 0
     n = len(text)
@@ -73,8 +70,6 @@ def cpp_normalize(text: str) -> str:
 
 
 class CppSource(CSource):
-    """:class:`CSource` views of a C++ file after :func:`cpp_normalize`; ``raw`` stays the original text."""
-
     def __init__(self, raw: str):
         super().__init__(cpp_normalize(raw))
         self.raw = raw

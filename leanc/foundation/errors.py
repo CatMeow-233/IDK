@@ -1,29 +1,26 @@
-"""Exception hierarchy.  CLI maps these to readable messages and exit codes."""
-
-
 class LeanCError(Exception):
-    """Base class for expected, user-facing errors."""
+    pass
 
 
 class WorkspaceError(LeanCError):
-    """Path traversal, symlink escape or other workspace-boundary violation."""
+    pass
 
 
 class SpecError(LeanCError):
-    """Malformed or invalid specification."""
+    pass
 
 
 class ApprovalError(LeanCError):
-    """Approval store problem (missing key, corrupt record, ...)."""
+    pass
 
 
 class ProviderError(LeanCError):
-    """LLM provider failure (network, auth, malformed response)."""
+    pass
 
 
 class PatchError(LeanCError):
-    """A proposed patch could not be parsed or applied."""
+    pass
 
 
 class ConfigError(LeanCError):
-    """Invalid project configuration."""
+    pass

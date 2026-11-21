@@ -6,8 +6,18 @@ from typing import Any
 from leanc.backends.counterexample.json_fields import as_dict
 from leanc.backends.counterexample.locations import relative_file, same_file
 from leanc.backends.counterexample.names import clean_name, is_internal_name
-from leanc.backends.counterexample.trace import failure_index, function_id, is_actual_parameter, steps_of
-from leanc.backends.counterexample.values import parse_lhs, render_value, set_path, value_type
+from leanc.backends.counterexample.trace import (
+    failure_index,
+    function_id,
+    is_actual_parameter,
+    steps_of,
+)
+from leanc.backends.counterexample.values import (
+    parse_lhs,
+    render_value,
+    set_path,
+    value_type,
+)
 from leanc.foundation.models import CounterexampleInput
 
 HARNESS_ENTRY_POINT = "main"

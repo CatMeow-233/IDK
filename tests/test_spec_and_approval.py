@@ -1,5 +1,3 @@
-"""Spec schema, hashing, approval trust boundary and workspace guards (no external tools)."""
-
 from __future__ import annotations
 
 import json

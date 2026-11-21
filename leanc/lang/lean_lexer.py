@@ -1,5 +1,3 @@
-"""Lean 4 lexer: comments and string / char literal contents blanked, hiding constructs recorded."""
-
 from __future__ import annotations
 
 import bisect
@@ -50,8 +48,6 @@ def _nested_block_comment_end(s: str, start: int) -> int:
 
 
 class LeanSource:
-    """A Lean file with comments and literal contents blanked, offset- and newline-aligned with the original."""
-
     def __init__(self, raw: str):
         self.raw = raw
         self.obfuscation: list[ObfuscationSite] = []

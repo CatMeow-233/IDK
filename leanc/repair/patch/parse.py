@@ -1,5 +1,3 @@
-"""Strict parser for (multi-file, git-style) unified diffs; hunk bodies are read by their declared line counts."""
-
 from __future__ import annotations
 
 import re
@@ -262,7 +260,6 @@ class _DiffParser:
 
 
 def parse_unified_diff(text: str) -> list[FilePatch]:
-    """Parse a unified diff (git headers, ``/dev/null``, omitted counts, no-newline markers, surrounding prose)."""
     if not isinstance(text, str):
         raise PatchError(f"patch must be a string, got {type(text).__name__}")
     return _DiffParser(text).parse()

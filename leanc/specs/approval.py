@@ -1,5 +1,3 @@
-"""Spec approval: HMAC-signed, hash-locked approval records plus a rollback ledger kept outside the workspace."""
-
 from __future__ import annotations
 
 import fcntl
@@ -78,7 +76,6 @@ def _read_key(p: Path) -> bytes:
 
 
 def load_key(create: bool = False) -> bytes | None:
-    """Load the per-user approval signing key, creating it atomically when ``create`` is set."""
     p = _key_path()
     if p.is_symlink():
         raise ApprovalError(f"approval key must not be a symbolic link: {p}")
@@ -282,7 +279,6 @@ def approve_spec(
     approved_by: str,
     note: str = "",
 ) -> dict[str, Any]:
-    """Create (or idempotently refresh) a signed approval record; changed content needs a strictly greater version."""
     if not approved_by.strip():
         raise ApprovalError("approver name is required")
     key = load_key(create=True)
@@ -378,7 +374,6 @@ def _protected_file_mismatches(spec: Spec, approved_files: dict[str, str], files
 
 
 def check_approval(spec: Spec, ws: Workspace, files_ws: Workspace | None = None) -> ApprovalCheck:
-    """Check ``spec`` and its protected files (read from ``files_ws``, default ``ws``) against the signed record."""
     files_ws = files_ws or ws
     content_hash = spec_hash(spec)
     identity = dict(spec_id=spec.spec_id, spec_version=spec.version, spec_hash=content_hash)
@@ -408,7 +403,6 @@ def check_approval(spec: Spec, ws: Workspace, files_ws: Workspace | None = None)
 
 
 def approved_snapshot(root: Path, spec_id: str) -> dict[str, Any] | None:
-    """The spec snapshot of the current approval record; None when no readable record exists."""
     store = _read_store(root, spec_id).store
     if not store or not store.get("current"):
         return None

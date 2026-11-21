@@ -1,5 +1,3 @@
-"""Lean 4 toolchain discovery: locate ``lean`` (and ``leanchecker``) of a release toolchain."""
-
 from __future__ import annotations
 
 import glob
@@ -17,13 +15,14 @@ INSTALL_HINT = (
     "bin/lean on PATH or set LEANC_LEAN=/path/to/toolchain/bin/lean (no Mathlib needed)"
 )
 
+CORE_LIBRARY_OLEAN = "Init.olean"
 _VERSION_RE = re.compile(r"version (\d+\.\d+\.\d+[\w.\-]*)")
 
 
 @dataclass(frozen=True)
 class LeanToolchain:
-    lean: str  # real path of the lean executable
-    prefix: str  # toolchain root (bin/, lib/lean/), bound read-only into the sandbox
+    lean: str
+    prefix: str
     version: str | None
     version_line: str | None
     leanchecker: str | None
@@ -33,13 +32,16 @@ class LeanToolchain:
         return os.path.join(self.prefix, "lib", "lean")
 
 
+def _has_core_library(prefix: str) -> bool:
+    return os.path.isfile(os.path.join(prefix, "lib", "lean", CORE_LIBRARY_OLEAN))
+
+
 def _toolchain_from(path: str) -> LeanToolchain | None:
     real = os.path.realpath(path)
     if not (os.path.isfile(real) and os.access(real, os.X_OK)):
         return None
     prefix = os.path.dirname(os.path.dirname(real))
-    # an elan shim resolves to the elan binary, which has no toolchain next to it
-    if not os.path.isfile(os.path.join(prefix, "lib", "lean", "Init.olean")):
+    if not _has_core_library(prefix):
         return None
     line = tool_version(real)
     if not line or not line.startswith("Lean"):
@@ -60,9 +62,6 @@ def _version_key(path: str) -> list:
 
 
 def find_lean() -> LeanToolchain | None:
-    """Locate a Lean 4 toolchain: ``LEANC_LEAN`` (the ``lean`` executable or
-    the toolchain directory; if set, nothing else is tried), then ``lean`` on
-    PATH, then ``/opt/lean/*/bin/lean`` (newest first)."""
     env = os.environ.get("LEANC_LEAN")
     if env:
         cands = [env, os.path.join(env, "bin", "lean"), os.path.join(env, "lean")] if os.path.isdir(env) else [env]

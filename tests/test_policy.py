@@ -1,5 +1,3 @@
-"""Repair / generation policy: every rule, count-based "new construct" semantics, no false positives from literals."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,7 +26,6 @@ def spec() -> Spec:
 
 @pytest.fixture(scope="module")
 def spec2(spec) -> Spec:
-    """Same spec with two editable files."""
     data = spec.model_dump(mode="json")
     data["sources"]["editable"] = ["src/safe_array.c", "src/helper.c"]
     return Spec.model_validate(data)
@@ -43,7 +40,6 @@ def cand(spec, new_src: str, old_src: str = BUGGY, **kw):
 
 
 def inject(code: str, before: str = "    if (idx > len) {") -> str:
-    """Insert ``code`` (one or more lines) into the buggy function body."""
     assert before in BUGGY
     return BUGGY.replace(before, code + "\n" + before)
 

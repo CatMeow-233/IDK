@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""Reproducible experiment runner for Lean C.
-
-For every ``examples/<name>/expected.yaml`` this script
-
-1. copies the example into a fresh temporary project,
-2. approves its spec(s) with a throw-away signing key in a temporary
-   ``LEANC_HOME`` (the example specs, harnesses and tests are human-authored;
-   the script plays the human reviewer — your real key is never touched),
-3. runs ``leanc verify`` on the shipped sources,
-4. in a second fresh copy runs ``leanc run --provider mock`` (mock generation +
-   verification + counterexample-driven repair with the example's mock fixtures),
-5. verifies any spec variants listed in ``expected.yaml``,
-
-and compares every observed status with the expected one.  Results are written
-to ``experiments/results/results.json`` and ``experiments/results/results.md``.
-
-The mock provider replays fixed fixtures: these numbers measure the
-*verification pipeline* (detection, policy enforcement, status honesty), not the
-performance of any LLM.
-
-Usage::
-
-    python scripts/run_experiments.py [--examples DIR] [--out DIR] [--only NAME ...]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -39,12 +14,26 @@ from pathlib import Path
 
 import yaml
 
+from leanc import __version__
+from leanc.foundation.status import EXIT_CODES
+from leanc.toolchain.environment import toolchain
+
 REPO = Path(__file__).resolve().parent.parent
+DESCRIPTION = (
+    "Run `leanc verify` and `leanc run --provider mock` on every examples/<name>/expected.yaml "
+    "(throw-away LEANC_HOME) and compare the observed statuses with the expected ones."
+)
+LEANC_TIMEOUT_S = 900
+CAPTURED_OUTPUT_CHARS = 2000
+STATUS_EXIT_CODES = frozenset(EXIT_CODES.values())
+SECRET_ENV_VARS = ("LEANC_API_KEY", "OPENAI_API_KEY")
+EXPERIMENT_REVIEWER = "experiment-reviewer"
+EXAMPLE_FAILURES = (OSError, RuntimeError, subprocess.SubprocessError, yaml.YAMLError)
 
 
-def leanc(args: list[str], env: dict[str, str], cwd: Path, timeout: float = 900) -> tuple[int, dict, float]:
+def leanc(args: list[str], env: dict[str, str], cwd: Path, timeout: float = LEANC_TIMEOUT_S) -> tuple[int, dict, float]:
     t0 = time.monotonic()
-    cp = subprocess.run(  # noqa: S603 - fixed argv
+    cp = subprocess.run(
         [sys.executable, "-m", "leanc", *args, "--json"],
         cwd=cwd,
         env=env,
@@ -57,9 +46,9 @@ def leanc(args: list[str], env: dict[str, str], cwd: Path, timeout: float = 900)
     try:
         data = json.loads(cp.stdout) if cp.stdout.strip() else {}
     except json.JSONDecodeError:
-        data = {"_unparsable_stdout": cp.stdout[-2000:]}
-    if cp.returncode not in (0, 10, 11, 12, 13, 20, 21, 30, 40, 50):
-        data["_stderr"] = cp.stderr[-2000:]
+        data = {"_unparsable_stdout": cp.stdout[-CAPTURED_OUTPUT_CHARS:]}
+    if cp.returncode not in STATUS_EXIT_CODES:
+        data["_stderr"] = cp.stderr[-CAPTURED_OUTPUT_CHARS:]
     return cp.returncode, data, dt
 
 
@@ -73,21 +62,20 @@ def detected_tools(payload: dict) -> list[str]:
 
 
 def approve(spec: Path, env: dict[str, str], cwd: Path) -> None:
-    rc, data, _ = leanc(["spec", "approve", str(spec), "--by", "experiment-reviewer", "--yes"], env, cwd)
+    rc, data, _ = leanc(["spec", "approve", str(spec), "--by", EXPERIMENT_REVIEWER, "--yes"], env, cwd)
     if rc != 0:
         raise RuntimeError(f"approval failed for {spec}: {data}")
 
 
-def run_example(ex: Path, work: Path, env: dict[str, str]) -> dict:
-    exp = yaml.safe_load((ex / "expected.yaml").read_text(encoding="utf-8")) or {}
-    row: dict = {"example": ex.name, "expected": exp}
+def _fresh_copy(ex: Path, dst: Path, env: dict[str, str]) -> Path:
+    shutil.copytree(ex, dst, ignore=shutil.ignore_patterns(".leanc"))
+    approve(dst / "spec.yaml", env, dst)
+    return dst
 
-    # ---- verify the shipped sources
-    vdir = work / "verify" / ex.name
-    shutil.copytree(ex, vdir, ignore=shutil.ignore_patterns(".leanc"))
-    approve(vdir / "spec.yaml", env, vdir)
+
+def _verify_shipped_sources(vdir: Path, env: dict[str, str]) -> dict:
     rc, data, dt = leanc(["verify", str(vdir / "spec.yaml")], env, vdir)
-    row["verify"] = {
+    return {
         "status": data.get("status"),
         "exit_code": rc,
         "seconds": round(dt, 2),
@@ -97,20 +85,21 @@ def run_example(ex: Path, work: Path, env: dict[str, str]) -> dict:
             for s in (data.get("verification") or {}).get("stages", [])
         ],
     }
-    # ---- variants
-    row["variants"] = {}
+
+
+def _verify_variants(vdir: Path, exp: dict, env: dict[str, str]) -> dict:
+    variants = {}
     for spec_name, vexp in (exp.get("variants") or {}).items():
         approve(vdir / spec_name, env, vdir)
-        rc2, d2, dt2 = leanc(["verify", str(vdir / spec_name)], env, vdir)
-        row["variants"][spec_name] = {"status": d2.get("status"), "expected": vexp.get("verify"), "seconds": round(dt2, 2)}
+        _, data, dt = leanc(["verify", str(vdir / spec_name)], env, vdir)
+        variants[spec_name] = {"status": data.get("status"), "expected": vexp.get("verify"), "seconds": round(dt, 2)}
+    return variants
 
-    # ---- full workflow with the mock provider
-    rdir = work / "run" / ex.name
-    shutil.copytree(ex, rdir, ignore=shutil.ignore_patterns(".leanc"))
-    approve(rdir / "spec.yaml", env, rdir)
+
+def _run_with_mock_provider(rdir: Path, env: dict[str, str]) -> dict:
     rc, data, dt = leanc(["run", str(rdir / "spec.yaml"), "--provider", "mock", "--regenerate"], env, rdir)
     rounds = data.get("repair_rounds") or []
-    row["run"] = {
+    return {
         "status": data.get("status"),
         "exit_code": rc,
         "seconds": round(dt, 2),
@@ -118,6 +107,9 @@ def run_example(ex: Path, work: Path, env: dict[str, str]) -> dict:
         "rejected_rounds": [r["round"] for r in rounds if r.get("policy_allowed") is False],
         "violations": sorted({v for r in rounds for v in r.get("violations", [])}),
     }
+
+
+def _matches_expectations(row: dict, exp: dict) -> bool:
     ok = row["verify"]["status"] == exp.get("verify") and row["run"]["status"] == exp.get("run")
     for v in row["variants"].values():
         ok = ok and v["status"] == v["expected"]
@@ -125,8 +117,31 @@ def run_example(ex: Path, work: Path, env: dict[str, str]) -> dict:
         ok = ok and set(exp["detected_by"]).issubset(set(row["verify"]["detected_by"]))
     if "rejected_rounds" in exp:
         ok = ok and row["run"]["rejected_rounds"] == list(exp["rejected_rounds"])
-    row["match"] = ok
+    return ok
+
+
+def run_example(ex: Path, work: Path, env: dict[str, str]) -> dict:
+    exp = yaml.safe_load((ex / "expected.yaml").read_text(encoding="utf-8")) or {}
+    row: dict = {"example": ex.name, "expected": exp}
+    vdir = _fresh_copy(ex, work / "verify" / ex.name, env)
+    row["verify"] = _verify_shipped_sources(vdir, env)
+    row["variants"] = _verify_variants(vdir, exp, env)
+    rdir = _fresh_copy(ex, work / "run" / ex.name, env)
+    row["run"] = _run_with_mock_provider(rdir, env)
+    row["match"] = _matches_expectations(row, exp)
     return row
+
+
+def _failed_example_row(ex: Path, exc: Exception) -> dict:
+    return {
+        "example": ex.name,
+        "error": f"{type(exc).__name__}: {exc}",
+        "match": False,
+        "expected": {},
+        "verify": {"status": None, "detected_by": []},
+        "run": {"status": None, "repair_rounds": 0, "rejected_rounds": []},
+        "variants": {},
+    }
 
 
 def render_md(rows: list[dict], meta: dict) -> str:
@@ -156,8 +171,42 @@ def render_md(rows: list[dict], meta: dict) -> str:
     return "\n".join(lines)
 
 
+def _experiment_env(work: Path) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV_VARS}
+    env["LEANC_HOME"] = str(work / "leanc_home")
+    env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
+    return env
+
+
+def _run_all(examples: list[Path]) -> list[dict]:
+    rows = []
+    with tempfile.TemporaryDirectory(prefix="leanc-exp-") as td:
+        work = Path(td)
+        env = _experiment_env(work)
+        for ex in examples:
+            print(f"== {ex.name}", flush=True)
+            try:
+                row = run_example(ex, work, env)
+            except EXAMPLE_FAILURES as exc:
+                row = _failed_example_row(ex, exc)
+            print(f"   verify={row['verify']['status']} run={row['run']['status']} match={row['match']}", flush=True)
+            rows.append(row)
+    return rows
+
+
+def _meta() -> dict:
+    tc = toolchain()
+    return {
+        "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "leanc_version": __version__,
+        "python": sys.version.split()[0],
+        "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
+        "tools": f"{tc.clang_version}; {tc.cbmc_version and 'cbmc ' + tc.cbmc_version}",
+    }
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--examples", default=str(REPO / "examples"))
     ap.add_argument("--out", default=str(REPO / "experiments" / "results"))
     ap.add_argument("--only", nargs="*", help="run only these example names")
@@ -167,33 +216,8 @@ def main() -> int:
         examples = [e for e in examples if e.name in set(args.only)]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    rows = []
-    with tempfile.TemporaryDirectory(prefix="leanc-exp-") as td:
-        work = Path(td)
-        env = {k: v for k, v in os.environ.items() if k not in ("LEANC_API_KEY", "OPENAI_API_KEY")}
-        env["LEANC_HOME"] = str(work / "leanc_home")
-        env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
-        for ex in examples:
-            print(f"== {ex.name}", flush=True)
-            try:
-                row = run_example(ex, work, env)
-            except Exception as exc:  # report, never hide
-                row = {"example": ex.name, "error": f"{type(exc).__name__}: {exc}", "match": False,
-                       "expected": {}, "verify": {"status": None, "detected_by": []},
-                       "run": {"status": None, "repair_rounds": 0, "rejected_rounds": []}, "variants": {}}
-            print(f"   verify={row['verify']['status']} run={row['run']['status']} match={row['match']}", flush=True)
-            rows.append(row)
-    from leanc import __version__
-    from leanc.toolchain.environment import toolchain
-
-    tc = toolchain()
-    meta = {
-        "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "leanc_version": __version__,
-        "python": sys.version.split()[0],
-        "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
-        "tools": f"{tc.clang_version}; {tc.cbmc_version and 'cbmc ' + tc.cbmc_version}",
-    }
+    rows = _run_all(examples)
+    meta = _meta()
     (out / "results.json").write_text(json.dumps({"meta": meta, "results": rows}, indent=2, ensure_ascii=False), encoding="utf-8")
     (out / "results.md").write_text(render_md(rows, meta), encoding="utf-8")
     good = sum(1 for r in rows if r["match"])

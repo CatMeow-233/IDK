@@ -1,5 +1,3 @@
-"""Unified-diff handling for repair proposals in pure Python (no ``patch`` binary, no file-system access)."""
-
 from leanc.repair.patch.apply import DEFAULT_MAX_OFFSET, apply_file_patches, apply_unified_diff
 from leanc.repair.patch.diff import candidate_hash, changed_paths, diff_stats, make_unified_diff
 from leanc.repair.patch.model import FilePatch, Hunk, split_lines

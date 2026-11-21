@@ -1,5 +1,3 @@
-"""``leanc doctor`` and ``leanc init``."""
-
 from __future__ import annotations
 
 from importlib import resources

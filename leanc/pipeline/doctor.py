@@ -1,5 +1,3 @@
-"""``leanc doctor``: check that the toolchain actually works (not just exists)."""
-
 from __future__ import annotations
 
 import json
@@ -58,7 +56,6 @@ def _tiny_c(directory: Path, name: str, text: str) -> Path:
 
 
 def _safe_url(url: str) -> str:
-    """Strip userinfo, query and fragment before printing a URL."""
     try:
         parts = urlsplit(url)
         host = parts.hostname or ""

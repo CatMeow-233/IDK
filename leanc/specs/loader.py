@@ -1,5 +1,3 @@
-"""Loading, validating, hashing and serialising specs."""
-
 from __future__ import annotations
 
 import json
@@ -82,7 +80,6 @@ def spec_canonical_dict(spec: Spec) -> dict[str, Any]:
 
 
 def spec_hash(spec: Spec) -> str:
-    """Hash of the semantic content (validated, with defaults): YAML formatting or comment edits keep it unchanged."""
     return canonical_hash(spec_canonical_dict(spec))
 
 
@@ -99,7 +96,6 @@ def _shown_value(value: Any) -> str:
 
 
 def diff_spec_dicts(old: dict[str, Any], new: dict[str, Any], prefix: str = "") -> list[str]:
-    """Field-level ``+`` / ``-`` / ``~`` diff, used by ``leanc spec status`` to show what changed since approval."""
     out: list[str] = []
     for k in sorted(set(old) | set(new)):
         path = f"{prefix}.{k}" if prefix else str(k)

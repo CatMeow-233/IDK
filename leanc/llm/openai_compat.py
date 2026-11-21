@@ -1,5 +1,3 @@
-"""Provider for any OpenAI-compatible ``/chat/completions`` endpoint, built on :mod:`urllib` (no vendor SDK)."""
-
 from __future__ import annotations
 
 import http.client
@@ -184,8 +182,6 @@ def _is_default_openai_host(base_url: str) -> bool:
 
 
 class OpenAICompatProvider(LLMProvider):
-    """Chat-completions client that never leaks its key, follows no redirects and caps response sizes."""
-
     def __init__(
         self,
         base_url: str,
@@ -263,7 +259,6 @@ class OpenAICompatProvider(LLMProvider):
         environ: Mapping[str, str] | None = None,
         **overrides: Any,
     ) -> OpenAICompatProvider:
-        """Configure from the LEANC_* environment variables (LEANC_MODEL is required)."""
         get = _env_reader(os.environ if environ is None else environ)
         model = get("LEANC_MODEL")
         if not model:

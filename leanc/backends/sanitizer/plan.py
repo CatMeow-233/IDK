@@ -1,5 +1,3 @@
-"""Map the requested sanitizers onto clang flags, runtime options, exit codes and a sandbox-visible symbolizer."""
-
 from __future__ import annotations
 
 import glob
@@ -30,8 +28,6 @@ _CLANG_MAJOR_VERSION_RE = re.compile(r"clang version (\d+)")
 
 @dataclass(frozen=True)
 class SanitizerPlan:
-    """How the requested sanitizers map onto clang flags and runtime options."""
-
     requested: tuple[str, ...]
     effective: tuple[str, ...]
     fsanitize: tuple[str, ...]
@@ -46,7 +42,6 @@ class SanitizerPlan:
 
     @property
     def uses_shadow_runtime(self) -> bool:
-        """ASan and LSan reserve huge virtual address ranges, so RLIMIT_AS must not be set."""
         return "address" in self.fsanitize or "leak" in self.fsanitize
 
 
@@ -59,7 +54,6 @@ def _needs_standalone_lsan(address: bool, leak: bool) -> bool:
 
 
 def sanitizer_plan(requested: Iterable[str]) -> SanitizerPlan:
-    """Map ``tests.sanitizers`` to ``-fsanitize=`` values (LeakSanitizer runs inside ASan when both are wanted)."""
     unique_requested = tuple(dict.fromkeys(requested))
     address = "address" in unique_requested
     undefined = "undefined" in unique_requested
@@ -77,7 +71,6 @@ def sanitizer_plan(requested: Iterable[str]) -> SanitizerPlan:
 
 
 def sanitizer_env(plan: SanitizerPlan, memory_mb: int, symbolizer: str | None) -> dict[str, str]:
-    """Runtime options for the sanitized test binary."""
     rss_limit = f"hard_rss_limit_mb={int(memory_mb)}"
     asan_options = [
         f"detect_leaks={1 if plan.detect_leaks else 0}",
@@ -116,7 +109,6 @@ def _symbolizer_candidates(clang: str | None, clang_version: str | None) -> list
 
 
 def find_llvm_symbolizer(clang: str | None = None, clang_version: str | None = None) -> str | None:
-    """An ``llvm-symbolizer`` under ``/usr`` (visible inside the sandbox), preferring the one next to ``clang``."""
     for candidate in _symbolizer_candidates(clang, clang_version):
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             real = os.path.realpath(candidate)

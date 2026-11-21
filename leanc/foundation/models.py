@@ -1,5 +1,3 @@
-"""Serialisable results: backends return StageResult, the controller a VerificationResult, workflows a RunRecord."""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -43,15 +41,11 @@ class Location(_Model):
 
 
 class PathStep(_Model):
-    """One step of an analyzer bug path / code flow."""
-
     location: Location | None = None
     message: str = ""
 
 
 class Diagnostic(_Model):
-    """A single finding; ``tool`` names the detecting tool precisely (clang-static-analyzer, asan, cbmc, ...)."""
-
     tool: str
     rule_id: str | None = None
     severity: Severity = "warning"
@@ -104,8 +98,6 @@ FailureKind = Literal[
 
 
 class FailureReport(_Model):
-    """Normalised failure for humans and the repair agent; ``raw_ref`` points at the unmodified tool output."""
-
     id: StableFailureId
     kind: FailureKind
     tool: str

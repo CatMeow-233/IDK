@@ -1,5 +1,3 @@
-"""The honest scope statements recorded with a WP verdict."""
-
 from __future__ import annotations
 
 from leanc.backends.wp.argv import RTE_CLASSES

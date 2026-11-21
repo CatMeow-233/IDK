@@ -1,5 +1,3 @@
-"""Lexical scan of one C/C++ file for constructs that a repair or generation must not introduce."""
-
 from __future__ import annotations
 
 import re
@@ -19,8 +17,6 @@ _HORIZONTAL_WS = r"[^\S\n]*"
 
 @dataclass(frozen=True)
 class Finding:
-    """One occurrence of a construct; ``normalized_line`` tells new occurrences from old ones."""
-
     rule: str
     construct: str
     line: int
@@ -308,12 +304,10 @@ def _scan(src: CSource, target: str | None, depth: int) -> list[Finding]:
 
 
 def scan_constructs(src: CSource, target: str | None) -> list[Finding]:
-    """Every count-based construct in one file (assertions and function definitions are counted separately)."""
     return _scan(src, target, 0)
 
 
 def find_assertions(src: CSource) -> dict[str, list[Finding]]:
-    """Occurrences of ``assert()`` and ``static_assert``, keyed by construct."""
     found = _Collector(src)
     by_construct: dict[str, list[Finding]] = {}
     for construct, pattern in _ASSERTION_PATTERNS.items():

@@ -1,5 +1,3 @@
-"""Turn a repair proposal (full files or a unified diff) into a complete candidate content map for the policy."""
-
 from __future__ import annotations
 
 from leanc.foundation.errors import PatchError, WorkspaceError
@@ -65,7 +63,6 @@ def proposal_to_contents(
     patch: str | None,
     current: dict[str, str],
 ) -> dict[str, str]:
-    """``current`` updated with exactly one of ``files`` / ``patch``; not policy-checked (that is check_candidate's job)."""
     has_files = bool(files)
     has_patch = isinstance(patch, str) and bool(patch.strip())
     if patch is not None and not isinstance(patch, str):

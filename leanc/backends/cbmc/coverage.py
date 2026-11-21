@@ -11,8 +11,8 @@ SATISFIED_GOAL = "satisfied"
 
 def _parse_line_numbers(line_spec: Any) -> set[int]:
     lines: set[int] = set()
-    for part in str(line_spec or "").split(","):
-        part = part.strip()
+    for raw_part in str(line_spec or "").split(","):
+        part = raw_part.strip()
         if not part:
             continue
         if "-" in part:

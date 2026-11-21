@@ -1,5 +1,3 @@
-"""Prompt for drafting an UNTRUSTED candidate spec, harness and test driver from a natural-language requirement."""
-
 from __future__ import annotations
 
 from leanc.llm.base import SpecDraftRequest

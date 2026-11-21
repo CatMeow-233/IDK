@@ -1,5 +1,3 @@
-"""Goals of the WP JSON report: classification, per-verdict tally and the check that the approved contract applied."""
-
 from __future__ import annotations
 
 import os
@@ -44,7 +42,6 @@ def _property_after_function(goal_name: str, prop: str, function: str) -> str:
 
 
 def goal_property(goal: dict) -> str:
-    """Property name without function and behaviour prefixes, e.g. ``ensures_2`` or ``assert_rte_mem_access``."""
     name = str(goal.get("goal") or "")
     prop = _property_after_function(name, str(goal.get("property") or name), str(goal.get("function") or ""))
     if SMOKE_PREFIX in prop:
@@ -64,7 +61,6 @@ def _loop_invariant_phase(prop: str) -> str:
 
 
 def goal_kind(goal: dict) -> str:
-    """Human-readable class of a WP goal."""
     prop = goal_property(goal)
     if prop.startswith(SMOKE_PREFIX):
         return "smoke test"
@@ -108,7 +104,6 @@ def _deciding_prover(goal: dict) -> str | None:
 
 
 def goal_entry(goal: dict, snapshot: str, share: str | None) -> dict:
-    """The gate's record of one report goal, with its file relative to the snapshot."""
     return {
         "goal": goal.get("goal"),
         "property": goal.get("property"),
@@ -184,7 +179,6 @@ class ContractApplication(NamedTuple):
 
 
 def contract_application(contracts: list[TargetContract], target_goals: list[dict]) -> ContractApplication:
-    """Whether the target has goals for the approved ensures/assigns clauses, i.e. Frama-C saw the contract."""
     properties = [str(entry.get("property") or "") for entry in target_goals]
     wants_ensures = any(contract.clauses.get("ensures") for contract in contracts)
     wants_assigns = any(contract.clauses.get("assigns") for contract in contracts)

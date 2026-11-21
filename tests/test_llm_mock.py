@@ -1,5 +1,3 @@
-"""MockProvider (fixture replay) and the provider factory."""
-
 from __future__ import annotations
 
 import json
@@ -87,7 +85,6 @@ def _result(status: Status, failures: list[FailureReport]) -> VerificationResult
     )
 
 
-# ------------------------------------------------------------------ identity
 def test_info_marks_mock_as_not_an_llm(mock):
     assert isinstance(mock, LLMProvider)
     assert mock.info.name == "mock" and mock.info.model is None and mock.info.real_llm is False
@@ -95,7 +92,6 @@ def test_info_marks_mock_as_not_an_llm(mock):
     assert "real_llm=False" in repr(mock)
 
 
-# ------------------------------------------------------------------ spec draft
 def test_spec_draft_replays_fixture(mock, project):
     d = mock.generate_spec_draft(SpecDraftRequest(requirement="r", spec_id="x"))
     assert d.spec_yaml == (project / "mock/spec_draft.yaml").read_text()
@@ -118,13 +114,12 @@ def test_spec_draft_missing_or_invalid(mock, project):
         mock.generate_spec_draft(SpecDraftRequest(requirement="r", spec_id="x"))
 
 
-# ------------------------------------------------------------------ generation
 def test_generate_code_returns_requested_targets(mock, project, spec):
     req = CodeGenRequest(spec=spec, spec_yaml=spec_to_yaml(spec), headers={}, targets=["src/safe_array.c"])
     out = mock.generate_code(req)
     assert out.files == {"src/safe_array.c": (project / "mock/generate/src/safe_array.c").read_text()}
     assert json.loads(out.raw_response) == {"files": out.files}
-    assert out == mock.generate_code(req)  # deterministic
+    assert out == mock.generate_code(req)
 
 
 def test_generate_code_missing_target_and_traversal(mock, spec):
@@ -155,7 +150,6 @@ def test_example_mock_generates_the_shipped_fixture(example_copy):
     assert out.files["src/safe_array.c"] == (proj / "mock/generate/src/safe_array.c").read_text()
 
 
-# ------------------------------------------------------------------ repair
 def test_propose_patch_files_round(mock, project, spec):
     prop = mock.propose_patch(_repair_req(spec, 1))
     fixture = json.loads((project / "mock/repair/round-1.json").read_text())
@@ -211,7 +205,6 @@ def test_malformed_repair_fixture_is_an_error(mock, project, spec, content, matc
     assert "round-1.json" in str(ei.value)
 
 
-# ------------------------------------------------------------------ explanations
 def test_explain_uses_fixture_or_deterministic_summary(mock, project):
     vr = _result(Status.COUNTEREXAMPLE_FOUND, [_failure()])
     assert mock.explain_failure(vr) == (project / "mock/explain.md").read_text()
@@ -230,10 +223,9 @@ def test_analyze_counterexample_is_deterministic(mock, spec):
     text = mock.analyze_counterexample(_failure(), {"src/safe_array.c": src}, spec)
     assert text == mock.analyze_counterexample(_failure(), {"src/safe_array.c": src}, spec)
     assert "safe_array_get" in text and "len=3, idx=3" in text
-    assert ">12 | line 12" in text  # numbered excerpt around the failure line
+    assert ">12 | line 12" in text
 
 
-# ------------------------------------------------------------------ factory
 def test_factory_mock_paths(project):
     p = get_provider("mock", project_root=project)
     assert isinstance(p, MockProvider) and p.fixture_dir == project / "mock"

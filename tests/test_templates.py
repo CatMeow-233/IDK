@@ -1,5 +1,3 @@
-"""The packaged `leanc init` template must not drift from examples/safe_array_get."""
-
 from __future__ import annotations
 
 from pathlib import Path

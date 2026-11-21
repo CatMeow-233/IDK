@@ -1,5 +1,3 @@
-"""Parsed unified diffs: hunks, per-file patches and newline-exact line splitting."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,8 +12,6 @@ LINE_BREAK = "\n"
 
 @dataclass
 class Hunk:
-    """One ``@@ -a,b +c,d @@ section`` hunk whose ``lines`` are ``(op, text)`` pairs, ``text`` newline-terminated."""
-
     old_start: int
     old_count: int
     new_start: int
@@ -35,8 +31,6 @@ class Hunk:
 
 @dataclass
 class FilePatch:
-    """All hunks for one file; a ``None`` path is ``/dev/null`` and paths are normalised without ``a/``/``b/``."""
-
     old_path: str | None
     new_path: str | None
     hunks: list[Hunk] = field(default_factory=list)
@@ -48,7 +42,6 @@ class FilePatch:
 
     @property
     def path(self) -> str:
-        """The path this patch writes (the old path for a deletion)."""
         written = self.new_path if self.new_path is not None else self.old_path
         assert written is not None, "parse_unified_diff never yields /dev/null on both sides"
         return written
@@ -63,7 +56,6 @@ class FilePatch:
 
 
 def split_lines(text: str) -> list[str]:
-    """Split on ``"\\n"`` only (unlike ``str.splitlines``, never on ``\\r``, ``\\f`` or ``\\x1c``), keeping terminators."""
     if not text:
         return []
     parts = text.split(LINE_BREAK)

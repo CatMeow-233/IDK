@@ -1,5 +1,3 @@
-"""Process runner and bubblewrap sandbox guarantees every backend relies on when it executes untrusted programs."""
-
 from __future__ import annotations
 
 import os
@@ -179,7 +177,6 @@ def test_stdin_is_delivered_while_output_is_read(tmp_path):
 
 
 def test_large_stdin_to_non_reading_child_does_not_defeat_timeout(tmp_path):
-    """Regression: a blocking stdin write used to hang forever when the child never read a pipe-buffer-sized input."""
     box: dict = {}
 
     def _go():
@@ -285,7 +282,6 @@ def test_sandbox_read_only_and_read_write_mounts(sandbox, tmp_path):
 
 
 def test_sandbox_rw_subdirectory_of_ro_mount(sandbox, tmp_path):
-    """The sanitizer gate binds the binary's directory read-only and a per-case sub-directory read-write on top."""
     parent = tmp_path / "bin"
     child = parent / "cases" / "c1"
     child.mkdir(parents=True)

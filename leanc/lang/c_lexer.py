@@ -1,5 +1,3 @@
-"""C front end of the lexical rules: line splicing, comment/literal blanking, digraphs and ``#if 0`` regions."""
-
 from __future__ import annotations
 
 import bisect
@@ -219,8 +217,6 @@ def _escape_invisible_characters(text: str) -> str:
 
 
 class CSource:
-    """Offset-aligned views of one C file: ``text`` (spliced), ``code`` and ``nocomment`` (see docs/architecture.md)."""
-
     def __init__(self, raw: str):
         self.raw = raw
         self.text, self._offs, self._lines = _splice_lines(raw)
@@ -232,11 +228,9 @@ class CSource:
         self._shown: dict[int, str] = {}
 
     def line_of(self, offset: int) -> int:
-        """Original (unspliced) line number of an offset in the views."""
         return self._lines[bisect.bisect_right(self._offs, offset) - 1]
 
     def raw_line_of(self, offset: int) -> int:
-        """Line number of an offset in :attr:`raw`."""
         return bisect.bisect_right(self._raw_newlines, offset - 1) + 1
 
     @cached_property
@@ -248,7 +242,6 @@ class CSource:
         return [m.start() for m in re.finditer("\n", self.raw)]
 
     def line_text(self, offset: int) -> str:
-        """Whitespace-normalised code line containing ``offset``, cached per line."""
         newlines = self._code_newlines
         k = bisect.bisect_left(newlines, offset)
         if k not in self._line_text:
@@ -262,7 +255,6 @@ class CSource:
         return self.raw.split("\n")
 
     def shown_line(self, line: int) -> str:
-        """Original source line for messages: whitespace collapsed, control/bidi characters escaped, truncated."""
         if line not in self._shown:
             lines = self._raw_lines
             original = lines[line - 1] if 1 <= line <= len(lines) else ""
@@ -272,22 +264,18 @@ class CSource:
 
     @cached_property
     def pairs(self) -> dict[int, int]:
-        """Bracket partners in :attr:`code`."""
         return _bracket_partners_in_one_pass(self.code)
 
     @cached_property
     def pairs_nodirectives(self) -> dict[int, int]:
-        """Bracket partners in :attr:`code_nodirectives`."""
         return _bracket_partners_in_one_pass(self.code_nodirectives)
 
     @cached_property
     def code_nodirectives(self) -> str:
-        """``code`` with preprocessor directive lines blanked, so ``#define BEGIN {`` cannot confuse brace matching."""
         return "\n".join(
             _blank_keeping_newlines(ln) if ln.lstrip().startswith("#") else ln for ln in self.code.split("\n")
         )
 
 
 def strip_c(text: str) -> str:
-    """Comment- and literal-free view of C source with the same line structure (``CSource(text).code``)."""
     return CSource(text).code
