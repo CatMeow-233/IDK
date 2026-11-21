@@ -18,6 +18,9 @@ foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < p
 ## constraints
 - leanc/cli.py: single module (argparse + main). command bodies -> leanc/pipeline/commands/*.
 - leanc/repair/patch: fuzz 0; DEFAULT_MAX_OFFSET <= 50 (wider window mis-matches repetitive C lines).
+- backends: read only ctx.snapshot_dir; write only build/raw/logs; run tools only via ctx.run (sandboxed).
+- lean checker template axiom whitelist == backends.lean STANDARD_AXIOMS.
+- toolchain.cxx.find_clangxx: return clang++ path unresolved (realpath of /usr/bin/clang++ is clang).
 
 ## errors
 - MUST NOT: bare except, except Exception, except BaseException. sole exception: leanc/cli.py main() -> print traceback, return 70.
