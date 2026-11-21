@@ -5,8 +5,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from leanc.backends.clang import DIAGNOSTIC_FLAGS, define_args
-from leanc.backends.sanitizer.build import BASE_FLAGS
+from leanc.backends.clang import DIAGNOSTIC_FLAGS
+from leanc.backends.sanitizer.build import BASE_FLAGS, instrumented_compile_flags
 from leanc.backends.sanitizer.plan import SanitizerPlan
 from leanc.foundation.models import ToolInvocation
 from leanc.foundation.runner import Limits
@@ -37,17 +37,9 @@ def wrap_flags() -> list[str]:
 
 
 def _project_compile_argv(ctx: BackendContext, plan: SanitizerPlan, source: str, obj: Path, instrumented: bool) -> list[str]:
-    spec = ctx.spec
     return [
         compiler(ctx),
-        f"-std={spec.language.standard}",
-        *BASE_FLAGS,
-        *spec.compile.flags,
-        *plan.compile_flags,
-        *define_args(spec.compile.defines),
-        *ctx.include_args(),
-        f"-I{os.path.realpath(ctx.include_dir)}",
-        *DIAGNOSTIC_FLAGS,
+        *instrumented_compile_flags(ctx, plan),
         *(INSTRUMENT_FLAGS if instrumented else ()),
         POSITION_INDEPENDENT_COMPILE,
         "-c",
