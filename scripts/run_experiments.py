@@ -214,6 +214,9 @@ def main() -> int:
     examples = sorted(p.parent for p in Path(args.examples).glob("*/expected.yaml"))
     if args.only:
         examples = [e for e in examples if e.name in set(args.only)]
+    if not examples:
+        print(f"no examples selected under {args.examples}; nothing was verified", file=sys.stderr)
+        return 1
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     rows = _run_all(examples)

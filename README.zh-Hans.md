@@ -266,11 +266,11 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 
 ## 开发 Lean C
 
-agent 指令写在 [`CLAUDE.md`](CLAUDE.md)，并由 `tests/test_architecture.py` 强制执行：
+规则声明在 [`constraints.toml`](constraints.toml) 中。它的作用相当于 yarn 项目里的 constraints 文件，是唯一的规则来源。`python -m scripts.constraints` 检查这些规则，`tests/test_architecture.py` 运行的是同一个引擎。agent 指令写在 [`CLAUDE.md`](CLAUDE.md) 中，其中的分层区块由 `constraints.toml` 自动生成。
 
 - 严格的单向分层、无环的模块图，且只允许顶层 import：
   ```
-  foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < pipeline < cli
+  foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < pipeline < cli < __main__
   ```
   共享代码往下层移。包的 `__init__` 只能 re-export 自己的子模块。
 - `leanc/`、`tests/`、`scripts/` 中不得有注释或 docstring。意图要用名称、常量、Enum 与 frozen dataclass 表达。
@@ -294,12 +294,24 @@ agent 指令写在 [`CLAUDE.md`](CLAUDE.md)，并由 `tests/test_architecture.py
 检查：
 
 ```bash
+python -m scripts.constraints                       # 检查 constraints.toml 的全部规则；有违规时 exit 1；支持 --json
+python -m scripts.constraints --fix                 # 仅在 AST 不变时删除注释/docstring；重新生成 CLAUDE.md 的分层区块
 python scripts/affected_tests.py --run              # 修改后：按 import 图相对于 HEAD 选出受影响的测试
 python scripts/affected_tests.py --base main --run  # 整个分支
-python -m pytest tests/test_architecture.py -q      # 分层、循环、注释、docstring、handler、文件大小
-python -m pytest -q                                 # 完整测试（约 9 分钟），合并或发布前运行
-python scripts/run_experiments.py                   # 必须报告 N/N
+python -m scripts.merge_gate                        # 创建或合并 PR 之前运行（约 20 分钟）
 ```
+
+`python -m scripts.merge_gate` 在即将被合并的那个 HEAD 上强制执行“修复 → 测试 → 合并”。它按以下顺序执行，第一个失败就停止，没有跳过选项：
+
+1. 用明确的 refspec 获取基准分支。要求所有改动都已提交、HEAD 与基准不同，且 HEAD 包含基准分支。
+2. 把固定下来的 HEAD 检出到一个全新的临时 worktree。之后每一步都在其中执行，并去除所有 `PYTEST_*`/`PYTHON*` 环境变量；闸门会确认 `leanc` 是从这个 worktree 导入的。
+3. 运行 `python -m scripts.constraints`。
+4. 运行完整测试。junit 报告必须显示测试数大于 0，且没有失败、错误或跳过；出现跳过代表缺少必要的工具。
+5. 运行 `run_experiments.py`，必须报告 N/N 且 N > 0。
+6. 检查批准兼容性：对每个自基准分支以来未改动的示例目录，用基准代码做出的批准，在 HEAD 代码下必须仍然有效。
+7. 确认 worktree 仍在固定的 HEAD 上且没有被改动。
+
+成功时输出 `MERGE GATE PASS head=<sha> base=<sha>`。合并之前要先获取远端，确认远端基准分支仍等于输出中的 base sha（否则重新运行闸门），然后只合并输出中的 head sha（使用 `expectedHeadSha` 和 merge commit）。之后有任何新 commit，都必须重新运行闸门。
 
 完整测试需要 clang-18、CBMC 与 bwrap；WP 测试需要 Frama-C >= 27，Lean 测试需要 Lean 4。缺少某个工具时，相关测试会被跳过。
 

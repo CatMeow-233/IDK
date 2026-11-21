@@ -10,7 +10,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PACKAGE_ROOT = "leanc"
 TEST_DIR = REPO / "tests"
-ALWAYS_RUN = ("tests/test_architecture.py",)
+ALWAYS_RUN = ("tests/test_architecture.py", "tests/test_constraints.py", "tests/test_merge_gate.py")
 FULL_SUITE_TRIGGERS = ("tests/conftest.py", "pyproject.toml")
 DESCRIPTION = "select tests affected by changed files via the leanc import graph"
 
