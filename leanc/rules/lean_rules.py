@@ -48,7 +48,7 @@ _PROJECT_ROOT = ""
 _ROOTLESS_COMMON_PATHS = (".", "/")
 
 _MODULE_PART_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
-_BIDI_RE = re.compile("[‪-‮⁦-⁩‎‏؜]")
+_BIDI_RE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
 _IDENT_RE = re.compile(r"(?<![\w'!?.])(?:[^\W\d])[\w'!?]*(?:\.[^\W\d][\w'!?]*)*")
 _HASH_CMD_RE = re.compile(r"(?<![\w#])#([A-Za-z_][\w]*)")
 _ATTR_OPEN_RE = re.compile(r"@\[|\battribute\s*\[")

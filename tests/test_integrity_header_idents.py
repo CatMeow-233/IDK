@@ -1,7 +1,3 @@
-"""A #define of an identifier used by the protected interface (before the
-protected #include) would silently change the approved prototype/contract for
-every gate; the integrity rules must reject it."""
-
 from __future__ import annotations
 
 from pathlib import Path

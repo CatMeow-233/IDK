@@ -8,8 +8,8 @@ from leanc.lang.c_lexer import CSource
 from leanc.rules.acsl import ACSL_RULES, acsl_violations
 from leanc.rules.c_names import (
     ALLOWED_IMPORTS,
-    COMPILER_RT_ARITHMETIC_HELPER_RE,
     C_KEYWORDS,
+    COMPILER_RT_ARITHMETIC_HELPER_RE,
     DANGEROUS_NAMES,
     LIBC_NAMES,
     TERMINATION_NAMES,
@@ -18,7 +18,13 @@ from leanc.rules.c_names import (
     is_verifier_hook,
 )
 from leanc.rules.definitions import defined_functions
-from leanc.rules.findings import Finding, Problem, first_mention_line, to_violations, violation
+from leanc.rules.findings import (
+    Finding,
+    Problem,
+    first_mention_line,
+    to_violations,
+    violation,
+)
 from leanc.rules.preprocessor import (
     AFTER_EXPANSION,
     C_HEADER_SUFFIX,
@@ -461,8 +467,3 @@ def section_violations(rel: str, readelf_output: str, src: CSource | None = None
             out.append(violation("CONSTRUCTOR", (f"object has section {name}: code would run before/after the "
                                  "function under test (constructors/destructors)"), rel, line))
     return out
-
-
-_v = violation
-_header_facts = c_header_facts
-_SECTION_RE = SECTION_RE

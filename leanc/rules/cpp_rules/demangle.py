@@ -53,7 +53,7 @@ class DemangledName:
     owner: tuple[str, ...]
     is_function: bool
     special: str | None = None
-    inner: tuple["DemangledName", ...] = ()
+    inner: tuple[DemangledName, ...] = ()
 
     @property
     def simple(self) -> str:

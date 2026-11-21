@@ -1,11 +1,3 @@
-"""C++ support (V2): clang++ discovery, the C++ variants of the compile /
-static-analysis / sanitizer gates, the C++ integrity rules (verify-time gate
-and repair/generation policy) and their absence of false positives on
-ordinary C++20 code.
-
-The two C++ examples (examples/cpp_ring_buffer, examples/cpp_bounds_bug) are
-additionally run end to end by tests/test_examples_e2e.py."""
-
 from __future__ import annotations
 
 import dataclasses
@@ -19,7 +11,12 @@ import yaml
 from leanc.backends.analyzer import analyzer_command, run_static_analysis
 from leanc.backends.clang import compile_command, run_compile
 from leanc.backends.integrity import run_integrity
-from leanc.backends.sanitizer import build_command, parse_build_diagnostics, run_sanitizer_tests, sanitizer_plan
+from leanc.backends.sanitizer import (
+    build_command,
+    parse_build_diagnostics,
+    run_sanitizer_tests,
+    sanitizer_plan,
+)
 from leanc.cli import main
 from leanc.foundation.status import Outcome, Status
 from leanc.lang import cpp_lexer
@@ -46,7 +43,7 @@ def _ctx(example_copy, tmp_path: Path, example: str, files: dict[str, str] | Non
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
     spec = load_spec(root / "spec.yaml")
-    if report:  # attack fixtures may trigger warnings; the integrity gate is what is under test
+    if report:
         spec.compile.warnings_policy = "report"
     return make_context(spec, root, tmp_path / "run", VerifyOptions())
 
@@ -55,13 +52,11 @@ def _rules(stage) -> set[str]:
     return {f.property_id for f in stage.failures}
 
 
-# =========================================================================== toolchain
 def test_toolchain_finds_matching_clangxx(needs_clang):
     tc = toolchain()
     assert tc.clangxx and os.path.basename(tc.clangxx).startswith("clang++")
     assert clang_major(tc.clangxx_version) == clang_major(tc.clang_version)
     assert find_clangxx(tc.clang) == tc.clangxx
-    # the path is not resolved: clang picks C++ mode from the name it is invoked as
     assert "clang++" in tc.clangxx
 
 
@@ -79,7 +74,7 @@ def test_clangxx_versioned_sibling_is_preferred(tmp_path, monkeypatch):
 
 def test_clangxx_env_override(tmp_path, monkeypatch, needs_clang):
     monkeypatch.setenv("LEANC_CLANGXX", str(tmp_path / "missing-clang++"))
-    assert find_clangxx("/usr/bin/clang") is None  # an explicit choice never falls back silently
+    assert find_clangxx("/usr/bin/clang") is None
     real = toolchain().clang
     monkeypatch.setenv("LEANC_CLANGXX", real)
     assert find_clangxx("/whatever/clang") == real
@@ -100,7 +95,6 @@ def test_c_specs_keep_using_clang(example_copy, tmp_path, needs_clang):
     assert "-std=c17" in compile_command(ctx, rel, tmp_path / "x.o")
 
 
-# =========================================================================== gates on C++ code
 def test_cpp20_class_template_passes_every_gate(example_copy, tmp_path, needs_clang, needs_bwrap):
     ctx = _ctx(example_copy, tmp_path, "cpp_ring_buffer")
     comp = run_compile(ctx)
@@ -112,8 +106,8 @@ def test_cpp20_class_template_passes_every_gate(example_copy, tmp_path, needs_cl
     assert integ.outcome is Outcome.PASS, [f.description for f in integ.failures]
     assert integ.details["language"] == "c++"
     defined = integ.details["files"][0]["defined"]
-    assert "lc::RingBuffer<int, 4ul>::push(int const&)" in defined  # weak explicit instantiation: accepted
-    assert any(d.startswith("std::array<int, 4ul>::operator[]") for d in defined)  # library instantiation
+    assert "lc::RingBuffer<int, 4ul>::push(int const&)" in defined
+    assert any(d.startswith("std::array<int, 4ul>::operator[]") for d in defined)
     sa = run_static_analysis(ctx)
     assert sa.outcome is Outcome.PASS and sa.details["format"] == "sarif", sa.summary
     assert os.path.basename(sa.details["files"][0]["argv"][0]).startswith("clang++")
@@ -132,7 +126,6 @@ def test_cpp_compile_error_is_located(example_copy, tmp_path, needs_clang):
     line = text.splitlines().index("    ++count_ = nullptr;") + 1
     locs = {(f.location.file, f.location.line) for f in res.failures if f.location}
     assert (RB[1], line) in locs, res.failures
-    # template instantiation context arrives as notes attached to the error, not as extra errors
     assert res.details["errors"] == len([d for d in res.diagnostics if d.severity == "error"])
 
 
@@ -143,7 +136,7 @@ def test_missing_clangxx_is_a_tool_error(example_copy, tmp_path):
         res = gate(ctx)
         assert res.outcome is Outcome.ERROR and res.summary == CXX_NOT_FOUND, (gate, res.summary)
     integ = run_integrity(ctx)
-    assert integ.outcome is Outcome.ERROR  # never PASS without the tools
+    assert integ.outcome is Outcome.ERROR
 
 
 def _mini_cpp_project(root: Path, header: str, source: str, gates: list[str]) -> Path:
@@ -211,7 +204,7 @@ def test_analyzer_finds_cpp_null_deref_and_new_leak(tmp_path, needs_clang):
     spec = load_spec(spec_path)
     ctx = make_context(spec, spec_path.parent, tmp_path / "run", VerifyOptions())
     assert run_compile(ctx).outcome is Outcome.PASS
-    assert run_integrity(ctx).outcome is Outcome.PASS  # the bugs are real bugs, not integrity violations
+    assert run_integrity(ctx).outcome is Outcome.PASS
     res = run_static_analysis(ctx)
     assert res.outcome is Outcome.FAIL and res.status is Status.STATIC_ANALYSIS_WARNING
     by_rule = {f.property_id: f for f in res.failures}
@@ -219,14 +212,14 @@ def test_analyzer_finds_cpp_null_deref_and_new_leak(tmp_path, needs_clang):
     assert by_rule["core.NullDereference"].location.file == "src/nodes.cpp"
     assert by_rule["core.NullDereference"].location.line == 8
     assert by_rule["cplusplus.NewDeleteLeaks"].location.line == 16
-    assert by_rule["core.NullDereference"].trace  # the bug path from SARIF codeFlows
+    assert by_rule["core.NullDereference"].trace
 
 
 def test_sanitizer_catches_out_of_bounds_in_cpp_class(example_copy, tmp_path, needs_clang, needs_bwrap):
     ctx = _ctx(example_copy, tmp_path, "cpp_bounds_bug")
     assert run_compile(ctx).outcome is Outcome.PASS
     assert run_integrity(ctx).outcome is Outcome.PASS
-    assert run_static_analysis(ctx).outcome is Outcome.PASS  # the analyzer cannot see this one
+    assert run_static_analysis(ctx).outcome is Outcome.PASS
     res = run_sanitizer_tests(ctx)
     assert res.outcome is Outcome.FAIL and res.status is Status.RUNTIME_TEST_FAILED
     failed = {c["name"] for c in res.details["cases"] if c["status"] == "fail"}
@@ -235,7 +228,7 @@ def test_sanitizer_catches_out_of_bounds_in_cpp_class(example_copy, tmp_path, ne
     assert asan and all(f.property_id == "heap-buffer-overflow" for f in asan)
     loc = asan[0].location
     assert (loc.file, loc.line) == ("src/sample_buffer.cpp", 14)
-    assert loc.function and loc.function.startswith("lc::SampleBuffer::append(int)")  # demangled frame
+    assert loc.function and loc.function.startswith("lc::SampleBuffer::append(int)")
 
 
 def test_clangxx_linker_errors_are_parsed():
@@ -249,25 +242,22 @@ def test_clangxx_linker_errors_are_parsed():
     assert "lc::SampleBuffer::append(int)" in diags[0].message
 
 
-# =========================================================================== integrity: attacks
-#: fixture -> rules the gate must report, rules the policy must report
-#: (rules that only the compiled object shows - sections, symbols - are gate-only)
 ATTACKS = [
-    ("attack_opnew.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),  # global operator new/delete replacement
-    ("attack_ctor_exit.cpp", {"CONSTRUCTOR", "TERMINATION"}, {"TERMINATION"}),  # global ctor -> std::_Exit(0)
-    ("attack_ctor_exit2.cpp", {"CONSTRUCTOR", "TERMINATION", "SYMBOL_OVERRIDE"}, {"TERMINATION"}),  # exit(0)
+    ("attack_opnew.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),
+    ("attack_ctor_exit.cpp", {"CONSTRUCTOR", "TERMINATION"}, {"TERMINATION"}),
+    ("attack_ctor_exit2.cpp", {"CONSTRUCTOR", "TERMINATION", "SYMBOL_OVERRIDE"}, {"TERMINATION"}),
     ("attack_throw.cpp", {"EXCEPTIONS"}, {"EXCEPTIONS"}),
-    ("attack_thread.cpp", {"DANGEROUS_IMPORT"}, {"DANGEROUS_IMPORT"}),  # std::thread
-    ("attack_clang.cpp", {"TOOL_DIVERGENCE"}, {"TOOL_DIVERGENCE"}),  # #ifdef __clang__
-    ("attack_libc.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),  # extern "C" int abs(int) {...}
-    ("attack_assertfail.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),  # extern "C" { __assert_fail }
-    ("attack_nsstd.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),  # namespace std { ... }
-    ("attack_stdspec.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),  # template <> struct std::hash<...>
-    ("attack_macro.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),  # #define private public (before #include)
-    ("attack_rtti.cpp", {"CPP_RUNTIME"}, {"CPP_RUNTIME"}),  # typeid
-    ("attack_noreturn.cpp", {"ASSUMPTION_INJECTION"}, {"ASSUMPTION_INJECTION"}),  # [[noreturn]]
-    ("attack_helper.cpp", {"SYMBOL_OVERRIDE"}, set()),  # external helper class/function not in the header
-    ("attack_static_dtor.cpp", {"TERMINATION"}, set()),  # static local with destructor -> __cxa_atexit
+    ("attack_thread.cpp", {"DANGEROUS_IMPORT"}, {"DANGEROUS_IMPORT"}),
+    ("attack_clang.cpp", {"TOOL_DIVERGENCE"}, {"TOOL_DIVERGENCE"}),
+    ("attack_libc.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),
+    ("attack_assertfail.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),
+    ("attack_nsstd.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),
+    ("attack_stdspec.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),
+    ("attack_macro.cpp", {"SYMBOL_OVERRIDE"}, {"SYMBOL_OVERRIDE"}),
+    ("attack_rtti.cpp", {"CPP_RUNTIME"}, {"CPP_RUNTIME"}),
+    ("attack_noreturn.cpp", {"ASSUMPTION_INJECTION"}, {"ASSUMPTION_INJECTION"}),
+    ("attack_helper.cpp", {"SYMBOL_OVERRIDE"}, set()),
+    ("attack_static_dtor.cpp", {"TERMINATION"}, set()),
 ]
 
 
@@ -276,7 +266,7 @@ def test_integrity_gate_rejects_cpp_attacks(fixture, gate_rules, policy_rules, e
     text = (FIX / fixture).read_text()
     ctx = _ctx(example_copy, tmp_path, RB[0], {RB[1]: text}, report=True)
     comp = run_compile(ctx)
-    assert comp.outcome is Outcome.PASS, comp.summary  # it is valid C++: only the integrity gate stops it
+    assert comp.outcome is Outcome.PASS, comp.summary
     res = run_integrity(ctx)
     assert res.outcome is Outcome.FAIL and res.status is Status.STATIC_ANALYSIS_WARNING
     assert gate_rules <= _rules(res), (gate_rules, [(f.property_id, f.description) for f in res.failures])
@@ -303,13 +293,7 @@ def test_integrity_attack_is_never_executed(example_copy, tmp_path, capsys, need
     assert stages["sanitizer"]["outcome"] == "SKIPPED"
 
 
-# =========================================================================== integrity: no false positives
 def test_legit_cpp20_code_passes_integrity_policy_and_tests(example_copy, tmp_path, needs_clang, needs_bwrap):
-    """Digit separators, a multi-line raw string mentioning exit/throw/#ifdef,
-    lambdas in a template member, a constexpr static local, an anonymous-
-    namespace helper class and function template, std::min / std::as_const,
-    `#if __cplusplus >= 202002L && defined(__cpp_concepts)`, a macro defined
-    after the includes: nothing here is an integrity violation."""
     text = (FIX / "legit_ring_buffer.cpp").read_text()
     ctx = _ctx(example_copy, tmp_path, RB[0], {RB[1]: text})
     assert run_compile(ctx).outcome is Outcome.PASS
@@ -359,7 +343,6 @@ def test_policy_cpp_target_rules():
     assert len(defs) == 1 and not defs[0].trivial and defs[0].line == original[:start].count("\n") + 1
 
 
-# =========================================================================== source rules (pure)
 def _src_rules(text: str, example: str = RB[0]) -> set[str]:
     spec = load_spec(EXAMPLES / example / "spec.yaml")
     return {v.rule for v in source_violations(spec, "src/ring_buffer.cpp", text)}
@@ -379,8 +362,8 @@ def _src_rules(text: str, example: str = RB[0]) -> set[str]:
         ("void (*f)(int) = &std::exit;\n", "TERMINATION"),
         ("void f() { std::terminate(); }\n", "TERMINATION"),
         ("void f() { std::set_terminate(nullptr); }\n", "TERMINATION"),
-        ("#if __cpp_exceptions\n#endif\n", "TOOL_DIVERGENCE"),  # flag-dependent feature macro
-        ("#ifdef __cpp_lib_span\n#endif\n", "TOOL_DIVERGENCE"),  # library macro
+        ("#if __cpp_exceptions\n#endif\n", "TOOL_DIVERGENCE"),
+        ("#ifdef __cpp_lib_span\n#endif\n", "TOOL_DIVERGENCE"),
         ("#define __cplusplus 1\n", "TOOL_DIVERGENCE"),
         ("#if defined(__GNUC__)\n#endif\n", "TOOL_DIVERGENCE"),
         ('#include "ring_buffer.hpp"\n#define size(x) 0\n#include <array>\n', "SYMBOL_OVERRIDE"),
@@ -392,7 +375,7 @@ def _src_rules(text: str, example: str = RB[0]) -> set[str]:
         ("int main() { return 0; }\n", "SYMBOL_OVERRIDE"),
         ('extern "C" { int nondet_int() { return 0; } }\n', "SYMBOL_OVERRIDE"),
         ("int f() { int x = 1'0; __builtin_unreachable(); }\n", "ASSUMPTION_INJECTION"),
-        ('auto s = R"(a\nb)"; int g() { exit(0); }\n', "TERMINATION"),  # code after a raw string is seen
+        ('auto s = R"(a\nb)"; int g() { exit(0); }\n', "TERMINATION"),
         ("#pragma clang diagnostic ignored \"-Wall\"\n", "PRAGMA"),
     ],
 )
@@ -412,7 +395,7 @@ def test_cpp_source_rules(text, rule):
         "[[nodiscard]] constexpr int f(int x) noexcept { if (x > 0) [[likely]] { return x; } return -x; }\n",
         "namespace { struct H { int v; }; }\nnamespace lc { int g(); }\n",
         "#include <new>\nint* make(void* buf) { return new (buf) int(1); }\n",
-        "void* p = ::operator new(16);\n",  # a call, not a replacement
+        "void* p = ::operator new(16);\n",
         "template <typename T> requires (sizeof(T) > 1) T id(T x) noexcept { return x; }\n",
     ],
 )
@@ -427,11 +410,10 @@ def test_cpp_normalize_keeps_offsets():
     assert len(out) == len(text) and out.count("\n") == text.count("\n")
     assert "1'000" not in out and "exit(0)" in out and "'q'" in out
     src = cpp_lexer.CppSource(text)
-    assert src.raw == text  # messages show the original code
+    assert src.raw == text
     assert "exit" in src.code.split("\n")[1]
 
 
-# =========================================================================== object rules (pure)
 HEADER = """#pragma once
 namespace lc {
 template <class T, int N> class RingBuffer {
@@ -513,20 +495,19 @@ def test_parse_demangled(text, components, owner):
     assert nm.owner == (owner or components)
 
 
-# =========================================================================== LLM prompts
 def test_cpp_specs_get_cpp_system_prompts():
     from leanc.llm.base import CodeGenRequest
     from leanc.llm.prompts import CODEGEN_SYSTEM, build_codegen_prompt
 
     c_spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
     c_prompt = build_codegen_prompt(CodeGenRequest(c_spec, "x: 1", {}, c_spec.sources.editable))
-    assert c_prompt.system.strip() == CODEGEN_SYSTEM.strip()  # C prompts unchanged
+    assert c_prompt.system.strip() == CODEGEN_SYSTEM.strip()
     spec = load_spec(EXAMPLES / RB[0] / "spec.yaml")
     hpp = (EXAMPLES / RB[0] / "include" / "ring_buffer.hpp").read_text()
     prompt = build_codegen_prompt(CodeGenRequest(spec, "x: 1", {"include/ring_buffer.hpp": hpp}, [RB[1]]))
     assert "clang++ (C++20" in prompt.system and "C17" not in prompt.system
     assert "anonymous namespace" in prompt.system and "{std}" not in prompt.system
-    assert "```cpp" in prompt.user  # the protected header is shown as C++
+    assert "```cpp" in prompt.user
 
 
 def test_cpp_definition_finder_shapes():
@@ -548,7 +529,7 @@ def test_cpp_definition_finder_shapes():
     assert defs["size"].qualifier == "RingBuffer<T,N>::" and "count_" in defs["size"].body
     assert "h" in defs and defs["hidden"].scope == "anonymous"
     assert "decl" not in defs and not defs["dflt"].has_body
-    assert "inside" not in defs  # class bodies are not namespace scope
+    assert "inside" not in defs
 
 
 @pytest.mark.parametrize(
@@ -564,4 +545,4 @@ def test_cpp_rules_stay_linear_on_hostile_input(pattern):
     t0 = time.monotonic()
     source_violations(spec, RB[1], text)
     check_generated(spec, {RB[1]: text})
-    assert time.monotonic() - t0 < 20  # ~1 s here; quadratic behaviour would take minutes
+    assert time.monotonic() - t0 < 20

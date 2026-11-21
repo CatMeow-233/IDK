@@ -1,6 +1,3 @@
-"""ACSL trust rules for editable C code (leanc.rules.acsl), as
-applied by the integrity gate's source rules and by the repair policy."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +6,12 @@ import pytest
 
 from leanc.repair.policy import RULES as POLICY_RULES
 from leanc.repair.policy import check_candidate, check_generated
-from leanc.rules.acsl import ACSL_RULES, find_annotations, parse_clauses, target_contracts
+from leanc.rules.acsl import (
+    ACSL_RULES,
+    find_annotations,
+    parse_clauses,
+    target_contracts,
+)
 from leanc.rules.c_rules import RULES as INTEGRITY_RULES
 from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
@@ -79,7 +81,6 @@ def test_proof_obligations_are_allowed(spec, name):
 
 
 REJECTED = {
-    # contracts on the target are MERGED with the approved one by Frama-C
     "requires false on target": (GOOD.replace(TARGET_DEF, "/*@ requires \\false; */\n" + TARGET_DEF), "ACSL_CONTRACT"),
     "ensures on target": (GOOD.replace(TARGET_DEF, "/*@ ensures \\result == 0; */\n" + TARGET_DEF), "ACSL_CONTRACT"),
     "assigns on target": (GOOD.replace(TARGET_DEF, "//@ assigns \\nothing;\n" + TARGET_DEF), "ACSL_CONTRACT"),
@@ -113,7 +114,7 @@ REJECTED = {
 def test_assumption_injecting_acsl_is_rejected(spec, name):
     text, rule = REJECTED[name]
     assert rule in rules(spec, text), source_violations(spec, REL, text, headers=HEADERS)
-    if rule != "ACSL_MACRO" or "HACK" in text:  # the redefinition checks need the protected headers
+    if rule != "ACSL_MACRO" or "HACK" in text:
         d = check_candidate(spec, {REL: GOOD}, {REL: text})
         assert not d.allowed and rule in {v.rule for v in d.violations}
     vs = [v for v in source_violations(spec, REL, text, headers=HEADERS) if v.rule == rule]
@@ -126,7 +127,7 @@ def test_rules_are_catalogued():
 
 
 def test_rules_apply_only_with_the_wp_gate():
-    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")  # no wp gate: ACSL comments are inert
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
     text = GOOD.replace(TARGET_DEF, "//@{ doxygen group\n/*@ requires \\false; */\n" + TARGET_DEF) + "//@}\n"
     assert not {v.rule for v in source_violations(spec, REL, text)} & set(ACSL_RULES)
 

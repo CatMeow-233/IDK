@@ -11,11 +11,11 @@ from leanc.specs.model import Spec
 __all__ = [
     "AFTER_EXPANSION",
     "C_HEADER_SUFFIX",
-    "Directive",
-    "IncludedHeader",
     "MACRO_DEFINITION_DIRECTIVES",
     "TOOL_DEPENDENT_PREDEFINED_MACRO_RE",
     "UNCHECKED_DIRECTIVES",
+    "Directive",
+    "IncludedHeader",
     "assertion_predicate_findings",
     "computed_include_findings",
     "defined_macro",
