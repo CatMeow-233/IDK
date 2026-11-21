@@ -1,10 +1,4 @@
-"""Unified, serialisable result data structures shared by every Lean C module.
-
-All backends return :class:`StageResult`; the controller aggregates them into a
-:class:`VerificationResult`; workflows (generate / repair / run) produce a
-:class:`RunRecord`.  Everything here is plain data (pydantic v2) so it can be
-written to ``run.json`` and re-loaded by ``leanc report``.
-"""
+"""Serialisable results: backends return StageResult, the controller a VerificationResult, workflows a RunRecord."""
 
 from __future__ import annotations
 
@@ -16,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from leanc.foundation.status import Outcome, Status
 
 Severity = Literal["error", "warning", "note", "info"]
+RunRelativePath = str
+Sha256ByRelPath = dict[str, str]
+RawToolOutputExcerpt = str
+StableFailureId = str
 
 
 def utcnow() -> str:
@@ -52,12 +50,7 @@ class PathStep(_Model):
 
 
 class Diagnostic(_Model):
-    """A single finding from any tool.
-
-    ``tool`` identifies the *detecting* tool precisely, e.g. ``clang``,
-    ``clang-static-analyzer``, ``asan``, ``ubsan``, ``lsan``, ``cbmc``,
-    ``leanc-policy``, ``test-oracle``.
-    """
+    """A single finding; ``tool`` names the detecting tool precisely (clang-static-analyzer, asan, cbmc, ...)."""
 
     tool: str
     rule_id: str | None = None
@@ -65,7 +58,7 @@ class Diagnostic(_Model):
     message: str
     location: Location | None = None
     path: list[PathStep] = Field(default_factory=list)
-    raw: str | None = None  # raw excerpt of tool output this was parsed from
+    raw: RawToolOutputExcerpt | None = None
 
 
 class ToolInvocation(_Model):
@@ -77,9 +70,9 @@ class ToolInvocation(_Model):
     timed_out: bool = False
     output_truncated: bool = False
     duration_s: float = 0.0
-    sandbox: str = "none"  # "bwrap" | "none"
-    stdout_path: str | None = None  # relative to the run directory
-    stderr_path: str | None = None
+    sandbox: str = "none"
+    stdout_path: RunRelativePath | None = None
+    stderr_path: RunRelativePath | None = None
     note: str | None = None
 
 
@@ -90,7 +83,7 @@ class CounterexampleInput(_Model):
 
 
 class TraceStep(_Model):
-    kind: str  # assignment | function-call | function-return | failure | assume | location | output
+    kind: str
     location: Location | None = None
     text: str = ""
 
@@ -111,10 +104,9 @@ FailureKind = Literal[
 
 
 class FailureReport(_Model):
-    """Normalised description of one failure, suitable for humans and for the
-    repair agent.  ``raw_ref`` always points at the unmodified tool output."""
+    """Normalised failure for humans and the repair agent; ``raw_ref`` points at the unmodified tool output."""
 
-    id: str  # stable identifier, e.g. "cbmc:get.pointer_dereference.11"
+    id: StableFailureId
     kind: FailureKind
     tool: str
     property_id: str | None = None
@@ -128,9 +120,9 @@ class FailureReport(_Model):
 
 
 class StageResult(_Model):
-    stage: str  # spec | compile | static_analysis | sanitizer | cbmc
+    stage: str
     outcome: Outcome
-    status: Status | None = None  # global status this stage contributes (None if PASS)
+    status: Status | None = None
     summary: str = ""
     required: bool = True
     diagnostics: list[Diagnostic] = Field(default_factory=list)
@@ -149,8 +141,8 @@ class ApprovalCheck(_Model):
     approved_by: str | None = None
     approved_at: str | None = None
     signature_valid: bool = False
-    reasons: list[str] = Field(default_factory=list)  # why NOT approved (empty if approved)
-    protected_files: dict[str, str] = Field(default_factory=dict)  # rel path -> sha256 (as approved)
+    reasons: list[str] = Field(default_factory=list)
+    protected_files: Sha256ByRelPath = Field(default_factory=dict)
 
 
 class ToolInfo(_Model):
@@ -181,7 +173,7 @@ class VerificationResult(_Model):
     stages: list[StageResult] = Field(default_factory=list)
     source_hashes: dict[str, str] = Field(default_factory=dict)
     environment: EnvironmentInfo | None = None
-    assumptions: list[str] = Field(default_factory=list)  # scope of a bounded result
+    assumptions: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     started_at: str = Field(default_factory=utcnow)
     finished_at: str | None = None
@@ -216,7 +208,7 @@ class RepairRound(_Model):
     provider: str
     root_cause: str = ""
     rationale: str = ""
-    patch_path: str | None = None  # relative to run dir
+    patch_path: RunRelativePath | None = None
     files_changed: list[str] = Field(default_factory=list)
     lines_added: int = 0
     lines_removed: int = 0
@@ -228,18 +220,18 @@ class RepairRound(_Model):
     introduced_failures: list[str] = Field(default_factory=list)
     reverted: bool = False
     note: str = ""
-    verification_path: str | None = None  # relative path of that round's verification json
+    verification_path: RunRelativePath | None = None
 
 
 class ProviderInfo(_Model):
     name: str
     model: str | None = None
-    real_llm: bool  # False for the mock provider: its output is NOT LLM performance
+    real_llm: bool
 
 
 class GenerationRecord(_Model):
     provider: ProviderInfo
-    files: dict[str, str] = Field(default_factory=dict)  # rel path -> sha256 of generated content
+    files: Sha256ByRelPath = Field(default_factory=dict)
     note: str = ""
 
 
@@ -247,16 +239,16 @@ class RunRecord(_Model):
     run_id: str
     command: str
     leanc_version: str
-    status: Status  # final workflow status
+    status: Status
     spec_path: str | None = None
     spec_id: str | None = None
     project_root: str
     provider: ProviderInfo | None = None
     generation: GenerationRecord | None = None
-    verification: VerificationResult | None = None  # final verification
+    verification: VerificationResult | None = None
     initial_verification: VerificationResult | None = None
     repair_rounds: list[RepairRound] = Field(default_factory=list)
     messages: list[str] = Field(default_factory=list)
     started_at: str = Field(default_factory=utcnow)
     finished_at: str | None = None
-    artifacts: dict[str, str] = Field(default_factory=dict)  # name -> path relative to run dir
+    artifacts: dict[str, RunRelativePath] = Field(default_factory=dict)

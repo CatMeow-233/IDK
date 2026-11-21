@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+READ_CHUNK_BYTES = 64 * 1024
+
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -17,11 +19,11 @@ def sha256_text(text: str) -> str:
 
 
 def sha256_file(path: str | Path) -> str:
-    h = hashlib.sha256()
+    digest = hashlib.sha256()
     with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
+        for chunk in iter(lambda: fh.read(READ_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def canonical_json(obj: Any) -> str:

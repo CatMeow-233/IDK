@@ -1,15 +1,4 @@
-"""Safe external-process execution.
-
-Rules enforced here (see docs/security.md):
-
-* Commands are always an argv list; ``shell=True`` is never used.
-* The child gets a *minimal* environment (no inherited secrets such as API keys).
-* Wall-clock timeout, CPU / address-space / file-size / core rlimits.
-* stdout / stderr are read incrementally and capped; exceeding the cap kills the
-  process group and marks the output as truncated.
-* The child runs in its own session so the whole process group can be killed.
-* Optionally the argv is wrapped by a :class:`~leanc.foundation.sandbox.Sandbox`.
-"""
+"""Safe process execution: argv only (never a shell), minimal environment, rlimits, timeout and capped output."""
 
 from __future__ import annotations
 
@@ -20,23 +9,34 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from leanc.foundation.models import ToolInvocation
 from leanc.foundation.redact import redact
-from leanc.foundation.sandbox import Sandbox, SandboxMounts
+from leanc.foundation.sandbox import Sandbox, SandboxKind, SandboxMounts
 
 DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+MIB = 1024 * 1024
+PIPE_CHUNK_BYTES = 64 * 1024
+SELECT_POLL_INTERVAL_S = 0.25
+MIN_REAP_WAIT_S = 0.1
+KILLED_CHILD_REAP_TIMEOUT_S = 5
+CPU_HARD_LIMIT_GRACE_S = 1
+STDOUT, STDERR, STDIN = "stdout", "stderr", "stdin"
+
+PREEXEC_HOOK_FAILED = subprocess.SubprocessError
+LAUNCH_FAILURES = (OSError, ValueError, PREEXEC_HOOK_FAILED)
 
 
 @dataclass(frozen=True)
 class Limits:
     timeout_s: float = 60.0
-    cpu_s: int | None = None  # RLIMIT_CPU (seconds)
-    memory_mb: int | None = None  # RLIMIT_AS; do NOT use with ASan (huge shadow mappings)
-    max_output_bytes: int = 4 * 1024 * 1024  # per stream
-    max_file_mb: int | None = 512  # RLIMIT_FSIZE
+    cpu_s: int | None = None
+    memory_mb: int | None = None
+    max_output_bytes: int = 4 * MIB
+    max_file_mb: int | None = 512
     max_open_files: int | None = 1024
 
 
@@ -51,9 +51,9 @@ class ProcResult:
     duration_s: float
     stdout: str
     stderr: str
-    sandbox: str = "none"
-    error: str | None = None  # failure to launch (e.g. executable missing)
-    display_argv: list[str] = field(default_factory=list)  # argv before sandbox wrapping
+    sandbox: SandboxKind = "none"
+    error: str | None = None
+    display_argv: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -66,18 +66,10 @@ class ProcResult:
         log_name: str | None = None,
         note: str | None = None,
     ) -> ToolInvocation:
-        """Convert to a :class:`ToolInvocation`, writing (redacted) stdout/stderr
-        into ``run_dir/logs/<log_name>.{stdout,stderr}.txt`` when given."""
+        """Convert to a ToolInvocation, writing redacted ``logs/<log_name>.{stdout,stderr}.txt`` under ``run_dir``."""
         out_rel = err_rel = None
         if run_dir is not None and log_name:
-            logs = Path(run_dir) / "logs"
-            logs.mkdir(parents=True, exist_ok=True)
-            out_p = logs / f"{log_name}.stdout.txt"
-            err_p = logs / f"{log_name}.stderr.txt"
-            out_p.write_text(redact(self.stdout), encoding="utf-8")
-            err_p.write_text(redact(self.stderr), encoding="utf-8")
-            out_rel = str(out_p.relative_to(run_dir))
-            err_rel = str(err_p.relative_to(run_dir))
+            out_rel, err_rel = self._write_redacted_logs(Path(run_dir), log_name)
         notes = [n for n in (note, self.error) if n]
         return ToolInvocation(
             tool=tool,
@@ -94,11 +86,18 @@ class ProcResult:
             note="; ".join(notes) if notes else None,
         )
 
+    def _write_redacted_logs(self, run_dir: Path, log_name: str) -> tuple[str, str]:
+        logs = run_dir / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        out_path = logs / f"{log_name}.stdout.txt"
+        err_path = logs / f"{log_name}.stderr.txt"
+        out_path.write_text(redact(self.stdout), encoding="utf-8")
+        err_path.write_text(redact(self.stderr), encoding="utf-8")
+        return str(out_path.relative_to(run_dir)), str(err_path.relative_to(run_dir))
+
 
 def minimal_env(extra: Mapping[str, str] | None = None, home: str | None = None) -> dict[str, str]:
-    """A small, explicit environment.  Nothing is inherited from the parent
-    process, so credentials in the parent environment never reach tools or
-    untrusted programs."""
+    """A small explicit environment: nothing is inherited, so parent credentials never reach child processes."""
     env = {
         "PATH": DEFAULT_PATH,
         "LANG": "C.UTF-8",
@@ -111,40 +110,186 @@ def minimal_env(extra: Mapping[str, str] | None = None, home: str | None = None)
     return env
 
 
+def _within_inherited_hard_limit(limit: int, wanted: int) -> bool:
+    _, hard = resource.getrlimit(limit)
+    return hard == resource.RLIM_INFINITY or wanted <= hard
+
+
 def _make_preexec(limits: Limits):
-    def _preexec() -> None:  # runs in the child between fork and exec
-        try:
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        except (ValueError, OSError):
-            pass
+    def _apply_limits_in_child_before_exec() -> None:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         if limits.cpu_s is not None:
             cpu = int(limits.cpu_s)
-            resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 1))
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + CPU_HARD_LIMIT_GRACE_S))
         if limits.memory_mb is not None:
-            mem = int(limits.memory_mb) * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+            address_space = int(limits.memory_mb) * MIB
+            resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
         if limits.max_file_mb is not None:
-            fs = int(limits.max_file_mb) * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_FSIZE, (fs, fs))
+            file_size = int(limits.max_file_mb) * MIB
+            resource.setrlimit(resource.RLIMIT_FSIZE, (file_size, file_size))
         if limits.max_open_files is not None:
-            n = int(limits.max_open_files)
-            try:
-                resource.setrlimit(resource.RLIMIT_NOFILE, (n, n))
-            except (ValueError, OSError):
-                pass
+            open_files = int(limits.max_open_files)
+            if _within_inherited_hard_limit(resource.RLIMIT_NOFILE, open_files):
+                resource.setrlimit(resource.RLIMIT_NOFILE, (open_files, open_files))
 
-    return _preexec
+    return _apply_limits_in_child_before_exec
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
+class GroupKill(Enum):
+    """What sending SIGKILL to a child's process group achieved."""
+
+    KILLED = "killed"
+    ALREADY_GONE = "already-gone"
+    NOT_PERMITTED = "not-permitted"
+
+
+def _kill_process_group(pgid: int) -> GroupKill:
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return GroupKill.ALREADY_GONE
+    except PermissionError:
+        return GroupKill.NOT_PERMITTED
+    return GroupKill.KILLED
+
+
+def _kill_group(proc: subprocess.Popen) -> GroupKill:
+    group_kill = _kill_process_group(proc.pid)
     try:
         proc.kill()
     except ProcessLookupError:
         pass
+    return group_kill
+
+
+def _kill_lingering_group_members(proc: subprocess.Popen) -> GroupKill:
+    return _kill_process_group(proc.pid)
+
+
+class _PumpEnd(Enum):
+    OUTPUTS_CLOSED = "outputs-closed"
+    DEADLINE_PASSED = "deadline-passed"
+    OUTPUT_CAP_EXCEEDED = "output-cap-exceeded"
+
+
+class _StreamPump:
+    def __init__(self, proc: subprocess.Popen, stdin_data: bytes | None, max_output_bytes: int):
+        assert proc.stdout is not None and proc.stderr is not None
+        self._proc = proc
+        self._max_output_bytes = max_output_bytes
+        self._selector = selectors.DefaultSelector()
+        self._selector.register(proc.stdout, selectors.EVENT_READ, STDOUT)
+        self._selector.register(proc.stderr, selectors.EVENT_READ, STDERR)
+        self._open_outputs = 2
+        self._stdin = memoryview(stdin_data if stdin_data is not None else b"")
+        self._stdin_pos = 0
+        self.output: dict[str, bytearray] = {STDOUT: bytearray(), STDERR: bytearray()}
+        self.truncated = False
+        self._feed_stdin_from_the_select_loop_without_blocking()
+
+    def _feed_stdin_from_the_select_loop_without_blocking(self) -> None:
+        stdin = self._proc.stdin
+        if stdin is None:
+            return
+        if len(self._stdin) > 0:
+            os.set_blocking(stdin.fileno(), False)
+            self._selector.register(stdin, selectors.EVENT_WRITE, STDIN)
+        else:
+            stdin.close()
+
+    def run_until(self, deadline: float) -> _PumpEnd:
+        while self._open_outputs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return _PumpEnd.DEADLINE_PASSED
+            for key, _ in self._selector.select(timeout=min(remaining, SELECT_POLL_INTERVAL_S)):
+                if key.data == STDIN:
+                    self._write_stdin_chunk(key.fd)
+                else:
+                    self._read_output_chunk(key)
+            if self.truncated:
+                return _PumpEnd.OUTPUT_CAP_EXCEEDED
+        return _PumpEnd.OUTPUTS_CLOSED
+
+    def _write_stdin_chunk(self, fd: int) -> None:
+        chunk = self._stdin[self._stdin_pos : self._stdin_pos + PIPE_CHUNK_BYTES]
+        try:
+            self._stdin_pos += os.write(fd, chunk)
+        except BlockingIOError:
+            return
+        except BrokenPipeError:
+            self._stdin_pos = len(self._stdin)
+        if self._stdin_pos >= len(self._stdin):
+            self.close_stdin()
+
+    def _read_output_chunk(self, key: selectors.SelectorKey) -> None:
+        chunk = os.read(key.fd, PIPE_CHUNK_BYTES)
+        if not chunk:
+            self._selector.unregister(key.fileobj)
+            self._open_outputs -= 1
+            return
+        captured = self.output[key.data]
+        room = self._max_output_bytes - len(captured)
+        if room > 0:
+            captured.extend(chunk[:room])
+        if len(chunk) > room:
+            self.truncated = True
+
+    def close_stdin(self) -> None:
+        stdin = self._proc.stdin
+        if stdin is None or stdin.closed:
+            return
+        if stdin in self._selector.get_map():
+            self._selector.unregister(stdin)
+        try:
+            stdin.close()
+        except BrokenPipeError:
+            pass
+
+    def close(self) -> None:
+        self.close_stdin()
+        self._selector.close()
+
+
+def _validated_argv(argv: Sequence[str]) -> list[str]:
+    if isinstance(argv, (str, bytes)):
+        raise TypeError("argv must be a sequence of arguments, not a string (no shell execution)")
+    args = [str(a) for a in argv]
+    if not args:
+        raise ValueError("empty argv")
+    if any("\x00" in a for a in args):
+        raise ValueError("NUL byte in argument")
+    return args
+
+
+@dataclass(frozen=True)
+class _Launch:
+    argv: list[str]
+    env: dict[str, str]
+    sandbox_kind: SandboxKind
+
+
+def _plan_launch(
+    argv: list[str],
+    cwd: str,
+    program_env: dict[str, str],
+    sandbox: Sandbox | None,
+    mounts: SandboxMounts | None,
+) -> _Launch:
+    if sandbox is None or sandbox.kind == "none":
+        return _Launch(argv=list(argv), env=program_env, sandbox_kind="none")
+    wrapped = sandbox.wrap(argv, cwd=cwd, env=program_env, mounts=mounts)
+    return _Launch(argv=wrapped, env=minimal_env(), sandbox_kind=sandbox.kind)
+
+
+def _reap_or_kill(proc: subprocess.Popen, wait_s: float) -> bool:
+    try:
+        proc.wait(timeout=wait_s)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        proc.wait(timeout=KILLED_CHILD_REAP_TIMEOUT_S)
+        return True
+    return False
 
 
 def run_command(
@@ -158,33 +303,18 @@ def run_command(
     mounts: "SandboxMounts | None" = None,
 ) -> ProcResult:
     """Run ``argv`` (never through a shell) and capture bounded output."""
-    if isinstance(argv, (str, bytes)):
-        raise TypeError("argv must be a sequence of arguments, not a string (no shell execution)")
-    argv = [str(a) for a in argv]
-    if not argv:
-        raise ValueError("empty argv")
-    for a in argv:
-        if "\x00" in a:
-            raise ValueError("NUL byte in argument")
+    display_argv = _validated_argv(argv)
     limits = limits or Limits()
     cwd = str(cwd)
-    child_env = dict(env) if env is not None else minimal_env()
-
-    display_argv = list(argv)
-    sandbox_kind = "none"
-    exec_argv = list(argv)
-    if sandbox is not None and sandbox.kind != "none":
-        exec_argv = sandbox.wrap(argv, cwd=cwd, env=child_env, mounts=mounts)
-        sandbox_kind = sandbox.kind
-        # bwrap clears and sets the environment itself; keep the outer env minimal.
-        child_env = minimal_env()
+    program_env = dict(env) if env is not None else minimal_env()
+    launch = _plan_launch(display_argv, cwd, program_env, sandbox, mounts)
 
     start = time.monotonic()
     try:
-        proc = subprocess.Popen(  # noqa: S603 - argv list, shell=False by construction
-            exec_argv,
+        proc = subprocess.Popen(
+            launch.argv,
             cwd=cwd,
-            env=child_env,
+            env=launch.env,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -193,11 +323,9 @@ def run_command(
             preexec_fn=_make_preexec(limits),
             close_fds=True,
         )
-    # SubprocessError: the preexec hook failed in the child (e.g. an rlimit
-    # above the inherited hard limit); that is a launch failure, not a crash.
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    except LAUNCH_FAILURES as exc:
         return ProcResult(
-            argv=exec_argv,
+            argv=launch.argv,
             cwd=cwd,
             exit_code=None,
             signal=None,
@@ -206,105 +334,37 @@ def run_command(
             duration_s=time.monotonic() - start,
             stdout="",
             stderr="",
-            sandbox=sandbox_kind,
-            error=f"failed to launch {argv[0]!r}: {exc}",
+            sandbox=launch.sandbox_kind,
+            error=f"failed to launch {display_argv[0]!r}: {exc}",
             display_argv=display_argv,
         )
 
-    bufs: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
-    truncated = False
-    timed_out = False
-    sel = selectors.DefaultSelector()
-    assert proc.stdout is not None and proc.stderr is not None
-    sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
-    sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
-    # stdin is fed from the same select loop with non-blocking writes.  A
-    # blocking write would hang forever (defeating the timeout) when the child
-    # never reads its input and the data exceeds the pipe buffer.
-    stdin_view = memoryview(stdin_data) if stdin_data is not None else None
-    stdin_pos = 0
-    if proc.stdin is not None:
-        if stdin_view is not None and len(stdin_view) > 0:
-            os.set_blocking(proc.stdin.fileno(), False)
-            sel.register(proc.stdin, selectors.EVENT_WRITE, "stdin")
-        else:
-            proc.stdin.close()
-
-    def _close_stdin() -> None:
-        if proc.stdin is not None and not proc.stdin.closed:
-            try:
-                sel.unregister(proc.stdin)
-            except (KeyError, ValueError):
-                pass
-            try:
-                proc.stdin.close()
-            except OSError:
-                pass
     deadline = start + float(limits.timeout_s)
-    open_streams = 2
-    while open_streams:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            _kill_group(proc)
-            break
-        for key, _ in sel.select(timeout=min(remaining, 0.25)):
-            if key.data == "stdin":
-                assert stdin_view is not None
-                fd = key.fileobj.fileno()  # type: ignore[union-attr]
-                try:
-                    stdin_pos += os.write(fd, stdin_view[stdin_pos : stdin_pos + 65536])
-                except BlockingIOError:
-                    continue
-                except OSError:  # BrokenPipeError: the child closed its stdin
-                    stdin_pos = len(stdin_view)
-                if stdin_pos >= len(stdin_view):
-                    _close_stdin()
-                continue
-            chunk = os.read(key.fileobj.fileno(), 65536)  # type: ignore[union-attr]
-            if not chunk:
-                sel.unregister(key.fileobj)
-                open_streams -= 1
-                continue
-            buf = bufs[key.data]
-            room = limits.max_output_bytes - len(buf)
-            if room > 0:
-                buf.extend(chunk[:room])
-            if len(chunk) > room:
-                truncated = True
-        if truncated:
-            _kill_group(proc)
-            break
-    _close_stdin()
-    sel.close()
-    try:
-        proc.wait(timeout=max(0.1, deadline - time.monotonic()) if not (timed_out or truncated) else 5)
-    except subprocess.TimeoutExpired:
-        timed_out = True
+    pump = _StreamPump(proc, stdin_data, limits.max_output_bytes)
+    pump_end = pump.run_until(deadline)
+    if pump_end is not _PumpEnd.OUTPUTS_CLOSED:
         _kill_group(proc)
-        proc.wait(timeout=5)
-    # Make sure nothing in the group survives (e.g. grandchildren holding pipes).
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-    for stream in (proc.stdout, proc.stderr):
-        try:
-            stream.close()
-        except OSError:
-            pass
+    pump.close()
+    if pump_end is _PumpEnd.OUTPUTS_CLOSED:
+        reap_wait_s = max(MIN_REAP_WAIT_S, deadline - time.monotonic())
+    else:
+        reap_wait_s = KILLED_CHILD_REAP_TIMEOUT_S
+    reap_timed_out = _reap_or_kill(proc, reap_wait_s)
+    _kill_lingering_group_members(proc)
+    proc.stdout.close()
+    proc.stderr.close()
+
     rc = proc.returncode
-    sig = -rc if rc is not None and rc < 0 else None
     return ProcResult(
-        argv=exec_argv,
+        argv=launch.argv,
         cwd=cwd,
         exit_code=rc if rc is not None and rc >= 0 else None,
-        signal=sig,
-        timed_out=timed_out,
-        output_truncated=truncated,
+        signal=-rc if rc is not None and rc < 0 else None,
+        timed_out=pump_end is _PumpEnd.DEADLINE_PASSED or reap_timed_out,
+        output_truncated=pump.truncated,
         duration_s=time.monotonic() - start,
-        stdout=bufs["stdout"].decode("utf-8", errors="replace"),
-        stderr=bufs["stderr"].decode("utf-8", errors="replace"),
-        sandbox=sandbox_kind,
+        stdout=pump.output[STDOUT].decode("utf-8", errors="replace"),
+        stderr=pump.output[STDERR].decode("utf-8", errors="replace"),
+        sandbox=launch.sandbox_kind,
         display_argv=display_argv,
     )

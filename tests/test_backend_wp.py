@@ -1,12 +1,4 @@
-"""Tests for the Frama-C/WP gate (leanc.backends.wp).
-
-Most tests run the real Frama-C (``needs_framac``: skipped when no usable
-frama-c >= 27 is installed) on tiny projects assembled in a temporary
-directory: a protected header carrying the approved ACSL contract and one
-editable implementation.  A few tests replace the tool run by canned output
-to exercise verdict rules real Frama-C does not produce on demand (a cache
-hit, inconsistent totals, an Invalid goal, a timeout).
-"""
+"""Tests for the Frama-C/WP gate on tiny projects, with the real Frama-C and with canned tool output."""
 
 from __future__ import annotations
 
@@ -16,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from leanc.backends import wp as wp_mod
+from leanc.backends.wp import gate as wp_gate
 from leanc.backends.counterexample import fingerprint
 from leanc.backends.wp import build_wp_argv, goal_kind, parse_console, run_wp
 from leanc.foundation.runner import ProcResult
@@ -41,7 +33,6 @@ def needs_framac():
         pytest.skip(f"Frama-C >= {MIN_FRAMAC_MAJOR} with WP not installed (set LEANC_FRAMAC)")
 
 
-# ============================================================================ tiny projects
 ADD_H = """\
 #ifndef ADD_H
 #define ADD_H
@@ -129,7 +120,6 @@ def _kinds(res) -> set[str]:
     return {f.kind for f in res.failures}
 
 
-# ============================================================================ real Frama-C
 def test_proved_contract_passes(tmp_path, needs_framac):
     ctx = make_project(tmp_path, header=ADD_H.format(contract=GOOD_CONTRACT), src=ADD_C)
     res = run_wp(ctx)
@@ -140,12 +130,12 @@ def test_proved_contract_passes(tmp_path, needs_framac):
     assert d["smoke_tests"]["total"] >= 1 and d["smoke_tests"]["passed"] == d["smoke_tests"]["total"]
     assert d["frama_c_version"] and d["prover_versions"].get("alt-ergo") is not None
     assert d["contract"] and d["contract"][0]["file"] == "include/add.h"
-    assert any(g["kind"].startswith("runtime-error guard") for g in d["goals"])  # -wp-rte goals were proved
+    assert any(g["kind"].startswith("runtime-error guard") for g in d["goals"])
     argv = d["argv"]["wp"]
     for flag in ("-wp", "-wp-rte", "-wp-smoke-tests"):
         assert flag in argv
     assert argv[argv.index("-wp-cache") + 1] == "none"
-    assert "-wp-prop=-@terminates,-@decreases" in argv  # partial correctness by default
+    assert "-wp-prop=-@terminates,-@decreases" in argv
     assert (ctx.run_dir / d["raw"]["report_json"]).is_file() and (ctx.run_dir / d["raw"]["wp_log"]).is_file()
     text = " ".join(d["assumptions"])
     assert "ALL inputs" in text and "partial correctness" in text and "Typed memory model" in text
@@ -163,7 +153,6 @@ def test_missing_loop_invariant_is_inconclusive_with_unproved_goals(tmp_path, ne
     assert any("post-condition" in f.description for f in unproved)
     assert all("not proved" in f.description and f.explanation for f in unproved)
     assert {d.rule_id for d in res.diagnostics} == {"unproved"}
-    # descriptions carry the source text, never editable line numbers: fingerprints survive added annotations
     for f in unproved:
         assert str(f.location.line) not in f.description.split("`")[0]
         assert fingerprint(f).startswith("frama-c-wp:unproved:")
@@ -176,7 +165,6 @@ def test_loop_invariants_make_it_pass_and_termination_can_be_required(tmp_path, 
     assert res.outcome is Outcome.PASS, res.summary
     assert "-wp-prop=-@terminates,-@decreases" not in res.details["argv"]["wp"]
     assert any("total correctness" in a for a in res.details["assumptions"])
-    # without the variant, termination is an open obligation
     ctx2 = make_project(tmp_path, header=SUM_H, src=SUM_INV.replace("        loop variant n - i;\n", ""),
                         function="count_small", header_name="sum.h", wp={"require_termination": True}, name="p2")
     res2 = run_wp(ctx2)
@@ -196,8 +184,7 @@ def test_static_helper_contract_is_a_proof_obligation(tmp_path, needs_framac):
     res = run_wp(ctx)
     assert res.outcome is Outcome.PASS, res.summary
     kinds = {g["kind"] for g in res.details["goals"]}
-    assert "precondition of ident() at a call site" in kinds  # callers must establish the helper's requires
-    # a helper whose contract is false is not trusted: its own proof fails
+    assert "precondition of ident() at a call site" in kinds
     lying = helper.replace("ensures \\result == x;", "ensures \\result == x + 1;")
     res2 = run_wp(make_project(tmp_path, header=ADD_H.format(contract=GOOD_CONTRACT), src=lying, name="p2"))
     assert res2.outcome is Outcome.INCONCLUSIVE
@@ -241,12 +228,11 @@ def test_no_approved_contract_is_inconclusive(tmp_path, needs_framac):
     res = run_wp(make_project(tmp_path, header=ADD_H.format(contract="/* plain comment, no ACSL */"), src=ADD_C))
     assert res.outcome is Outcome.INCONCLUSIVE
     assert "no approved ACSL contract" in res.summary
-    assert not res.invocations  # nothing to prove: Frama-C is not even run
+    assert not res.invocations
 
 
 def test_contract_not_seen_by_frama_c_is_not_pass(tmp_path, needs_framac):
-    """An editable file that does not include the protected header defines the
-    target without its contract: only RTE goals remain - never a PASS."""
+    """A target defined without including the protected header has only RTE goals: never a PASS."""
     src = "int add(int a, int b)\n{\n    return a / 2 + b / 2;\n}\n"
     res = run_wp(make_project(tmp_path, header=ADD_H.format(contract=GOOD_CONTRACT), src=src))
     assert res.outcome is Outcome.INCONCLUSIVE, res.summary
@@ -254,9 +240,7 @@ def test_contract_not_seen_by_frama_c_is_not_pass(tmp_path, needs_framac):
 
 
 def test_extra_contract_on_target_in_editable_code_is_rejected(tmp_path, needs_framac):
-    """Frama-C merges contracts: an extra `requires \\false` would make the
-    (wrong) code 'provable'.  The integrity rules reject it, and WP refuses to
-    produce a verdict."""
+    """Frama-C merges contracts, so an extra `requires \\false` is rejected before WP runs."""
     cheat = ADD_C.replace("int add(int a, int b)\n", "/*@ requires \\false; */\nint add(int a, int b)\n").replace(
         "return a + b;", "return 0;"
     )
@@ -310,9 +294,7 @@ def test_too_old_frama_c_is_tool_error(tmp_path, monkeypatch):
 
 
 def test_no_stale_cache_results_across_runs(tmp_path, needs_framac, monkeypatch):
-    """A verdict must always reflect this run: the second run (different,
-    wrong code, same project) must not reuse results of the first one, even
-    if the parent environment asks Frama-C for a shared cache."""
+    """A second run on changed code never reuses proofs, even when the environment asks for a shared cache."""
     shared = tmp_path / "shared-cache"
     monkeypatch.setenv("FRAMAC_WP_CACHE", "update")
     monkeypatch.setenv("FRAMAC_WP_CACHEDIR", str(shared))
@@ -335,11 +317,7 @@ def test_no_stale_cache_results_across_runs(tmp_path, needs_framac, monkeypatch)
     assert not shared.exists()
 
 
-# ============================================================================ canned tool output
 class _FakeRun:
-    """Replaces BackendContext.run: writes a canned JSON report and returns
-    canned console output for the frama-c invocation."""
-
     def __init__(self, goals, console, *, exit_code=0, timed_out=False, truncated=False):
         self.goals, self.console = goals, console
         self.exit_code, self.timed_out, self.truncated = exit_code, timed_out, truncated
@@ -367,8 +345,8 @@ PASS_CONSOLE = "[wp] 4 goals scheduled\n[wp] Proved goals:    6 / 6\n  Terminati
 def fake_framac(tmp_path, monkeypatch):
     fc = FramaC(frama_c="/fake/bin/frama-c", real="/fake/bin/frama-c", bin_dir="/fake/bin", prefix="/fake",
                        why3=None)
-    monkeypatch.setattr(wp_mod, "find_framac", lambda: fc)
-    monkeypatch.setattr(wp_mod, "tool_version", lambda path, flag="--version": "33.0 (Arsenic)")
+    monkeypatch.setattr(wp_gate, "find_framac", lambda: fc)
+    monkeypatch.setattr(wp_gate, "tool_version", lambda path, flag="--version": "33.0 (Arsenic)")
 
     def install(goals, console, **kw):
         fake = _FakeRun(goals, console, **kw)
@@ -435,7 +413,6 @@ def test_non_automatic_prover_is_rejected(tmp_path, fake_framac):
     assert res.outcome is Outcome.ERROR and "not an automatic prover" in res.summary
 
 
-# ============================================================================ pure helpers
 def test_parse_console_summary_and_messages():
     text = (
         "[kernel] Parsing src/impl.c (with preprocessing)\n"
@@ -466,7 +443,6 @@ def test_goal_kinds():
     assert goal_kind(g("in_range_ensures", behavior="in_range")) == "post-condition"
     assert goal_kind(g("terminates")) == "termination"
     assert goal_kind(g("wp_smoke_default_requires")) == "smoke test"
-    # call-site goals carry the callee's clause as "property"
     assert goal_kind({"goal": "typed_f_call_h_2_requires", "property": "h_requires_2", "function": "f"}) == \
         "precondition of h() at a call site"
     assert goal_kind({"goal": "typed_h_wp_smoke_dead_call_s5", "property": "h_wp_smoke_dead_call_s5",

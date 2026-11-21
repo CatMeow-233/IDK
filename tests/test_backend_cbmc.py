@@ -1,13 +1,3 @@
-"""Tests for the CBMC gate (leanc.backends.cbmc).
-
-Most tests run the real CBMC (``needs_cbmc``) on tiny projects assembled in a
-temporary directory from ``tests/fixtures/cbmc``: one header, one editable
-implementation (``src/impl.c``) and one trusted harness (``harness/h.c``).
-A few tests use a fake ``cbmc`` (a shell script replaying captured output) to
-exercise failure modes that real CBMC cannot produce on demand (running out
-of memory, being killed by a signal).
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -20,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends import cbmc as cbmc_mod
+from leanc.backends.cbmc import execution as cbmc_execution
 from leanc.backends.cbmc import (
     CHECK_FLAGS,
     build_cbmc_argv,
@@ -61,7 +51,6 @@ def make_cbmc_project(
     compile_defines: list[str] | None = None,
     **verification,
 ) -> BackendContext:
-    """Assemble a project from fixtures and return a BackendContext for it."""
     root = tmp_path / "proj"
     for d in ("include", "src", "harness"):
         (root / d).mkdir(parents=True, exist_ok=True)
@@ -89,9 +78,6 @@ def _inputs(f) -> dict[str, str]:
 
 def _by_class(res, cls: str):
     return [f for f in res.failures if f.kind == "counterexample" and f.property_id and f".{cls}." in f.property_id]
-
-
-# --------------------------------------------------------------------------- argv (no CBMC needed)
 
 
 def _fake_tools(ctx: BackendContext, cbmc: str | None = "/opt/cbmc/bin/cbmc") -> None:
@@ -156,11 +142,10 @@ def test_build_argv_vacuity_and_coverage_modes(tmp_path):
     assert "--unwindset" not in vac and "--malloc-may-fail" not in vac and "--object-bits" not in vac
     cov = build_cbmc_argv(ctx, mode="coverage")
     assert cov[cov.index("--cover") + 1] == "location"
-    # CBMC rejects --cover together with --unwinding-assertions.
     assert "--unwinding-assertions" not in cov
     assert "-DLEANC_VACUITY_CHECK" not in cov and not [a for a in cov if a.endswith("-check")]
     with pytest.raises(ValueError):
-        build_cbmc_argv(ctx, mode="prove")  # type: ignore[arg-type]
+        build_cbmc_argv(ctx, mode="prove")
     _fake_tools(ctx, cbmc=None)
     with pytest.raises(ValueError):
         build_cbmc_argv(ctx)
@@ -176,9 +161,6 @@ def test_find_probes_ignores_comments():
     code = 'const char *s = "/* not a comment */"; /* c */ LEANC_REACH( "a" ); LEANC_REACH("a"); LEANC_REACH(L);'
     assert find_probes(code) == (True, ["a"])
     assert "not a comment" in strip_c_comments(code) and "/* c */" not in strip_c_comments(code)
-
-
-# --------------------------------------------------------------------------- real CBMC: verdicts
 
 
 def test_correct_code_passes_with_vacuity_ok(tmp_path, needs_cbmc):
@@ -239,7 +221,6 @@ def test_off_by_one_counterexample_shows_idx_equal_len(tmp_path, needs_cbmc):
     assert f.raw_ref == "raw/cbmc-verify.json" and (ctx.run_dir / f.raw_ref).is_file()
     assert f.trace and f.trace[-1].kind == "failure"
     assert f.property_id in f.explanation and "src/impl.c:11" in f.explanation and "param idx" in f.explanation
-    # every failure of this buggy version shows idx == len
     for g in res.failures:
         gi = _inputs(g)
         assert gi["param idx"] == gi["param len"], (g.id, gi)
@@ -248,7 +229,7 @@ def test_off_by_one_counterexample_shows_idx_equal_len(tmp_path, needs_cbmc):
     assert all(d.tool == "cbmc" and d.severity == "error" for d in res.diagnostics)
     assert res.details["vacuity"]["status"] == "skipped"
     assert res.details["properties_failed"] == len(res.failures)
-    assert len(res.invocations) == 1  # no vacuity run once real violations are known
+    assert len(res.invocations) == 1
 
 
 def test_division_by_zero(tmp_path, needs_cbmc):
@@ -333,7 +314,7 @@ def test_contradictory_assumptions_are_vacuous(tmp_path, needs_cbmc):
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.INCONCLUSIVE, res.summary
     assert res.status is Status.UNKNOWN
-    assert res.details["properties_failed"] == 0  # plain CBMC would say "VERIFICATION SUCCESSFUL"
+    assert res.details["properties_failed"] == 0
     assert res.details["vacuity"]["status"] == "vacuous"
     assert res.details["vacuity"]["probes"] == {"after_call": False}
     (f,) = res.failures
@@ -444,7 +425,7 @@ def test_undefined_target_function_is_inconclusive(tmp_path, needs_cbmc):
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.INCONCLUSIVE, res.summary
     assert "has no definition" in res.summary
-    assert res.failures == []  # spurious counterexamples on arbitrary return values are not reported
+    assert res.failures == []
     assert any(d.rule_id == "no-body" and "arr_get" in d.message for d in res.diagnostics)
 
 
@@ -472,12 +453,12 @@ def test_coverage_details(tmp_path, needs_cbmc):
         coverage=True,
     )
     res = run_cbmc(ctx)
-    assert res.outcome is Outcome.PASS, res.summary  # coverage is informational only
+    assert res.outcome is Outcome.PASS, res.summary
     cov = res.details["coverage"]
     assert set(cov) == {"src/impl.c"}
     st = cov["src/impl.c"]
     assert st["goals"] > 0 and 0 < st["covered"] < st["goals"]
-    assert 8 in st["uncovered_lines"]  # the `return 0;` behind `n > 1000`
+    assert 8 in st["uncovered_lines"]
     assert 10 not in st["uncovered_lines"]
     assert any("coverage (non-blocking) src/impl.c" in n for n in res.details["notes"])
     assert set(res.details["argv"]) == {"verify", "vacuity", "coverage"}
@@ -487,8 +468,6 @@ def test_coverage_details(tmp_path, needs_cbmc):
 
 
 def test_coverage_reveals_branch_the_harness_never_takes(tmp_path, needs_cbmc):
-    # malloc never fails in CBMC's default model and `out` is always &out, so
-    # the NULL-check branch of arr_get (line 6) is dead under this harness.
     ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get", coverage=True)
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.PASS
@@ -498,7 +477,7 @@ def test_coverage_reveals_branch_the_harness_never_takes(tmp_path, needs_cbmc):
 
 
 def test_truncated_output_is_error(tmp_path, needs_cbmc, monkeypatch):
-    monkeypatch.setattr(cbmc_mod, "MAX_OUTPUT_BYTES", 2000)
+    monkeypatch.setattr(cbmc_execution, "MAX_OUTPUT_BYTES", 2000)
     ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.ERROR
@@ -536,9 +515,6 @@ def test_example_with_off_by_one_finds_idx_equal_len(example_copy, tmp_path, nee
     assert len(fps) == len(res.failures)
 
 
-# --------------------------------------------------------------------------- probe identity / harness integrity
-
-
 def _patch_harness(ctx: BackendContext, old: str, new: str, count: int = 1) -> None:
     h = ctx.snapshot_dir / ctx.spec.verification.harness
     text = h.read_text()
@@ -569,8 +545,6 @@ _OVERCONSTRAIN = [("LEANC_ASSUME(len <= MAX_LEN);", "LEANC_ASSUME(len <= MAX_LEN
 
 
 def test_duplicate_labels_cannot_hide_an_unreachable_probe(example_copy, tmp_path, needs_cbmc):
-    # Regression: probes used to be keyed by label, so one reachable "branch"
-    # probe masked the unreachable in-range "branch" probe -> VERIFIED_BOUNDED.
     res = _example_with_harness_edits(example_copy, tmp_path, _OVERCONSTRAIN + _RELABEL)
     assert res.outcome is Outcome.INCONCLUSIVE, res.summary
     vac = res.details["vacuity"]
@@ -581,7 +555,7 @@ def test_duplicate_labels_cannot_hide_an_unreachable_probe(example_copy, tmp_pat
     assert reach == [False, True, True]
     (f,) = res.failures
     assert f.kind == "vacuity" and f.id.startswith("cbmc:vacuity:branch@harness/safe_array_get_harness.c:")
-    assert f.location.line == 43  # the in-range branch (one line lower than before the added assumption)
+    assert f.location.line == 43
     assert "branch (harness/safe_array_get_harness.c:43)" in res.summary
     assert any("duplicate LEANC_REACH label" in n for n in res.details["notes"])
 
@@ -634,12 +608,10 @@ def test_unreported_probe_with_non_literal_label(tmp_path, needs_cbmc):
 
 
 def test_overridden_assert_machinery_is_error(tmp_path, needs_cbmc):
-    # Without the override the wrong status code is a counterexample ...
     honest = make_cbmc_project(tmp_path / "honest", src="arr_get_wrong_code", harness="arr_get_harness", function="arr_get")
     res = run_cbmc(honest)
     assert res.outcome is Outcome.FAIL
     assert any(f.property_id.startswith("main.assertion.") for f in res.failures)
-    # ... with __assert_fail overridden CBMC silently drops the harness assertions.
     cheat = make_cbmc_project(
         tmp_path / "cheat", src="arr_get_assert_override", harness="arr_get_harness", function="arr_get"
     )
@@ -694,9 +666,6 @@ def test_probe_occurrences():
     assert probe_occurrences(text) == (3, {"after_call": 1, "in_range": 1, "out_of_range": 1})
     code = '/* LEANC_REACH("c") */ LEANC_REACH("a"); LEANC_REACH("a"); LEANC_REACH(L);'
     assert probe_occurrences(code) == (3, {"a": 2})
-
-
-# --------------------------------------------------------------------------- fake CBMC: tool failures
 
 
 def _fake_cbmc(tmp_path: Path, script: str, payload: str | None = None) -> str:
@@ -776,8 +745,6 @@ def test_garbage_output_is_error(tmp_path):
 
 
 def _fake_cbmc_by_mode(tmp_path: Path, verify_payload: str, vacuity_action: str, vacuity_payload: str = "") -> str:
-    """A fake cbmc that replays ``verify_payload`` for the verify run and runs
-    ``vacuity_action`` (shell) for the -DLEANC_VACUITY_CHECK run."""
     d = tmp_path / "fakecbmc"
     d.mkdir(exist_ok=True)
     (d / "verify.json").write_text(verify_payload)
@@ -807,8 +774,6 @@ def test_replayed_vacuity_outputs(tmp_path):
         _fake_tools(ctx, cbmc=_fake_cbmc_by_mode(sub, ok, "cat @VACUITY@", vac))
         res = run_cbmc(ctx)
         assert res.outcome is outcome, (vac_file, res.summary)
-    # contradictory replay against a harness declaring three probes: the two
-    # probes CBMC never reported are unreachable too
     assert res.details["vacuity"]["probes"] == {"after_call": False, "in_range": False, "out_of_range": False}
     reported = {f.id: f.description for f in res.failures}
     assert "not reported by CBMC" in reported["cbmc:vacuity:in_range"]
@@ -836,8 +801,6 @@ def test_vacuity_run_garbage_is_error(tmp_path):
 
 
 def test_replayed_failure_output_is_fail(tmp_path):
-    """The verdict logic only depends on CBMC's JSON: replaying a captured
-    counterexample yields the same FAIL as the real run."""
     payload = (FIX / "json" / "arr_get_off_by_one.verify.json").read_text()
     ctx = make_cbmc_project(tmp_path, src="arr_get_off_by_one", harness="arr_get_harness", function="arr_get")
     _fake_tools(ctx, cbmc=_fake_cbmc(tmp_path, "cat @PAYLOAD@\nexit 10", payload))
@@ -848,9 +811,6 @@ def test_replayed_failure_output_is_fail(tmp_path):
         "main.assertion.4",
         "arr_get.pointer_dereference.11",
     }
-
-
-# --------------------------------------------------------------------------- output parsing units
 
 
 def test_parse_cbmc_json_salvages_truncated_output():

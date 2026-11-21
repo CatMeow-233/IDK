@@ -1,8 +1,4 @@
-"""Round-3 review: a macro-hidden re-declaration of the target placed before a
-static helper's ACSL contract made Frama-C attach that contract to the target
-and MERGE it with the approved one (`requires len < 1000` narrowed the approved
-precondition) -> false PROVED.  Both the lexical ACSL rule and the WP gate's
-contract-merge backstop must now reject it."""
+"""A macro-hidden re-declaration of the target that makes Frama-C merge contracts is rejected lexically and by WP."""
 
 from __future__ import annotations
 
@@ -12,9 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from leanc.backends.wp.console import contract_merge_warning
 from leanc.cli import main
 from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
+from leanc.toolchain.framac import find_framac
 
 REPO = Path(__file__).resolve().parent.parent
 EX = REPO / "examples/wp_safe_array_get"
@@ -41,8 +39,6 @@ def test_shipped_wp_sources_still_clean():
 
 @pytest.mark.slow
 def test_attack_is_not_proved_end_to_end(tmp_path, capsys, needs_toolchain):
-    from leanc.toolchain.framac import find_framac
-
     if find_framac() is None:
         pytest.skip("Frama-C not available")
     proj = tmp_path / "p"
@@ -57,7 +53,5 @@ def test_attack_is_not_proved_end_to_end(tmp_path, capsys, needs_toolchain):
 
 
 def test_wp_merge_warning_regex_matches_frama_c_output():
-    from leanc.backends.wp import _CONTRACT_MERGE_RE
-
     text = "[kernel] src/safe_array.c:4: Warning: \n  found two contracts (old location: include/safe_array.h:22-46). Merging them\n"
-    assert _CONTRACT_MERGE_RE.search(text)
+    assert contract_merge_warning(text)

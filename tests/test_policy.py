@@ -1,5 +1,4 @@
-"""Repair / generation policy (leanc.repair.policy): every rule, count-based
-"new construct" semantics, and no false positives from comments/strings."""
+"""Repair / generation policy: every rule, count-based "new construct" semantics, no false positives from literals."""
 
 from __future__ import annotations
 
@@ -53,7 +52,6 @@ def at_top(code: str) -> str:
     return BUGGY.replace('#include "safe_array.h"\n', '#include "safe_array.h"\n' + code + "\n")
 
 
-# ============================================================================ lexer
 def test_strip_c_blanks_comments_and_literals_preserving_lines():
     text = 'int a; /* __CPROVER_assume(x)\n still comment */ int b; // system("x")\nchar *s = "asm(\\"q\\")"; char c = \'"\';\n'
     code = strip_c(text)
@@ -94,7 +92,7 @@ def test_lexer_blanks_if0_regions():
     nested = strip_c("#if 0\n#ifdef X\nint a;\n#else\nint b;\n#endif\n#endif\nint c;\n")
     assert "int a" not in nested and "int b" not in nested and "int c" in nested
     other = strip_c("#ifdef FOO\nint a;\n#else\nint b;\n#endif\n")
-    assert "int a" in other and "int b" in other  # unknown conditions are treated as live
+    assert "int a" in other and "int b" in other, "unknown conditions are treated as live"
     chain = strip_c("#if 0\nint a;\n#elif 1\nint b;\n#else\nint c;\n#endif\nint d;\n")
     assert "int a" not in chain and "int b" in chain and "int c" not in chain and "int d" in chain
     chain2 = strip_c("#if X\nint a;\n#elif 0\nint b;\n#else\nint c;\n#endif\n")
@@ -125,7 +123,6 @@ def test_hostile_input_is_checked_in_linear_time(spec, junk):
     assert time.monotonic() - t < 5.0
 
 
-# ============================================================================ baseline
 def test_real_fix_is_allowed(spec):
     d = cand(spec, GOOD)
     assert d.allowed, d.violations
@@ -137,7 +134,7 @@ def test_rule_catalogue_is_documented():
         "PATH_INVALID", "PATH_NOT_EDITABLE", "NO_CHANGE", "TOO_LARGE", "CPROVER_BUILTIN",
         "ASSUMPTION_INJECTION", "ASSERT_REMOVED", "WARNING_SUPPRESSION", "SANITIZER_SUPPRESSION",
         "INCLUDE_ESCAPE", "DANGEROUS_CALL", "INLINE_ASM", "TRIVIALIZED_TARGET", "MISSING_TARGET",
-    ):  # fmt: skip
+    ):
         assert r in RULES
 
 
@@ -146,7 +143,6 @@ def test_no_change(spec):
     assert not d.allowed and rules(d) == {"NO_CHANGE"}
 
 
-# ============================================================================ paths
 @pytest.mark.parametrize(
     "path, rule",
     [
@@ -209,19 +205,17 @@ def test_full_file_proposal_for_harness_is_path_not_editable(spec):
     assert rules(check_candidate(spec, current, candidate)) == {"PATH_INVALID"}
 
 
-# ============================================================================ size
 def test_too_large_default_and_explicit(spec):
-    big = GOOD + "".join(f"static int pad{i} = {i};\n" for i in range(250))
-    assert "TOO_LARGE" in rules(cand(spec, big))  # spec default 200
-    assert "TOO_LARGE" not in rules(cand(spec, big, max_changed_lines=1000))
-    d = cand(spec, GOOD, max_changed_lines=1)  # the fix is 1 added + 1 removed line
+    over_the_spec_default_of_200 = GOOD + "".join(f"static int pad{i} = {i};\n" for i in range(250))
+    assert "TOO_LARGE" in rules(cand(spec, over_the_spec_default_of_200))
+    assert "TOO_LARGE" not in rules(cand(spec, over_the_spec_default_of_200, max_changed_lines=1000))
+    d = cand(spec, GOOD, max_changed_lines=1)
     assert rules(d) == {"TOO_LARGE"} and "+1 -1" in d.violations[0].message
     assert cand(spec, GOOD, max_changed_lines=2).allowed
 
 
-# ============================================================================ content rules
+FILE_SCOPE_PREFIX = "TOP:"
 CASES: list[tuple[str, str, str]] = [
-    # rule, construct inserted into the function body (or at file scope with prefix "TOP:")
     ("CPROVER_BUILTIN", "    __CPROVER_assume(idx < len);", "plain __CPROVER_assume"),
     ("CPROVER_BUILTIN", "    __CPROVER_assert(idx < len, \"x\");", "__CPROVER_assert"),
     ("CPROVER_BUILTIN", "    LEANC_ASSUME(idx < len);", "LEANC_ASSUME"),
@@ -290,19 +284,18 @@ CASES: list[tuple[str, str, str]] = [
 
 @pytest.mark.parametrize("rule, construct, label", CASES, ids=[c[2] for c in CASES])
 def test_content_rule_flags_new_construct(spec, rule, construct, label):
-    new = at_top(construct[4:]) if construct.startswith("TOP:") else inject(construct)
+    if construct.startswith(FILE_SCOPE_PREFIX):
+        new = at_top(construct.removeprefix(FILE_SCOPE_PREFIX))
+    else:
+        new = inject(construct)
     d = cand(spec, new)
     assert rule in rules(d), (label, d.violations)
     v = next(v for v in d.violations if v.rule == rule)
     assert v.file == SRC and v.line is not None and v.line >= 1
-    # the same construct already present in the old code is not "new": the
-    # count-based rule does not fire again (unless the construct is also
-    # forbidden absolutely by the source-integrity rules)
-    new2 = new.replace("if (idx > len) {", "if (idx >= len) {")
-    d2 = cand(spec, new2, old_src=new)
-    absolute = {v.rule for v in source_violations(spec, SRC, new2)}
-    assert rule not in rules(d2) or rule in absolute, (label, d2.violations)
-    # and freshly generated code is checked with old = {}
+    already_present_in_old = new.replace("if (idx > len) {", "if (idx >= len) {")
+    d2 = cand(spec, already_present_in_old, old_src=new)
+    forbidden_absolutely_by_integrity_rules = {v.rule for v in source_violations(spec, SRC, already_present_in_old)}
+    assert rule not in rules(d2) or rule in forbidden_absolutely_by_integrity_rules, (label, d2.violations)
     assert rule in rules(check_generated(spec, {SRC: new}))
 
 
@@ -353,7 +346,7 @@ def test_count_based_more_occurrences_is_flagged_with_the_new_line(spec):
     two = at_top('#pragma GCC diagnostic ignored "-Wall"\n#pragma GCC diagnostic ignored "-Wextra"')
     d = cand(spec, two, old_src=one)
     (v,) = [v for v in d.violations if v.rule == "WARNING_SUPPRESSION"]
-    assert v.line == 3 and "-Wextra" in v.message  # the added line is shown as written
+    assert v.line == 3 and "-Wextra" in v.message, "the added line is shown as written"
     assert "1 -> 2" in v.message
 
 
@@ -369,7 +362,6 @@ def test_messages_escape_bidi_controls(spec):
     assert "\u202e" not in v.message and "\\u202e" in v.message
 
 
-# ============================================================================ asserts
 WITH_ASSERTS = BUGGY.replace(
     "    *out = arr[idx];",
     "    assert(idx < len);\n    _Static_assert(sizeof(int) >= 2, \"int\");\n    *out = arr[idx];",
@@ -406,12 +398,10 @@ def test_assert_kept_or_added_is_fine(spec):
     assert cand(spec, fixed, old_src=WITH_ASSERTS).allowed
     more = fixed.replace("    *out = arr[idx];", "    assert(arr != NULL);\n    *out = arr[idx];")
     assert cand(spec, more, old_src=WITH_ASSERTS).allowed
-    # removing an assert that was only ever in a comment is not a removal
-    commented = BUGGY.replace("    *out = arr[idx];", "    /* assert(idx < len); */\n    *out = arr[idx];")
-    assert cand(spec, GOOD, old_src=commented).allowed
+    assert_only_in_a_comment = BUGGY.replace("    *out = arr[idx];", "    /* assert(idx < len); */\n    *out = arr[idx];")
+    assert cand(spec, GOOD, old_src=assert_only_in_a_comment).allowed
 
 
-# ============================================================================ target function
 TRIVIAL_BODIES = [
     "    return SAFE_ARRAY_OK;",
     "    return 0;",
@@ -423,7 +413,7 @@ TRIVIAL_BODIES = [
     "",
     "    abort();",
     "    (void)(arr);\n    ;\n    return SAFE_ARRAY_ERR_NULL;;",
-    "    (void)arr; (void)len; (void)idx; (void)out;\n" * 300 + "    return SAFE_ARRAY_OK;",  # padded stub
+    "    (void)arr; (void)len; (void)idx; (void)out;\n" * 300 + "    return SAFE_ARRAY_OK;",
 ]
 
 
@@ -507,7 +497,6 @@ def test_check_generated_content_rules(spec):
     assert rules(check_generated(spec, {SRC: bad})) >= {"CPROVER_BUILTIN", "DANGEROUS_CALL"}
 
 
-# ============================================================================ decision shape
 def test_decision_is_deterministic_and_deduplicated(spec):
     new = inject('    __CPROVER_assume(idx < len);\n    system("a");\n    asm("nop");')
     d1, d2 = cand(spec, new), cand(spec, new)
@@ -524,4 +513,4 @@ def test_repair_loop_cheat_from_test_suite_is_rejected(spec):
     cheat = BUGGY.replace("if (idx > len) {", "__CPROVER_assume(idx < len);\n    if (idx > len) {")
     assert "CPROVER_BUILTIN" in rules(cand(spec, cheat))
     broken = BUGGY.replace("return SAFE_ARRAY_OK;", "return SAFE_ARRAY_OK")
-    assert cand(spec, broken).allowed  # a compile error is the verifier's business, not the policy's
+    assert cand(spec, broken).allowed, "a compile error is the verifier's business, not the policy's"

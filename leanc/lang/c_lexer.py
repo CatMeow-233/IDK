@@ -4,205 +4,229 @@ from __future__ import annotations
 
 import bisect
 import re
+from dataclasses import dataclass
 from functools import cached_property
+from typing import NamedTuple
 
 __all__ = ["BIDI_RE", "CSource", "strip_c"]
 
-_WS = r"[^\S\n]*"  # horizontal whitespace (incl. \f, \v)
-BIDI_RE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
+_HORIZONTAL_WHITESPACE = r"[^\S\n]*"
+BIDI_RE = re.compile("[‪-‮⁦-⁩‎‏؜]")
 
-# =========================================================================== lexing
-_SPLICE_RE = re.compile(r"\\[ \t\f\v]*\r?\n")
-_INTERESTING_RE = re.compile(r"[/\"']")
+_LINE_SPLICE_RE = re.compile(r"\\[ \t\f\v]*\r?\n")
+_COMMENT_OR_LITERAL_START_RE = re.compile(r"[/\"']")
 _DIGRAPHS = {"%:%:": "##  ", "<%": "{ ", "%>": "} ", "<:": "[ ", ":>": "] ", "%:": "# "}
 _DIGRAPH_RE = re.compile(r"%:%:|<%|%>|<:|:>|%:")
-_COND_RE = re.compile(rf"^{_WS}#{_WS}(if|ifdef|ifndef|elif|elifdef|elifndef|else|endif)\b(.*)$")
-_CONST01_RE = re.compile(r"^[\s(]*([01])[uUlL]*[\s)]*$")
+_CONDITIONAL_DIRECTIVE_RE = re.compile(
+    rf"^{_HORIZONTAL_WHITESPACE}#{_HORIZONTAL_WHITESPACE}"
+    r"(if|ifdef|ifndef|elif|elifdef|elifndef|else|endif)\b(.*)$"
+)
+_CONSTANT_ZERO_OR_ONE_RE = re.compile(r"^[\s(]*([01])[uUlL]*[\s)]*$")
+_OPENING_DIRECTIVES = ("if", "ifdef", "ifndef")
+_BRACKET_RE = re.compile(r"[()\[\]{}]")
+_OPENING_BRACKET_OF = {")": "(", "]": "[", "}": "{"}
+
+MAX_LINE_TEXT_CHARS = 500
+MAX_RAW_LINE_CHARS = 1000
+MAX_SHOWN_LINE_CHARS = 120
+ELLIPSIS = "..."
 
 
-def _blank(s: str) -> str:
-    """Replace everything but newlines by spaces (keeps offsets and lines)."""
+class _Spliced(NamedTuple):
+    text: str
+    checkpoint_offsets: list[int]
+    checkpoint_lines: list[int]
+
+
+class _Views(NamedTuple):
+    code: str
+    nocomment: str
+
+
+@dataclass
+class _ConditionalFrame:
+    skipping: bool
+    branch_certainly_taken: bool
+
+
+def _blank_keeping_newlines(s: str) -> str:
     return re.sub(r"[^\n]", " ", s)
 
 
-def _splice(raw: str) -> tuple[str, list[int], list[int]]:
-    """Translation phase 2.  Returns the spliced text and a mapping from
-    spliced offsets to original line numbers (``offs``/``lines`` checkpoints)."""
+def _splice_lines(raw: str) -> _Spliced:
     pieces: list[str] = []
-    offs, lines = [0], [1]
+    offsets, lines = [0], [1]
     line, out_len, pos = 1, 0, 0
 
-    def note(chunk: str, base: int, line: int) -> int:
+    def record_newlines(chunk: str, base: int, line: int) -> int:
         k = chunk.find("\n")
         while k != -1:
             line += 1
-            offs.append(base + k + 1)
+            offsets.append(base + k + 1)
             lines.append(line)
             k = chunk.find("\n", k + 1)
         return line
 
-    for m in _SPLICE_RE.finditer(raw):
-        chunk = raw[pos : m.start()]
-        line = note(chunk, out_len, line)
+    for splice in _LINE_SPLICE_RE.finditer(raw):
+        chunk = raw[pos : splice.start()]
+        line = record_newlines(chunk, out_len, line)
         pieces.append(chunk)
         out_len += len(chunk)
         line += 1
-        offs.append(out_len)
+        offsets.append(out_len)
         lines.append(line)
-        pos = m.end()
+        pos = splice.end()
     chunk = raw[pos:]
-    note(chunk, out_len, line)
+    record_newlines(chunk, out_len, line)
     pieces.append(chunk)
-    return "".join(pieces), offs, lines
+    return _Spliced("".join(pieces), offsets, lines)
 
 
-def _lex(s: str) -> tuple[str, str]:
-    """Return ``(code, nocomment)``: comments blanked in both; string and
-    character literal contents additionally blanked in ``code`` (quotes kept).
-    A literal that is not closed on its line ends at the newline, as in the
-    compiler, so a stray quote can never hide the following lines."""
-    code: list[str] = []
-    noc: list[str] = []
-    n = len(s)
-    i = plain = 0
-    while True:
-        m = _INTERESTING_RE.search(s, i)
-        if m is None:
-            break
-        i = m.start()
-        c = s[i]
-        if c == "/":
-            nxt = s[i + 1 : i + 2]
-            if nxt not in ("*", "/"):
-                i += 1
-                continue
-            if nxt == "*":
-                j = s.find("*/", i + 2)
-                end = n if j < 0 else j + 2
-            else:
-                j = s.find("\n", i + 2)
-                end = n if j < 0 else j
-            code.append(s[plain:i])
-            noc.append(s[plain:i])
-            b = _blank(s[i:end])
-            code.append(b)
-            noc.append(b)
-            i = plain = end
+def _comment_end(s: str, start: int) -> int | None:
+    marker = s[start + 1 : start + 2]
+    if marker == "*":
+        close = s.find("*/", start + 2)
+        return len(s) if close < 0 else close + 2
+    if marker == "/":
+        newline = s.find("\n", start + 2)
+        return len(s) if newline < 0 else newline
+    return None
+
+
+def _literal_end_on_its_line(s: str, start: int) -> tuple[int, bool]:
+    quote = s[start]
+    j = start + 1
+    while j < len(s):
+        ch = s[j]
+        if ch == "\\":
+            j += 2
             continue
-        j = i + 1
-        closed = False
-        while j < n:
-            ch = s[j]
-            if ch == "\\":
-                j += 2
+        if ch == quote:
+            return j + 1, True
+        if ch == "\n":
+            break
+        j += 1
+    return min(j, len(s)), False
+
+
+def _blank_comments_and_literal_contents(s: str) -> _Views:
+    code: list[str] = []
+    nocomment: list[str] = []
+    pos = plain = 0
+    while (match := _COMMENT_OR_LITERAL_START_RE.search(s, pos)) is not None:
+        start = match.start()
+        before = s[plain:start]
+        if s[start] == "/":
+            end = _comment_end(s, start)
+            if end is None:
+                pos = start + 1
                 continue
-            if ch == c:
-                j += 1
-                closed = True
-                break
-            if ch == "\n":
-                break
-            j += 1
-        j = min(j, n)
-        lit = s[i:j]
-        code.append(s[plain:i])
-        noc.append(s[plain:i])
-        inner = lit[1:-1] if closed else lit[1:]
-        code.append(c + " " * len(inner) + (c if closed else ""))
-        noc.append(lit)
-        i = plain = j
+            blanked = _blank_keeping_newlines(s[start:end])
+            code += [before, blanked]
+            nocomment += [before, blanked]
+        else:
+            end, closed = _literal_end_on_its_line(s, start)
+            quote, literal = s[start], s[start:end]
+            inner = literal[1:-1] if closed else literal[1:]
+            code += [before, quote + " " * len(inner) + (quote if closed else "")]
+            nocomment += [before, literal]
+        pos = plain = end
     code.append(s[plain:])
-    noc.append(s[plain:])
-    return "".join(code), "".join(noc)
+    nocomment.append(s[plain:])
+    return _Views("".join(code), "".join(nocomment))
 
 
-def _const01(expr: str) -> int | None:
-    m = _CONST01_RE.match(expr)
-    return int(m.group(1)) if m else None
+def _constant_zero_or_one(expr: str) -> int | None:
+    match = _CONSTANT_ZERO_OR_ONE_RE.match(expr)
+    return int(match.group(1)) if match else None
 
 
-def _blank_dead_branches(code: str, noc: str) -> tuple[str, str]:
-    """Blank ``#if 0`` regions (and the ``#else`` of ``#if 1`` / after an
-    ``#elif 1``): the compiler never sees that code, so it must neither count
-    as present (an assert moved into ``#if 0`` is a removed assert) nor
-    trigger content rules.  Other conditionals are treated as live."""
+class _ConditionalStack:
+    def __init__(self) -> None:
+        self._frames: list[_ConditionalFrame] = []
+        self._skipping_frames = 0
+
+    def line_is_dead(self, line: str) -> bool:
+        directive = _CONDITIONAL_DIRECTIVE_RE.match(line)
+        if directive is None:
+            return self._skipping_frames > 0
+        name, condition = directive.group(1), directive.group(2)
+        if name in _OPENING_DIRECTIVES:
+            return self._open_group(name, condition)
+        if self._frames:
+            return self._switch_or_close_group(name, condition)
+        return False
+
+    def _open_group(self, name: str, condition: str) -> bool:
+        inside_skipped_group = self._skipping_frames > 0
+        value = _constant_zero_or_one(condition) if name == "if" else None
+        frame = _ConditionalFrame(skipping=value == 0, branch_certainly_taken=value == 1)
+        self._frames.append(frame)
+        self._skipping_frames += frame.skipping
+        return inside_skipped_group
+
+    def _switch_or_close_group(self, name: str, condition: str) -> bool:
+        frame = self._frames[-1]
+        enclosing_group_skipped = self._skipping_frames - frame.skipping > 0
+        self._skipping_frames -= frame.skipping
+        if name == "endif":
+            self._frames.pop()
+            return enclosing_group_skipped
+        if frame.branch_certainly_taken:
+            frame.skipping = True
+        elif name == "else":
+            frame.skipping, frame.branch_certainly_taken = False, True
+        else:
+            value = _constant_zero_or_one(condition) if name == "elif" else None
+            frame.skipping, frame.branch_certainly_taken = value == 0, value == 1
+        self._skipping_frames += frame.skipping
+        return enclosing_group_skipped
+
+
+def _blank_never_compiled_branches(code: str, nocomment: str) -> _Views:
     code_lines = code.split("\n")
-    noc_lines = noc.split("\n")
-    stack: list[list[bool]] = []  # [skipping, a branch is certainly taken]
-    skipping = 0  # number of frames on the stack that are skipping
-    for idx, line in enumerate(code_lines):
-        m = _COND_RE.match(line)
-        if m:
-            d, rest = m.group(1), m.group(2)
-            if d in ("if", "ifdef", "ifndef"):
-                dead = skipping > 0
-                v = _const01(rest) if d == "if" else None
-                stack.append([v == 0, v == 1])
-                skipping += v == 0
-            elif stack:
-                top = stack[-1]
-                dead = skipping - top[0] > 0  # an *enclosing* group is skipped
-                skipping -= top[0]
-                if d == "endif":
-                    stack.pop()
-                elif top[1]:
-                    top[0] = True
-                elif d == "else":
-                    top[0], top[1] = False, True
-                else:
-                    v = _const01(rest) if d == "elif" else None
-                    top[0], top[1] = v == 0, v == 1
-                if d != "endif":
-                    skipping += top[0]
-            else:
-                dead = False
-        else:
-            dead = skipping > 0
-        if dead:
-            code_lines[idx] = _blank(line)
-            noc_lines[idx] = _blank(noc_lines[idx])
-    return "\n".join(code_lines), "\n".join(noc_lines)
+    nocomment_lines = nocomment.split("\n")
+    conditionals = _ConditionalStack()
+    for index, line in enumerate(code_lines):
+        if conditionals.line_is_dead(line):
+            code_lines[index] = _blank_keeping_newlines(line)
+            nocomment_lines[index] = _blank_keeping_newlines(nocomment_lines[index])
+    return _Views("\n".join(code_lines), "\n".join(nocomment_lines))
 
 
-def _pair_map(s: str) -> dict[int, int]:
-    """Offset of every matched ``(``/``[``/``{`` -> offset of its partner,
-    computed in one pass (each bracket kind nests independently).  Lets all
-    later matching be O(1), so hostile input such as 50 000 unclosed
-    ``__attribute__((`` cannot make the checker quadratic."""
+def _bracket_partners_in_one_pass(s: str) -> dict[int, int]:
     out: dict[int, int] = {}
-    stacks: dict[str, list[int]] = {"(": [], "[": [], "{": []}
-    partner = {")": "(", "]": "[", "}": "{"}
-    for m in re.finditer(r"[()\[\]{}]", s):
-        ch = m.group()
-        if ch in stacks:
-            stacks[ch].append(m.start())
+    open_offsets: dict[str, list[int]] = {"(": [], "[": [], "{": []}
+    for match in _BRACKET_RE.finditer(s):
+        bracket = match.group()
+        if bracket in open_offsets:
+            open_offsets[bracket].append(match.start())
         else:
-            st = stacks[partner[ch]]
-            if st:
-                out[st.pop()] = m.start()
+            pending = open_offsets[_OPENING_BRACKET_OF[bracket]]
+            if pending:
+                out[pending.pop()] = match.start()
     return out
 
 
+def _shortened_for_display(text: str) -> str:
+    if len(text) <= MAX_SHOWN_LINE_CHARS:
+        return text
+    return text[: MAX_SHOWN_LINE_CHARS - len(ELLIPSIS)] + ELLIPSIS
+
+
+def _escape_invisible_characters(text: str) -> str:
+    return "".join(c if c.isprintable() and not BIDI_RE.match(c) else f"\\u{ord(c):04x}" for c in text)
+
+
 class CSource:
-    """Lexically cleaned views of one C file.
-
-    * ``text``: the file after line splicing;
-    * ``code``: comments and literal contents blanked, digraphs canonical,
-      dead ``#if 0`` regions blanked - what the content rules match against;
-    * ``nocomment``: like ``code`` but with literals kept (header names,
-      ``_Pragma`` strings, attribute arguments).
-
-    All three have the same length and line structure, so an offset found
-    in one view is valid in the others; :meth:`line_of` maps it back to the
-    line number in the original (unspliced) file.
-    """
+    """Offset-aligned views of one C file: ``text`` (spliced), ``code`` and ``nocomment`` (see docs/architecture.md)."""
 
     def __init__(self, raw: str):
         self.raw = raw
-        self.text, self._offs, self._lines = _splice(raw)
-        code, noc = _lex(self.text)
+        self.text, self._offs, self._lines = _splice_lines(raw)
+        code, nocomment = _blank_comments_and_literal_contents(self.text)
         code = _DIGRAPH_RE.sub(lambda m: _DIGRAPHS[m.group()], code)
-        self.code, self.nocomment = _blank_dead_branches(code, noc)
+        self.code, self.nocomment = _blank_never_compiled_branches(code, nocomment)
 
         self._line_text: dict[int, str] = {}
         self._shown: dict[int, str] = {}
@@ -224,14 +248,13 @@ class CSource:
         return [m.start() for m in re.finditer("\n", self.raw)]
 
     def line_text(self, offset: int) -> str:
-        """Whitespace-normalised code line containing ``offset`` (cached per
-        line, so many findings on one huge line stay linear)."""
-        nl = self._code_newlines
-        k = bisect.bisect_left(nl, offset)
+        """Whitespace-normalised code line containing ``offset``, cached per line."""
+        newlines = self._code_newlines
+        k = bisect.bisect_left(newlines, offset)
         if k not in self._line_text:
-            start = nl[k - 1] + 1 if k > 0 else 0
-            end = nl[k] if k < len(nl) else len(self.code)
-            self._line_text[k] = " ".join(self.code[start:end].split())[:500]
+            start = newlines[k - 1] + 1 if k > 0 else 0
+            end = newlines[k] if k < len(newlines) else len(self.code)
+            self._line_text[k] = " ".join(self.code[start:end].split())[:MAX_LINE_TEXT_CHARS]
         return self._line_text[k]
 
     @cached_property
@@ -239,33 +262,32 @@ class CSource:
         return self.raw.split("\n")
 
     def shown_line(self, line: int) -> str:
-        """Original source line ``line`` for messages (whitespace collapsed,
-        control/bidi characters escaped, truncated)."""
+        """Original source line for messages: whitespace collapsed, control/bidi characters escaped, truncated."""
         if line not in self._shown:
             lines = self._raw_lines
-            text = " ".join((lines[line - 1] if 1 <= line <= len(lines) else "")[:1000].split())
-            text = "".join(c if c.isprintable() and not BIDI_RE.match(c) else f"\\u{ord(c):04x}" for c in text)
-            self._shown[line] = text if len(text) <= 120 else text[:117] + "..."
+            original = lines[line - 1] if 1 <= line <= len(lines) else ""
+            text = _escape_invisible_characters(" ".join(original[:MAX_RAW_LINE_CHARS].split()))
+            self._shown[line] = _shortened_for_display(text)
         return self._shown[line]
 
     @cached_property
     def pairs(self) -> dict[int, int]:
         """Bracket partners in :attr:`code`."""
-        return _pair_map(self.code)
+        return _bracket_partners_in_one_pass(self.code)
 
     @cached_property
     def pairs_nodirectives(self) -> dict[int, int]:
         """Bracket partners in :attr:`code_nodirectives`."""
-        return _pair_map(self.code_nodirectives)
+        return _bracket_partners_in_one_pass(self.code_nodirectives)
 
     @cached_property
     def code_nodirectives(self) -> str:
-        """``code`` with preprocessor directive lines blanked (brace matching
-        must not be confused by ``#define BEGIN {``)."""
-        return "\n".join(_blank(ln) if ln.lstrip().startswith("#") else ln for ln in self.code.split("\n"))
+        """``code`` with preprocessor directive lines blanked, so ``#define BEGIN {`` cannot confuse brace matching."""
+        return "\n".join(
+            _blank_keeping_newlines(ln) if ln.lstrip().startswith("#") else ln for ln in self.code.split("\n")
+        )
 
 
 def strip_c(text: str) -> str:
-    """Comment- and literal-free view of C source (same line structure);
-    see :class:`CSource`."""
+    """Comment- and literal-free view of C source with the same line structure (``CSource(text).code``)."""
     return CSource(text).code

@@ -1,11 +1,4 @@
-"""Shared pytest fixtures.
-
-* ``LEANC_HOME`` is redirected to a temporary directory for every test so the
-  approval signing key never touches the developer's real configuration.
-* Tests that need external tools use the ``needs_clang`` / ``needs_cbmc`` /
-  ``needs_bwrap`` / ``needs_toolchain`` markers-as-fixtures and are skipped
-  (not silently passed) when a tool is missing.
-"""
+"""Shared fixtures: an isolated LEANC_HOME for every test and ``needs_*`` fixtures that skip when a tool is missing."""
 
 from __future__ import annotations
 

@@ -1,13 +1,4 @@
-"""Code Generation Engine and Specification Engine (draft side).
-
-* :func:`generate_sources` asks a provider to implement the *approved* spec and
-  writes the result into the spec's editable source files only, after the
-  generated-code policy check.
-* :func:`draft_spec` asks a provider to turn a natural-language requirement
-  into a *candidate* spec (+ optional harness / test drafts).  Drafts are
-  written under ``drafts/<spec_id>/`` and marked ``provenance.origin: ai-draft``;
-  they are never trusted until a human runs ``leanc spec approve``.
-"""
+"""Code generation for approved specs and UNTRUSTED spec drafts from natural-language requirements."""
 
 from __future__ import annotations
 
@@ -30,11 +21,80 @@ from leanc.specs.approval import check_approval
 from leanc.specs.loader import parse_spec_text, spec_to_yaml
 from leanc.specs.model import Spec
 
+SPEC_UNAPPROVED_PREFIX = "SPEC_UNAPPROVED"
+DRAFT_ORIGIN = "ai-draft"
+DRAFT_NOTE = "UNTRUSTED AI DRAFT: review spec, harness and tests, then run `leanc spec approve`"
+DRAFT_SPEC_HEADER = (
+    "# UNTRUSTED AI-GENERATED SPEC DRAFT (provenance.origin: ai-draft).\n"
+    "# It has no effect until a human reviews it (and the harness/tests) and runs `leanc spec approve`.\n"
+)
+DRAFT_HARNESS_HEADER = "/* UNTRUSTED AI DRAFT harness: review before approval. */\n"
+DRAFT_TESTS_HEADER = "/* UNTRUSTED AI DRAFT tests: review before approval. */\n"
+DRAFT_YAML_WIDTH = 100
+SAFE_SPEC_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
+
+_SAFE_ID = re.compile(SAFE_SPEC_ID_PATTERN)
+
 
 class GenerationRejected(LeanCError):
     def __init__(self, message: str, decision: PolicyDecision | None = None):
         super().__init__(message)
         self.decision = decision
+
+
+def _is_unchanged_echo(spec: Spec, ws: Workspace, rel: str, content: str) -> bool:
+    if rel not in spec.sources.editable or not ws.exists(rel):
+        return False
+    try:
+        current = ws.read_text(rel)
+    except LeanCError:
+        return False
+    return current == content
+
+
+def _drop_unchanged_echoes(spec: Spec, ws: Workspace, files: dict[str, str], targets: list[str]) -> list[str]:
+    notes: list[str] = []
+    for rel in sorted(set(files) - set(targets)):
+        if _is_unchanged_echo(spec, ws, rel, files[rel]):
+            del files[rel]
+            notes.append(f"ignored unchanged echo of kept file {rel}")
+    return notes
+
+
+def _accept_target_defined_in_kept_file(spec: Spec, ws: Workspace, files: dict[str, str], decision: PolicyDecision) -> PolicyDecision:
+    kept = {p: ws.read_text(p) for p in spec.sources.editable if p not in files and ws.exists(p)}
+    if not kept or not any(v.rule == "MISSING_TARGET" for v in decision.violations):
+        return decision
+    if not any(find_function_definitions(CSource(text), spec.target.function, rel) for rel, text in kept.items()):
+        return decision
+    remaining = [v for v in decision.violations if v.rule != "MISSING_TARGET"]
+    return PolicyDecision(allowed=not remaining, violations=remaining)
+
+
+def _policy_rejection(decision: PolicyDecision) -> GenerationRejected:
+    lines = [f"{v.rule}: {v.message}" + (f" ({v.file}:{v.line})" if v.file else "") for v in decision.violations]
+    return GenerationRejected("generated code rejected by policy:\n  " + "\n  ".join(lines), decision)
+
+
+def _write_generated(ws: Workspace, files: dict[str, str], run_dir: Path) -> list[str]:
+    notes: list[str] = []
+    generated_dir = run_dir / "generated"
+    backup_dir = run_dir / "backup" / "before-generate"
+    for rel, content in files.items():
+        if ws.exists(rel):
+            notes.append(_back_up_user_code(ws, rel, backup_dir))
+        ws.write_text(rel, content)
+        dest = generated_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
+    return notes
+
+
+def _back_up_user_code(ws: Workspace, rel: str, backup_dir: Path) -> str:
+    backup = backup_dir / rel
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_bytes(ws.read_bytes(rel))
+    return f"previous {rel} backed up to {backup}"
 
 
 def generate_sources(
@@ -45,70 +105,34 @@ def generate_sources(
     run_dir: Path,
     force: bool = False,
 ) -> GenerationRecord:
-    """Generate the editable sources of an approved spec.
-
-    Existing editable files are kept unless ``force`` is true.  Raises
-    :class:`GenerationRejected` if the spec is not approved or the generated
-    code violates the policy.
-    """
+    """Generate the missing (or, with ``force``, all) editable sources of an approved spec after the policy check."""
     ws = Workspace(project_root)
     approval = check_approval(spec, ws)
     if not approval.approved:
         raise GenerationRejected(
-            "SPEC_UNAPPROVED: refusing to generate code for an unapproved spec: " + "; ".join(approval.reasons)
+            f"{SPEC_UNAPPROVED_PREFIX}: refusing to generate code for an unapproved spec: " + "; ".join(approval.reasons)
         )
     targets = [p for p in spec.sources.editable if force or not ws.exists(p)]
     if not targets:
         return GenerationRecord(provider=provider.info, files={}, note="all editable sources already exist (use --force to regenerate)")
     headers = {h: ws.read_text(h) for h in spec.sources.headers}
-    req = CodeGenRequest(spec=spec, spec_yaml=spec_to_yaml(spec), headers=headers, targets=targets)
-    out = provider.generate_code(req)
+    response = provider.generate_code(CodeGenRequest(spec=spec, spec_yaml=spec_to_yaml(spec), headers=headers, targets=targets))
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "generation-response.txt").write_text(redact(out.raw_response or ""), encoding="utf-8")
-    files = {k: v for k, v in out.files.items()}
-    notes: list[str] = []
-    # A model may echo an unchanged copy of a kept editable file: drop it
-    # (with a note) instead of rejecting the whole generation.
-    for rel in sorted(set(files) - set(targets)):
-        try:
-            same = rel in spec.sources.editable and ws.exists(rel) and ws.read_text(rel) == files[rel]
-        except LeanCError:
-            same = False
-        if same:
-            del files[rel]
-            notes.append(f"ignored unchanged echo of kept file {rel}")
+    (run_dir / "generation-response.txt").write_text(redact(response.raw_response or ""), encoding="utf-8")
+    files = dict(response.files)
+    notes = _drop_unchanged_echoes(spec, ws, files, targets)
     unexpected = sorted(set(files) - set(targets))
     if unexpected:
         raise GenerationRejected(f"provider returned files that were not requested: {unexpected}")
-    # Content rules apply to the generated files only (kept user files are not
-    # the generator's output); the target function may live in a kept file.
-    decision = check_generated(spec, files)
-    kept = {p: ws.read_text(p) for p in spec.sources.editable if p not in files and ws.exists(p)}
-    if kept and any(v.rule == "MISSING_TARGET" for v in decision.violations):
-        if any(find_function_definitions(CSource(t), spec.target.function, rel) for rel, t in kept.items()):
-            remaining = [v for v in decision.violations if v.rule != "MISSING_TARGET"]
-            decision = PolicyDecision(allowed=not remaining, violations=remaining)
+    decision = _accept_target_defined_in_kept_file(spec, ws, files, check_generated(spec, files))
     if not decision.allowed:
-        lines = [f"{v.rule}: {v.message}" + (f" ({v.file}:{v.line})" if v.file else "") for v in decision.violations]
-        raise GenerationRejected("generated code rejected by policy:\n  " + "\n  ".join(lines), decision)
+        raise _policy_rejection(decision)
     missing = sorted(set(targets) - set(files))
     if missing:
         raise GenerationRejected(f"provider did not generate: {missing}", decision)
-    gen_dir = run_dir / "generated"
-    backup_dir = run_dir / "backup" / "before-generate"
-    for rel, content in files.items():
-        if ws.exists(rel):
-            # never destroy user code: keep the overwritten version
-            b = backup_dir / rel
-            b.parent.mkdir(parents=True, exist_ok=True)
-            b.write_bytes(ws.read_bytes(rel))
-            notes.append(f"previous {rel} backed up to {b}")
-        ws.write_text(rel, content)
-        dest = gen_dir / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
-    if out.notes:
-        notes.insert(0, out.notes)
+    notes.extend(_write_generated(ws, files, run_dir))
+    if response.notes:
+        notes.insert(0, response.notes)
     return GenerationRecord(
         provider=provider.info,
         files={rel: sha256_text(c) for rel, c in files.items()},
@@ -116,7 +140,55 @@ def generate_sources(
     )
 
 
-_SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+def _untrusted_draft_data(draft_yaml: str, requirement: str, spec_id: str, provider) -> dict:
+    try:
+        data = yaml.safe_load(draft_yaml)
+    except yaml.YAMLError as exc:
+        raise ProviderError(f"provider returned unparsable spec YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ProviderError("provider returned a spec that is not a mapping")
+    data["spec_id"] = spec_id
+    data.setdefault("version", 1)
+    data["requirement"] = requirement
+    data["provenance"] = {
+        "origin": DRAFT_ORIGIN,
+        "generator": provider.info.name + (f":{provider.info.model}" if provider.info.model else ""),
+        "note": DRAFT_NOTE,
+    }
+    return data
+
+
+def _draft_paths(spec_id: str) -> dict[str, str]:
+    base = f"drafts/{spec_id}"
+    return {
+        "spec": f"{base}/spec.yaml",
+        "harness": f"{base}/harness_draft.c",
+        "tests": f"{base}/tests_draft.c",
+        "notes": f"{base}/NOTES.md",
+    }
+
+
+def _schema_validation(text: str, source: str) -> str:
+    try:
+        parse_spec_text(text, source=source)
+    except SpecError as exc:
+        return str(exc)
+    return "ok"
+
+
+def _review_notes(spec_id: str, provider, validation: str, provider_notes: str | None) -> str:
+    return (
+        f"# Draft for `{spec_id}` (UNTRUSTED)\n\n"
+        f"Provider: {provider.info.name} (real LLM: {provider.info.real_llm})\n\n"
+        f"Schema validation: {validation}\n\n"
+        "Before approving:\n\n"
+        "1. Move/rename the draft files to their final locations and fix the paths in the spec.\n"
+        "2. Review every pre/postcondition against the original requirement.\n"
+        "3. Review the harness: are the LEANC_ASSUME constraints too strong? Are there LEANC_REACH probes?\n"
+        "4. Review the trusted tests and their expected results.\n"
+        "5. Run `leanc spec approve <spec.yaml> --by <your name>`.\n\n"
+        f"Provider notes:\n\n{redact(provider_notes or '(none)')}\n"
+    )
 
 
 def draft_spec(
@@ -128,73 +200,33 @@ def draft_spec(
     title: str | None = None,
     force: bool = False,
 ) -> dict[str, str]:
-    """Produce an UNTRUSTED spec draft.  Returns rel paths written."""
+    """Produce an UNTRUSTED spec draft under ``drafts/<spec_id>/``; returns the relative paths written."""
     if not _SAFE_ID.match(spec_id):
-        raise SpecError("spec id must match ^[a-z0-9][a-z0-9._-]{0,63}$")
+        raise SpecError(f"spec id must match {SAFE_SPEC_ID_PATTERN}")
     ws = Workspace(project_root)
     draft = provider.generate_spec_draft(SpecDraftRequest(requirement=requirement, spec_id=spec_id, title=title))
-    try:
-        data = yaml.safe_load(draft.spec_yaml)
-    except yaml.YAMLError as exc:
-        raise ProviderError(f"provider returned unparsable spec YAML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ProviderError("provider returned a spec that is not a mapping")
-    # The draft is untrusted no matter what the model claims.
-    data["spec_id"] = spec_id
-    data.setdefault("version", 1)
-    data["requirement"] = requirement
-    data["provenance"] = {
-        "origin": "ai-draft",
-        "generator": provider.info.name + (f":{provider.info.model}" if provider.info.model else ""),
-        "note": "UNTRUSTED AI DRAFT: review spec, harness and tests, then run `leanc spec approve`",
-    }
-    base = f"drafts/{spec_id}"
-    written: dict[str, str] = {}
-    paths = {
-        "spec": f"{base}/spec.yaml",
-        "harness": f"{base}/harness_draft.c",
-        "tests": f"{base}/tests_draft.c",
-        "notes": f"{base}/NOTES.md",
-    }
+    data = _untrusted_draft_data(draft.spec_yaml, requirement, spec_id, provider)
+    paths = _draft_paths(spec_id)
     if not force:
         for p in paths.values():
             if ws.exists(p):
                 raise LeanCError(f"{p} already exists (use --force to overwrite)")
-    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100)
-    header = (
-        "# UNTRUSTED AI-GENERATED SPEC DRAFT (provenance.origin: ai-draft).\n"
-        "# It has no effect until a human reviews it (and the harness/tests) and runs `leanc spec approve`.\n"
-    )
-    ws.write_text(paths["spec"], header + text)
+    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=DRAFT_YAML_WIDTH)
+    written: dict[str, str] = {}
+    ws.write_text(paths["spec"], DRAFT_SPEC_HEADER + text)
     written["spec"] = paths["spec"]
-    validation = "ok"
-    try:
-        parse_spec_text(text, source=paths["spec"])
-    except SpecError as exc:
-        validation = str(exc)
+    validation = _schema_validation(text, paths["spec"])
     if draft.harness_c:
-        ws.write_text(paths["harness"], "/* UNTRUSTED AI DRAFT harness: review before approval. */\n" + draft.harness_c)
+        ws.write_text(paths["harness"], DRAFT_HARNESS_HEADER + draft.harness_c)
         written["harness"] = paths["harness"]
     if draft.tests_c:
-        ws.write_text(paths["tests"], "/* UNTRUSTED AI DRAFT tests: review before approval. */\n" + draft.tests_c)
+        ws.write_text(paths["tests"], DRAFT_TESTS_HEADER + draft.tests_c)
         written["tests"] = paths["tests"]
-    notes = (
-        f"# Draft for `{spec_id}` (UNTRUSTED)\n\n"
-        f"Provider: {provider.info.name} (real LLM: {provider.info.real_llm})\n\n"
-        f"Schema validation: {validation}\n\n"
-        "Before approving:\n\n"
-        "1. Move/rename the draft files to their final locations and fix the paths in the spec.\n"
-        "2. Review every pre/postcondition against the original requirement.\n"
-        "3. Review the harness: are the LEANC_ASSUME constraints too strong? Are there LEANC_REACH probes?\n"
-        "4. Review the trusted tests and their expected results.\n"
-        "5. Run `leanc spec approve <spec.yaml> --by <your name>`.\n\n"
-        f"Provider notes:\n\n{redact(draft.notes or '(none)')}\n"
-    )
-    ws.write_text(paths["notes"], notes)
+    ws.write_text(paths["notes"], _review_notes(spec_id, provider, validation, draft.notes))
     written["notes"] = paths["notes"]
     written["validation"] = validation
     ws.write_text(
-        f"{base}/draft-meta.json",
+        f"drafts/{spec_id}/draft-meta.json",
         json.dumps({"provider": provider.info.model_dump(), "validation": validation}, indent=2),
     )
     return written

@@ -14,14 +14,14 @@ from leanc.foundation.hashing import canonical_hash, canonical_json
 from leanc.specs.model import Spec
 
 MAX_SPEC_BYTES = 1024 * 1024
+MAX_DIFF_VALUE_CHARS = 200
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """SafeLoader that rejects duplicate mapping keys (a classic way to hide a
-    second, different value for a field from a human reviewer)."""
+class _DuplicateKeyRejectingSafeLoader(yaml.SafeLoader):
+    pass
 
 
-def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False):
+def _construct_mapping_rejecting_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False):
     seen: set[Any] = set()
     for key_node, _ in node.value:
         key = loader.construct_object(key_node, deep=deep)
@@ -33,7 +33,17 @@ def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bo
     return loader.construct_mapping(node, deep=deep)
 
 
-_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
+_DuplicateKeyRejectingSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_rejecting_duplicate_keys
+)
+
+
+def _validation_error_lines(exc: ValidationError) -> list[str]:
+    lines = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err.get("loc", ()))
+        lines.append(f"  - {loc or '<root>'}: {err.get('msg')}")
+    return lines
 
 
 def parse_spec_text(text: str, *, source: str = "<spec>") -> Spec:
@@ -43,7 +53,7 @@ def parse_spec_text(text: str, *, source: str = "<spec>") -> Spec:
         if source.endswith(".json"):
             data = json.loads(text)
         else:
-            data = yaml.load(text, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+            data = yaml.load(text, Loader=_DuplicateKeyRejectingSafeLoader)
     except (yaml.YAMLError, json.JSONDecodeError) as exc:
         raise SpecError(f"{source}: cannot parse: {exc}") from exc
     if not isinstance(data, dict):
@@ -51,11 +61,7 @@ def parse_spec_text(text: str, *, source: str = "<spec>") -> Spec:
     try:
         return Spec.model_validate(data)
     except ValidationError as exc:
-        lines = []
-        for err in exc.errors():
-            loc = ".".join(str(p) for p in err.get("loc", ()))
-            lines.append(f"  - {loc or '<root>'}: {err.get('msg')}")
-        raise SpecError(f"{source}: invalid spec:\n" + "\n".join(lines)) from None
+        raise SpecError(f"{source}: invalid spec:\n" + "\n".join(_validation_error_lines(exc))) from None
 
 
 def load_spec(path: str | Path) -> Spec:
@@ -76,11 +82,7 @@ def spec_canonical_dict(spec: Spec) -> dict[str, Any]:
 
 
 def spec_hash(spec: Spec) -> str:
-    """Hash of the *semantic* content (after validation and defaults).
-
-    Formatting / comment-only edits of the YAML file do not change the hash;
-    any change to a field (including the informative requirement text) does.
-    """
+    """Hash of the semantic content (validated, with defaults): YAML formatting or comment edits keep it unchanged."""
     return canonical_hash(spec_canonical_dict(spec))
 
 
@@ -92,22 +94,21 @@ def spec_to_json(spec: Spec) -> str:
     return canonical_json(spec_canonical_dict(spec))
 
 
+def _shown_value(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False)[:MAX_DIFF_VALUE_CHARS]
+
+
 def diff_spec_dicts(old: dict[str, Any], new: dict[str, Any], prefix: str = "") -> list[str]:
-    """Field-level diff used by ``leanc spec status`` to show what changed since
-    approval."""
+    """Field-level ``+`` / ``-`` / ``~`` diff, used by ``leanc spec status`` to show what changed since approval."""
     out: list[str] = []
-    keys = sorted(set(old) | set(new))
-    for k in keys:
+    for k in sorted(set(old) | set(new)):
         path = f"{prefix}.{k}" if prefix else str(k)
         if k not in old:
-            out.append(f"+ {path}: {json.dumps(new[k], ensure_ascii=False)[:200]}")
+            out.append(f"+ {path}: {_shown_value(new[k])}")
         elif k not in new:
             out.append(f"- {path}")
         elif isinstance(old[k], dict) and isinstance(new[k], dict):
             out.extend(diff_spec_dicts(old[k], new[k], path))
         elif old[k] != new[k]:
-            out.append(
-                f"~ {path}: {json.dumps(old[k], ensure_ascii=False)[:200]} -> "
-                f"{json.dumps(new[k], ensure_ascii=False)[:200]}"
-            )
+            out.append(f"~ {path}: {_shown_value(old[k])} -> {_shown_value(new[k])}")
     return out

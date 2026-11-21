@@ -1,15 +1,4 @@
-"""Workspace boundary enforcement.
-
-Every file Lean C reads from or writes to a project goes through
-:class:`Workspace`, which guarantees that
-
-* paths are relative and stay inside the project root (no ``..`` escape, no
-  absolute paths),
-* no path component is a symbolic link (symlinks could redirect reads or writes
-  outside the root, or onto protected files),
-* writes are atomic (temp file + ``os.replace`` in the same directory) and never
-  follow symlinks.
-"""
+"""Workspace boundary: relative, symlink-free paths inside the project root and atomic, non-following writes."""
 
 from __future__ import annotations
 
@@ -21,6 +10,11 @@ from pathlib import Path, PurePosixPath
 
 from leanc.foundation.errors import WorkspaceError
 
+DEFAULT_MAX_READ_BYTES = 16 * 1024 * 1024
+NEW_FILE_MODE = 0o644
+PERMISSION_BITS = 0o7777
+TEMP_FILE_PREFIX = ".leanc-tmp-"
+
 
 class Workspace:
     def __init__(self, root: str | os.PathLike[str]):
@@ -29,7 +23,6 @@ class Workspace:
             raise WorkspaceError(f"workspace root does not exist: {root_path}")
         self.root = Path(os.path.realpath(root_path))
 
-    # ------------------------------------------------------------------ paths
     def normalize(self, rel: str | os.PathLike[str]) -> str:
         """Validate a workspace-relative path and return it in POSIX form."""
         return normalize_relpath(rel)
@@ -37,23 +30,23 @@ class Workspace:
     def resolve(self, rel: str | os.PathLike[str], *, must_exist: bool = False) -> Path:
         """Resolve a relative path inside the workspace, rejecting symlinks."""
         norm = self.normalize(rel)
-        cur = self.root
-        for part in norm.split("/"):
-            cur = cur / part
-            try:
-                st = os.lstat(cur)
-            except FileNotFoundError:
-                if must_exist:
-                    raise WorkspaceError(f"file not found in workspace: {norm}") from None
-                # Remaining components don't exist yet; nothing to follow.
-                break
-            if stat.S_ISLNK(st.st_mode):
-                raise WorkspaceError(f"symbolic links are not allowed in workspace paths: {norm}")
+        self._reject_symlinked_components(norm, must_exist=must_exist)
         full = self.root / norm
-        real_parent = Path(os.path.realpath(full.parent)) if full.parent.exists() else None
-        if real_parent is not None and not _is_within(real_parent, self.root):
+        if full.parent.exists() and not _is_within(Path(os.path.realpath(full.parent)), self.root):
             raise WorkspaceError(f"path escapes the workspace: {norm}")
         return full
+
+    def _reject_symlinked_components(self, norm: str, *, must_exist: bool) -> None:
+        current = self.root
+        for part in norm.split("/"):
+            current = current / part
+            status = _lstat_or_none(current)
+            if status is None:
+                if must_exist:
+                    raise WorkspaceError(f"file not found in workspace: {norm}")
+                return
+            if stat.S_ISLNK(status.st_mode):
+                raise WorkspaceError(f"symbolic links are not allowed in workspace paths: {norm}")
 
     def relpath(self, path: str | os.PathLike[str]) -> str:
         """Convert an absolute path inside the workspace to a relative one."""
@@ -68,8 +61,7 @@ class Workspace:
         except WorkspaceError:
             return False
 
-    # ------------------------------------------------------------------ I/O
-    def read_bytes(self, rel: str, max_bytes: int = 16 * 1024 * 1024) -> bytes:
+    def read_bytes(self, rel: str, max_bytes: int = DEFAULT_MAX_READ_BYTES) -> bytes:
         p = self.resolve(rel, must_exist=True)
         fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
@@ -85,7 +77,7 @@ class Workspace:
             if fd >= 0:
                 os.close(fd)
 
-    def read_text(self, rel: str, max_bytes: int = 16 * 1024 * 1024) -> str:
+    def read_text(self, rel: str, max_bytes: int = DEFAULT_MAX_READ_BYTES) -> str:
         data = self.read_bytes(rel, max_bytes)
         try:
             return data.decode("utf-8")
@@ -96,72 +88,84 @@ class Workspace:
         return self.write_bytes(rel, content.encode("utf-8"), mode=mode)
 
     def write_bytes(self, rel: str, data: bytes, *, mode: int | None = None) -> Path:
-        """Atomically replace ``rel``.  ``mode=None`` keeps the permission bits
-        of an existing file (0644 for new files)."""
-        target = self.resolve(rel)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # re-check after mkdir (a racing symlink would be caught here)
-        target = self.resolve(rel)
+        """Atomically replace ``rel``; ``mode=None`` keeps an existing file's permission bits (0644 for new files)."""
+        target = self._resolve_again_after_creating_parents(rel)
         if target.exists() and (target.is_symlink() or not target.is_file()):
             raise WorkspaceError(f"refusing to overwrite non-regular file: {rel}")
         if mode is None:
-            mode = (target.stat().st_mode & 0o7777) if target.exists() else 0o644
-        fd, tmp = tempfile.mkstemp(prefix=".leanc-tmp-", dir=target.parent)
+            mode = _existing_mode_or_default(target)
+        fd, tmp = tempfile.mkstemp(prefix=TEMP_FILE_PREFIX, dir=target.parent)
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
             os.chmod(tmp, mode)
             os.replace(tmp, target)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
-            raise
+        finally:
+            _remove_if_present(tmp)
         return target
 
+    def _resolve_again_after_creating_parents(self, rel: str) -> Path:
+        self.resolve(rel).parent.mkdir(parents=True, exist_ok=True)
+        return self.resolve(rel)
+
     def copy_into(self, rels: list[str], dest_dir: str | os.PathLike[str]) -> dict[str, Path]:
-        """Copy workspace files (by relative path) into ``dest_dir`` preserving
-        the relative layout.  Returns rel -> destination path."""
+        """Copy workspace files into ``dest_dir`` keeping their relative layout; returns rel -> destination path."""
         dest = Path(dest_dir)
         out: dict[str, Path] = {}
         for rel in rels:
             norm = self.normalize(rel)
             data = self.read_bytes(norm)
-            d = dest / norm
-            d.parent.mkdir(parents=True, exist_ok=True)
-            d.write_bytes(data)
-            out[norm] = d
+            destination = dest / norm
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(data)
+            out[norm] = destination
         return out
 
 
+def _lstat_or_none(path: Path) -> os.stat_result | None:
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+
+
+def _existing_mode_or_default(target: Path) -> int:
+    return (target.stat().st_mode & PERMISSION_BITS) if target.exists() else NEW_FILE_MODE
+
+
+def _remove_if_present(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _is_absolute_or_drive_path(path: str) -> bool:
+    has_drive_letter = len(path) > 1 and path[1] == ":"
+    return path.startswith("/") or path.startswith("\\") or has_drive_letter
+
+
 def normalize_relpath(rel: str | os.PathLike[str]) -> str:
-    """Validate a relative path (no absolute paths, no ``..``) and return it in
-    normalised POSIX form.  Pure string check; does not touch the filesystem."""
+    """Validate a relative path (not absolute, no ``..``) and return it in normalised POSIX form; pure string check."""
     s = os.fspath(rel)
     if not isinstance(s, str) or not s or "\x00" in s:
         raise WorkspaceError(f"invalid path {s!r}")
-    if s.startswith("/") or s.startswith("\\") or (len(s) > 1 and s[1] == ":"):
+    if _is_absolute_or_drive_path(s):
         raise WorkspaceError(f"absolute paths are not allowed: {s!r}")
-    parts = PurePosixPath(s.replace("\\", "/")).parts
     clean: list[str] = []
-    for p in parts:
-        if p in ("", "."):
+    for part in PurePosixPath(s.replace("\\", "/")).parts:
+        if part in ("", "."):
             continue
-        if p == "..":
+        if part == "..":
             raise WorkspaceError(f"path traversal ('..') is not allowed: {s!r}")
-        clean.append(p)
+        clean.append(part)
     if not clean:
         raise WorkspaceError(f"invalid path {s!r}")
     return "/".join(clean)
 
 
 def _is_within(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    return path.is_relative_to(root)
 
 
 def safe_rmtree(path: str | os.PathLike[str], within: str | os.PathLike[str]) -> None:

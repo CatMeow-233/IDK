@@ -1,22 +1,4 @@
-"""Deterministic fixture-replaying provider.
-
-The mock provider lets the whole pipeline (draft -> generate -> verify ->
-repair -> report) run offline and reproducibly.  It answers every request from
-files under a fixture directory (default ``<project_root>/mock/``)::
-
-    spec_draft.yaml [+ harness_draft.c, tests_draft.c]   generate_spec_draft
-    generate/<editable rel path>                         generate_code
-    repair/round-<N>.json                                propose_patch (N = 1-based round)
-    explain.md                                           explain_failure (optional)
-
-``repair/round-<N>.json`` is ``{"root_cause", "rationale", "files": {path: content}}``
-or ``{"root_cause", "rationale", "patch": "<unified diff>"}`` (optionally a
-``note``); its shape is validated strictly so that a typo in a fixture is an
-error rather than a silently empty round.
-
-Its :class:`ProviderInfo` says ``real_llm=False``: results obtained with it
-demonstrate the *pipeline*, never model performance.
-"""
+"""Deterministic fixture-replaying provider: it demonstrates the pipeline offline, never model performance."""
 
 from __future__ import annotations
 
@@ -39,11 +21,22 @@ from leanc.llm.base import (
     SpecDraftRequest,
 )
 from leanc.llm.parsing import repair_proposal_from_obj
-from leanc.llm.prompts import render_failure
+from leanc.llm.prompts.rendering import render_failure
 from leanc.specs.model import Spec
 
 MAX_FIXTURE_BYTES = 4 * 1024 * 1024
 MOCK_DISCLAIMER = "mock provider: replayed fixture, not LLM output"
+
+SPEC_DRAFT_FIXTURE = "spec_draft.yaml"
+HARNESS_DRAFT_FIXTURE = "harness_draft.c"
+TESTS_DRAFT_FIXTURE = "tests_draft.c"
+GENERATION_FIXTURE_DIR = "generate"
+EXPLANATION_FIXTURE = "explain.md"
+MAX_SUMMARY_INPUTS = 10
+
+
+def repair_fixture(round_number: int) -> str:
+    return f"repair/round-{int(round_number)}.json"
 
 
 class MockProvider(LLMProvider):
@@ -51,9 +44,7 @@ class MockProvider(LLMProvider):
         self.fixture_dir = Path(fixture_dir)
         self.info = ProviderInfo(name="mock", model=None, real_llm=False)
 
-    # ------------------------------------------------------------------ fixture access
-    def _path(self, rel: str) -> Path:
-        """Resolve a fixture path, refusing traversal and symlink escapes."""
+    def _contained_fixture_path(self, rel: str) -> Path:
         try:
             norm = normalize_relpath(rel)
         except WorkspaceError as exc:
@@ -65,9 +56,8 @@ class MockProvider(LLMProvider):
             raise ProviderError(f"mock: fixture {norm} resolves outside the fixture directory {self.fixture_dir}")
         return path
 
-    def _read(self, rel: str) -> str | None:
-        """Fixture text, or None if the fixture does not exist."""
-        path = self._path(rel)
+    def _read_optional_fixture(self, rel: str) -> str | None:
+        path = self._contained_fixture_path(rel)
         if not path.is_file():
             return None
         size = path.stat().st_size
@@ -81,12 +71,11 @@ class MockProvider(LLMProvider):
     def _where(self, rel: str) -> str:
         return str(self.fixture_dir / rel)
 
-    # ------------------------------------------------------------------ provider API
     def generate_spec_draft(self, req: SpecDraftRequest) -> SpecDraft:
-        text = self._read("spec_draft.yaml")
+        text = self._read_optional_fixture(SPEC_DRAFT_FIXTURE)
         if text is None:
             raise ProviderError(
-                f"mock: no spec draft fixture at {self._where('spec_draft.yaml')} "
+                f"mock: no spec draft fixture at {self._where(SPEC_DRAFT_FIXTURE)} "
                 "(the mock provider only replays fixtures; use --provider openai for a real model)"
             )
         try:
@@ -97,9 +86,9 @@ class MockProvider(LLMProvider):
             raise ProviderError("mock: spec_draft.yaml must contain a YAML mapping")
         return SpecDraft(
             spec_yaml=text,
-            harness_c=self._read("harness_draft.c"),
-            tests_c=self._read("tests_draft.c"),
-            notes=f"{MOCK_DISCLAIMER} ({self._where('spec_draft.yaml')}); requested spec_id {req.spec_id}",
+            harness_c=self._read_optional_fixture(HARNESS_DRAFT_FIXTURE),
+            tests_c=self._read_optional_fixture(TESTS_DRAFT_FIXTURE),
+            notes=f"{MOCK_DISCLAIMER} ({self._where(SPEC_DRAFT_FIXTURE)}); requested spec_id {req.spec_id}",
             raw_response=text,
         )
 
@@ -107,24 +96,24 @@ class MockProvider(LLMProvider):
         files: dict[str, str] = {}
         missing: list[str] = []
         for target in req.targets:
-            content = self._read(f"generate/{target}")
+            content = self._read_optional_fixture(f"{GENERATION_FIXTURE_DIR}/{target}")
             if content is None:
                 missing.append(target)
             else:
                 files[normalize_relpath(target)] = content
         if missing:
             raise ProviderError(
-                f"mock: no generation fixture for {missing} (expected {self._where('generate')}/<path>)"
+                f"mock: no generation fixture for {missing} (expected {self._where(GENERATION_FIXTURE_DIR)}/<path>)"
             )
         return GeneratedCode(
             files=files,
-            notes=f"{MOCK_DISCLAIMER} ({self._where('generate')})",
+            notes=f"{MOCK_DISCLAIMER} ({self._where(GENERATION_FIXTURE_DIR)})",
             raw_response=json.dumps({"files": files}, indent=2, ensure_ascii=False, sort_keys=True),
         )
 
     def propose_patch(self, req: RepairRequest) -> RepairProposal:
-        rel = f"repair/round-{int(req.round)}.json"
-        text = self._read(rel)
+        rel = repair_fixture(req.round)
+        text = self._read_optional_fixture(rel)
         if text is None:
             return RepairProposal(root_cause="", rationale="", note=f"mock: no fixture for round {req.round}")
         try:
@@ -148,7 +137,7 @@ class MockProvider(LLMProvider):
         )
 
     def explain_failure(self, result: VerificationResult) -> str:
-        text = self._read("explain.md")
+        text = self._read_optional_fixture(EXPLANATION_FIXTURE)
         if text is not None:
             return text
         return deterministic_summary(result)
@@ -167,7 +156,8 @@ def deterministic_summary(result: VerificationResult) -> str:
         lines.append(f"{len(failures)} failure(s):")
         for f in failures:
             where = f" at {f.location.short()}" if f.location else ""
-            inputs = f" (inputs: {', '.join(f'{i.name}={i.value}' for i in f.inputs[:10])})" if f.inputs else ""
+            shown = ", ".join(f"{i.name}={i.value}" for i in f.inputs[:MAX_SUMMARY_INPUTS])
+            inputs = f" (inputs: {shown})" if f.inputs else ""
             lines.append(f"- [{f.tool}] {f.kind}: {f.description}{where}{inputs}")
     else:
         lines.append("No failures were reported.")

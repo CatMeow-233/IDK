@@ -1,65 +1,24 @@
-"""Mandatory source-integrity gate (runs at *verify* time, after a passing compile).
-
-Why a separate gate?  The repair policy (:mod:`leanc.repair.policy`) only sees
-proposals inside the repair loop; ``leanc verify`` on hand-written or
-generated code never ran it, and even inside the loop a count-based lexical
-check cannot see what the *tools* see.  Every verifier in the pipeline must
-judge the same program, and that program must not be able to tamper with the
-verification itself.  Reviewers demonstrated false ``VERIFIED_BOUNDED``
-results through exactly those gaps:
-
-* overriding verification hooks: a body for ``__assert_fail`` (every harness
-  ``assert()`` becomes a no-op call in CBMC), or for ``nondet_size_t`` (the
-  "symbolic" inputs get narrowed);
-* tool divergence: ``#ifdef __clang__`` / ``__OPTIMIZE__`` / ``__CPROVER__``
-  / ``LEANC_VACUITY_CHECK`` let clang, the sanitizer build and CBMC compile
-  *different* code;
-* pragmas assembled by macros (``_Pragma(#x)``) that switch CBMC checks off;
-* process termination (``exit``/``abort``/``atexit``, an
-  ``__attribute__((constructor))`` calling ``_exit(0)``): CBMC prunes the
-  paths, the native tests report success, LeakSanitizer never runs;
-* weak references (``__VERIFIER_assume`` resolves only under the verifier),
-  GNU linemarkers that mark the file as a system header (analyzer findings
-  vanish), ...
-
-The gate therefore checks every editable file with **absolute** rules (not
-"new relative to the old version") at three levels:
-
-A. the source text (:func:`source_violations`, also used by the repair and
-   generation policy): directives, includes, ``_Pragma``, forbidden
-   identifiers, attributes and definitions;
-B. the preprocessed text (``clang -E`` with the spec's flags), restricted to
-   lines that belong to the editable file itself, so macro tricks are seen
-   after expansion;
-C. the compiled object (``nm``/``readelf``): which symbols it defines, which
-   it imports (an **allowlist** of library functions CBMC models faithfully,
-   because CBMC treats body-less functions as returning arbitrary values),
-   weak symbols and constructor sections.
-
-A violation is a definite, blocking finding about the code under test:
-``Outcome.FAIL`` with ``Status.STATIC_ANALYSIS_WARNING``.  A tool problem
-(missing ``nm``, unparsable output, ...) is ``Outcome.ERROR`` - never a pass.
-"""
-
 from __future__ import annotations
 
 import os
 import re
 import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, ClassVar
 
-from leanc.foundation.models import Diagnostic, FailureReport, Location, PolicyViolation, StageResult
+from leanc.foundation.models import Diagnostic, FailureReport, Location, PolicyViolation, StageResult, ToolInvocation
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits
 from leanc.foundation.status import Outcome, Status, outcome_to_status
 from leanc.lang.c_lexer import CSource
 from leanc.lang.cpp_lexer import CppSource
+from leanc.rules.c_names import ALLOWED_IMPORTS
 from leanc.rules.c_rules import (
-    _SECTION_RE,
-    ALLOWED_IMPORTS,
     RULES,
-    _header_facts,
-    _v,
+    SECTION_RE,
+    c_header_facts,
     check_object_symbols,
     parse_nm,
     preprocessed_violations,
@@ -74,7 +33,9 @@ from leanc.rules.cpp_rules import (
     cpp_source_violations,
     header_facts,
 )
+from leanc.rules.findings import violation
 from leanc.rules.source import source_violations
+from leanc.rules.symbol_types import STRONG_TEXT_TYPE, UNDEFINED_TYPES
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler
 from leanc.toolchain.tools import find_tool
@@ -83,15 +44,37 @@ __all__ = ["STAGE", "TOOL", "run_cpp_integrity", "run_integrity"]
 
 STAGE = "integrity"
 TOOL = "leanc-integrity"
+TOOL_TIMEOUT_S = 60
+MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_STDERR_EXCERPT_CHARS = 300
+UNRANKED_RULE = 99
+STDERR_SEPARATOR = "\n--- stderr ---\n"
+UNDEFINED_SYMBOL = "U"
+NULL_SECTION = "NULL"
 
-
-def _find(names: tuple[str, ...]) -> str | None:
-    for n in names:
-        p = find_tool(n)
-        if p:
-            return p
-    return None
-
+NM_CANDIDATES = ("llvm-nm-18", "llvm-nm", "nm")
+READELF_CANDIDATES = ("llvm-readelf-18", "llvm-readelf", "readelf")
+DEMANGLER_CANDIDATES = ("llvm-cxxfilt-18", "llvm-cxxfilt", "c++filt")
+UNBOUNDED_STACK_CHECK_FLAGS = (
+    "-fsyntax-only",
+    "-fno-color-diagnostics",
+    "-fno-caret-diagnostics",
+    "-Wno-everything",
+    "-Wvla",
+    "-Walloca",
+    "-Werror=vla",
+    "-Werror=alloca",
+)
+C_SYMBOL_EVIDENCE_RULES = frozenset({"SYMBOL_OVERRIDE", "DANGEROUS_IMPORT"})
+CPP_SYMBOL_EVIDENCE_RULES = frozenset({"SYMBOL_OVERRIDE", "DANGEROUS_IMPORT", "EXCEPTIONS", "CPP_RUNTIME", "TERMINATION"})
+CPP_RUNTIME_IMPORT_FAMILIES = (
+    "global operator new/delete",
+    "std::nothrow",
+    "std::__throw_*",
+    "std::__glibcxx_assert_fail",
+    "vtable for __cxxabiv1::__*class_type_info",
+    "std::terminate/__cxa_begin_catch (from __clang_call_terminate)",
+)
 
 _STACK_DIAG_RE = re.compile(
     r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
@@ -99,455 +82,478 @@ _STACK_DIAG_RE = re.compile(
 )
 
 
+def _find(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        path = find_tool(name)
+        if path:
+            return path
+    return None
+
+
+def _is_defined_global(symbol_type: str) -> bool:
+    return symbol_type.isupper() and symbol_type != UNDEFINED_SYMBOL
+
+
+def _object_path(object_root: Path, rel: str) -> Path:
+    return object_root / (rel[:-2] + ".o" if rel.endswith(".c") else rel + ".o")
+
+
+def _define_args(defines: list[str]) -> list[str]:
+    return [define if define.startswith("-D") else f"-D{define}" for define in defines]
+
+
+def _defined_elsewhere(defined_per_file: dict[str, set[str]], rel: str) -> set[str]:
+    if len(defined_per_file) <= 1:
+        return set()
+    return set().union(*(names for other, names in defined_per_file.items() if other != rel))
+
+
+def _dedupe_key(found: PolicyViolation) -> tuple:
+    return (found.rule, found.file, found.line) if found.line else (found.rule, found.file, found.message)
+
+
+def _unique_id(base: str, taken: set[str]) -> str:
+    candidate, suffix = base, 2
+    while candidate in taken:
+        candidate, suffix = f"{base}#{suffix}", suffix + 1
+    taken.add(candidate)
+    return candidate
+
+
+@dataclass
+class _CheckedFile:
+    source: CSource
+    entry: dict
+    symbols: list | None = None
+
+
+class _IntegrityGate(ABC):
+    rules: ClassVar[dict[str, str]]
+    compiler_name: ClassVar[str]
+    stack_violation_reason: ClassVar[str]
+    symbol_evidence_rules: ClassVar[frozenset[str]]
+    code_under_test: ClassVar[str]
+    passed_prefix: ClassVar[str]
+
+    def __init__(self, ctx: BackendContext, started: float, compiler_path: str | None) -> None:
+        self.ctx = ctx
+        self.spec = ctx.spec
+        self.started = started
+        self.compiler_path = compiler_path
+        self.snapshot = Path(os.path.realpath(ctx.snapshot_dir))
+        self.object_root = ctx.build_dir / "obj"
+        self.raw_root = ctx.raw_dir / STAGE
+        self.raw_root.mkdir(parents=True, exist_ok=True)
+        self.nm = _find(NM_CANDIDATES)
+        self.readelf = _find(READELF_CANDIDATES)
+        self.limits = Limits(timeout_s=ctx.timeout(TOOL_TIMEOUT_S), max_output_bytes=MAX_TOOL_OUTPUT_BYTES)
+        self.details: dict[str, Any] = {}
+        self.invocations: list[ToolInvocation] = []
+        self.problems: list[str] = []
+        self.timeouts: list[str] = []
+        self.violations: list[PolicyViolation] = []
+        self.raw_refs: dict[tuple[str, str], str] = {}
+        self.headers: dict[str, str] = {}
+        self.checked: dict[str, _CheckedFile] = {}
+
+    @abstractmethod
+    def lex(self, text: str) -> CSource: ...
+
+    @abstractmethod
+    def source_violations(self, rel: str, text: str) -> list[PolicyViolation]: ...
+
+    @abstractmethod
+    def preprocessed_violations(self, rel: str, preprocessed: str) -> list[PolicyViolation]: ...
+
+    @abstractmethod
+    def collect_symbols(self, rel: str, real_object: str, checked: _CheckedFile) -> None: ...
+
+    @abstractmethod
+    def defined_names(self, symbols: list) -> set[str]: ...
+
+    @abstractmethod
+    def symbol_violations(self, rel: str, checked: _CheckedFile, elsewhere: set[str]) -> list[PolicyViolation]: ...
+
+    @abstractmethod
+    def defines_target(self, symbols: list) -> bool: ...
+
+    @abstractmethod
+    def missing_target_message(self) -> str: ...
+
+    @abstractmethod
+    def symbol_evidence(self, file: str) -> str | None: ...
+
+    def run(self) -> StageResult:
+        self.load_headers()
+        for rel in self.spec.sources.editable:
+            self.check_file(rel)
+        self.check_symbols_across_files()
+        return self.report()
+
+    def load_headers(self) -> None:
+        for header in self.spec.sources.headers:
+            path = self.snapshot / header
+            if path.is_file():
+                self.headers[header] = path.read_text(encoding="utf-8", errors="replace")
+            else:
+                self.problems.append(f"protected header {header} is missing from the snapshot")
+
+    def run_tool(self, tool: str, argv: list[str], rel: str, what: str, stdin: bytes | None = None) -> str | None:
+        proc = self.ctx.run(argv, limits=self.limits, cwd=self.snapshot, stdin_data=stdin)
+        self.invocations.append(proc.to_invocation(tool, self.ctx.run_dir, self.ctx.log_name(STAGE, f"{what}-{rel}")))
+        raw = self.raw_root / f"{what}-{rel.replace('/', '_')}.txt"
+        raw.write_text(redact(proc.stdout + (STDERR_SEPARATOR + proc.stderr if proc.stderr else "")), encoding="utf-8")
+        self.raw_refs[(rel, what)] = self.ctx.relrun(raw)
+        if proc.timed_out:
+            self.timeouts.append(f"{what} of {rel} timed out")
+            return None
+        if not proc.ok or proc.output_truncated:
+            reason = proc.error or ("output truncated" if proc.output_truncated else f"exit {proc.exit_code}")
+            self.problems.append(f"{what} of {rel} failed ({reason}): {self._stderr_excerpt(proc.stderr)}")
+            return None
+        return proc.stdout
+
+    @staticmethod
+    def _stderr_excerpt(stderr: str) -> str:
+        return redact(stderr.strip())[:MAX_STDERR_EXCERPT_CHARS]
+
+    def check_file(self, rel: str) -> None:
+        entry: dict[str, Any] = {"source": rel, "checks": [], "argv": {}}
+        self.details["files"].append(entry)
+        path = self.snapshot / rel
+        if not path.is_file():
+            self.problems.append(f"editable source {rel} is missing from the snapshot")
+            return
+        text = path.read_text(encoding="utf-8", errors="replace")
+        checked = _CheckedFile(source=self.lex(text), entry=entry)
+        self.checked[rel] = checked
+        self.violations += self.source_violations(rel, text)
+        entry["checks"].append("source")
+        if self.compiler_path:
+            self.check_preprocessed(rel, entry)
+            self.check_unbounded_stack_allocations(rel, entry)
+        else:
+            self.problems.append(f"{self.compiler_name} not found: cannot check the preprocessed source")
+        object_file = _object_path(self.object_root, rel)
+        if not object_file.is_file():
+            self.problems.append(f"object file for {rel} not found ({object_file}); the compile gate must run first")
+            return
+        real_object = os.path.realpath(object_file)
+        self.collect_symbols(rel, real_object, checked)
+        self.check_sections(rel, real_object, checked)
+
+    def check_preprocessed(self, rel: str, entry: dict) -> None:
+        argv = [
+            self.compiler_path,
+            f"-std={self.spec.language.standard}",
+            *self.spec.compile.flags,
+            *_define_args(self.spec.compile.defines),
+            *self.ctx.include_args(),
+            "-E",
+            rel,
+        ]
+        entry["argv"]["preprocess"] = argv
+        preprocessed = self.run_tool(self.compiler_name, argv, rel, "preprocess")
+        if preprocessed is not None:
+            self.violations += self.preprocessed_violations(rel, preprocessed)
+            entry["checks"].append("preprocessed")
+
+    def check_unbounded_stack_allocations(self, rel: str, entry: dict) -> None:
+        argv = [
+            self.compiler_path,
+            f"-std={self.spec.language.standard}",
+            *_define_args(self.spec.compile.defines),
+            *self.ctx.include_args(),
+            *UNBOUNDED_STACK_CHECK_FLAGS,
+            rel,
+        ]
+        entry["argv"]["stack"] = argv
+        proc = self.ctx.run(argv, limits=self.limits, cwd=self.snapshot)
+        log_name = self.ctx.log_name(STAGE, f"stack-{rel}")
+        self.invocations.append(proc.to_invocation(self.compiler_name, self.ctx.run_dir, log_name))
+        if proc.timed_out:
+            self.timeouts.append(f"stack check of {rel} timed out")
+            return
+        if proc.error:
+            self.problems.append(f"stack check of {rel} failed: {proc.error}")
+            return
+        hits = 0
+        for diagnostic in _STACK_DIAG_RE.finditer(proc.stderr):
+            hits += 1
+            message = f"{diagnostic.group('msg').strip()} ({self.stack_violation_reason})"
+            self.violations.append(violation("UNBOUNDED_STACK", message, rel, int(diagnostic.group("line"))))
+        if proc.exit_code not in (0, None) and not hits:
+            self.problems.append(
+                f"stack check of {rel} failed (exit {proc.exit_code}): {self._stderr_excerpt(proc.stderr)}"
+            )
+        entry["checks"].append("stack")
+
+    def check_sections(self, rel: str, real_object: str, checked: _CheckedFile) -> None:
+        if not self.readelf:
+            self.problems.append("readelf / llvm-readelf not found: cannot check object sections")
+            return
+        argv = [self.readelf, "-S", "-W", real_object]
+        checked.entry["argv"]["readelf"] = argv
+        sections = self.run_tool("readelf", argv, rel, "sections")
+        if sections is not None:
+            names = dict.fromkeys(SECTION_RE.findall(sections))
+            checked.entry["sections"] = [name for name in names if name != NULL_SECTION]
+            self.violations += section_violations(rel, sections, checked.source)
+            checked.entry["checks"].append("sections")
+
+    def check_symbols_across_files(self) -> None:
+        defined_per_file = {rel: self.defined_names(file.symbols or []) for rel, file in self.checked.items()}
+        for rel, file in self.checked.items():
+            if file.symbols is not None:
+                self.violations += self.symbol_violations(rel, file, _defined_elsewhere(defined_per_file, rel))
+        every_file_has_symbols = all(file.symbols is not None for file in self.checked.values())
+        if self.checked and every_file_has_symbols and not any(
+            self.defines_target(file.symbols) for file in self.checked.values()
+        ):
+            self.violations.append(violation("MISSING_TARGET", self.missing_target_message(), None, None))
+
+    def ranked_violations(self) -> list[PolicyViolation]:
+        rank = {rule: position for position, rule in enumerate(self.rules)}
+        unique: dict[tuple, PolicyViolation] = {}
+        for found in self.violations:
+            unique.setdefault(_dedupe_key(found), found)
+        return sorted(
+            unique.values(),
+            key=lambda found: (found.file or "", found.line or 0, rank.get(found.rule, UNRANKED_RULE), found.message),
+        )
+
+    def failure_report(self, found: PolicyViolation, location: Location | None, taken_ids: set[str]) -> FailureReport:
+        evidence = self.symbol_evidence(found.file or "") if found.rule in self.symbol_evidence_rules else None
+        return FailureReport(
+            id=_unique_id(f"{STAGE}:{found.rule}:{found.file or '-'}:{found.line or 0}", taken_ids),
+            kind="policy",
+            tool=TOOL,
+            property_id=found.rule,
+            description=found.message,
+            location=location,
+            explanation=self.rules.get(found.rule, ""),
+            raw_ref=evidence,
+        )
+
+    def report(self) -> StageResult:
+        ranked = self.ranked_violations()
+        self.details["violations"] = len(ranked)
+        self.details["problems"] = self.problems + self.timeouts
+        diagnostics: list[Diagnostic] = []
+        failures: list[FailureReport] = []
+        taken_ids: set[str] = set()
+        for found in ranked:
+            location = Location(file=found.file, line=found.line) if found.file else None
+            diagnostics.append(
+                Diagnostic(tool=TOOL, rule_id=found.rule, severity="error", message=found.message, location=location)
+            )
+            failures.append(self.failure_report(found, location, taken_ids))
+
+        def result(outcome: Outcome, summary: str, status: Status | None) -> StageResult:
+            return StageResult(
+                stage=STAGE,
+                outcome=outcome,
+                status=status,
+                summary=summary,
+                diagnostics=diagnostics,
+                failures=failures,
+                invocations=self.invocations,
+                details=self.details,
+                duration_s=round(time.monotonic() - self.started, 3),
+            )
+
+        if ranked:
+            return result(Outcome.FAIL, self.violation_summary(ranked), Status.STATIC_ANALYSIS_WARNING)
+        if self.timeouts:
+            return result(Outcome.TIMEOUT, "; ".join(self.timeouts), outcome_to_status(STAGE, Outcome.TIMEOUT))
+        if self.problems:
+            return result(
+                Outcome.ERROR,
+                "source-integrity checks could not run: " + "; ".join(self.problems),
+                outcome_to_status(STAGE, Outcome.ERROR),
+            )
+        checked = ", ".join(f"{file['source']} ({'/'.join(file['checks'])})" for file in self.details["files"])
+        return result(Outcome.PASS, f"{self.passed_prefix}: {checked}", None)
+
+    def violation_summary(self, ranked: list[PolicyViolation]) -> str:
+        rules = ", ".join(dict.fromkeys(found.rule for found in ranked))
+        unfinished = self.problems + self.timeouts
+        incomplete = f"; some checks could not run: {'; '.join(unfinished)}" if unfinished else ""
+        return (
+            f"{len(ranked)} source-integrity violation(s) ({rules}): {self.code_under_test} tampers with or diverges "
+            f"between the verification tools{incomplete}"
+        )
+
+
+class _CIntegrityGate(_IntegrityGate):
+    rules = RULES
+    compiler_name = "clang"
+    stack_violation_reason = "CBMC cannot model stack exhaustion"
+    symbol_evidence_rules = C_SYMBOL_EVIDENCE_RULES
+    code_under_test = "the code under test"
+    passed_prefix = "source integrity OK"
+
+    def __init__(self, ctx: BackendContext, started: float) -> None:
+        super().__init__(ctx, started, ctx.tools.clang)
+        self.details.update(
+            {
+                "tools": {"clang": ctx.tools.clang, "nm": self.nm, "readelf": self.readelf},
+                "rules": sorted(RULES),
+                "allowed_imports": sorted(ALLOWED_IMPORTS),
+                "files": [],
+                "violations": 0,
+            }
+        )
+        self.header_identifiers: set[str] = set()
+
+    def load_headers(self) -> None:
+        super().load_headers()
+        self.header_identifiers = c_header_facts(self.headers).idents
+
+    def lex(self, text: str) -> CSource:
+        return CSource(text)
+
+    def source_violations(self, rel: str, text: str) -> list[PolicyViolation]:
+        return source_violations(self.spec, rel, text, headers=self.headers)
+
+    def preprocessed_violations(self, rel: str, preprocessed: str) -> list[PolicyViolation]:
+        return preprocessed_violations(rel, preprocessed)
+
+    def collect_symbols(self, rel: str, real_object: str, checked: _CheckedFile) -> None:
+        if not self.nm:
+            self.problems.append("nm / llvm-nm not found: cannot check object symbols")
+            return
+        argv = [self.nm, "-P", real_object]
+        checked.entry["argv"]["nm"] = argv
+        listing = self.run_tool("nm", argv, rel, "nm")
+        if listing is None:
+            return
+        symbols = parse_nm(listing)
+        checked.symbols = symbols
+        checked.entry["defined"] = sorted(name for name, kind in symbols if _is_defined_global(kind))
+        checked.entry["undefined"] = sorted(name for name, kind in symbols if kind in UNDEFINED_TYPES)
+        checked.entry["checks"].append("symbols")
+
+    def defined_names(self, symbols: list) -> set[str]:
+        return {name for name, kind in symbols if _is_defined_global(kind)}
+
+    def symbol_violations(self, rel: str, checked: _CheckedFile, elsewhere: set[str]) -> list[PolicyViolation]:
+        return check_object_symbols(
+            self.spec,
+            rel,
+            checked.symbols,
+            header_idents=self.header_identifiers,
+            defined_elsewhere=elsewhere,
+            src=checked.source,
+        )
+
+    def defines_target(self, symbols: list) -> bool:
+        return (self.spec.target.function, STRONG_TEXT_TYPE) in symbols
+
+    def missing_target_message(self) -> str:
+        return f"no editable object defines the target function '{self.spec.target.function}' (as a global function)"
+
+    def symbol_evidence(self, file: str) -> str | None:
+        return self.raw_refs.get((file, "nm"))
+
+
+class _CppIntegrityGate(_IntegrityGate):
+    rules = CPP_RULES
+    compiler_name = "clang++"
+    stack_violation_reason = "a stack allocation of input-dependent size"
+    symbol_evidence_rules = CPP_SYMBOL_EVIDENCE_RULES
+    code_under_test = "the C++ code under test"
+    passed_prefix = "source integrity OK (C++)"
+
+    def __init__(self, ctx: BackendContext, started: float, compiler_path: str | None) -> None:
+        super().__init__(ctx, started, compiler_path)
+        self.demangler = _find(DEMANGLER_CANDIDATES)
+        self.details.update(
+            {
+                "language": "c++",
+                "tools": {"clang++": compiler_path, "nm": self.nm, "readelf": self.readelf, "demangler": self.demangler},
+                "rules": sorted(CPP_RULES),
+                "allowed_imports": sorted(ALLOWED_IMPORTS),
+                "allowed_cpp_runtime_imports": sorted(CPP_ALLOWED_RUNTIME_IMPORTS) + list(CPP_RUNTIME_IMPORT_FAMILIES),
+                "files": [],
+                "violations": 0,
+            }
+        )
+        self.facts = header_facts({})
+
+    def load_headers(self) -> None:
+        super().load_headers()
+        self.facts = header_facts(self.headers)
+
+    def lex(self, text: str) -> CSource:
+        return CppSource(text)
+
+    def source_violations(self, rel: str, text: str) -> list[PolicyViolation]:
+        return cpp_source_violations(self.spec, rel, text, headers=self.headers)
+
+    def preprocessed_violations(self, rel: str, preprocessed: str) -> list[PolicyViolation]:
+        return cpp_preprocessed_violations(rel, preprocessed, self.facts)
+
+    def demangled_symbols(self, rel: str, symbols: list[tuple[str, str]]) -> list[tuple[str, str, str]] | None:
+        names = [name for name, _ in symbols]
+        if not names:
+            return []
+        stdin = ("\n".join(names) + "\n").encode()
+        listing = self.run_tool("c++filt", [self.demangler], rel, "demangle", stdin)
+        if listing is None:
+            return None
+        demangled = listing.split("\n")[: len(names)]
+        if len(demangled) != len(names) or any(not line.strip() for line in demangled):
+            self.problems.append(f"demangling the symbols of {rel} produced unexpected output")
+            return None
+        return [(name, kind, line.strip()) for (name, kind), line in zip(symbols, demangled)]
+
+    def collect_symbols(self, rel: str, real_object: str, checked: _CheckedFile) -> None:
+        if not (self.nm and self.demangler):
+            self.problems.append(
+                "nm / llvm-nm or a C++ demangler (llvm-cxxfilt / c++filt) not found: cannot check object symbols"
+            )
+            return
+        argv = [self.nm, "-P", real_object]
+        checked.entry["argv"]["nm"] = argv
+        listing = self.run_tool("nm", argv, rel, "nm")
+        if listing is None:
+            return
+        triples = self.demangled_symbols(rel, parse_nm(listing))
+        if triples is None:
+            return
+        checked.symbols = triples
+        checked.entry["defined"] = sorted(shown for _, kind, shown in triples if _is_defined_global(kind))
+        checked.entry["undefined"] = sorted(shown for _, kind, shown in triples if kind in UNDEFINED_TYPES)
+        checked.entry["checks"].append("symbols")
+
+    def defined_names(self, symbols: list) -> set[str]:
+        return {name for name, kind, _ in symbols if kind not in UNDEFINED_TYPES}
+
+    def symbol_violations(self, rel: str, checked: _CheckedFile, elsewhere: set[str]) -> list[PolicyViolation]:
+        return check_cpp_object_symbols(
+            self.spec, rel, checked.symbols, facts=self.facts, defined_elsewhere=elsewhere, src=checked.source
+        )
+
+    def defines_target(self, symbols: list) -> bool:
+        return _defines_target(symbols, self.spec.target.function)
+
+    def missing_target_message(self) -> str:
+        return (
+            f"no editable object defines the target function '{self.spec.target.function}' "
+            "(as an external function or member function)"
+        )
+
+    def symbol_evidence(self, file: str) -> str | None:
+        return self.raw_refs.get((file, "demangle")) or self.raw_refs.get((file, "nm"))
+
+
 def run_integrity(ctx: BackendContext) -> StageResult:
-    """Mandatory source-integrity gate; see the module docstring."""
-    if ctx.spec.language.is_cpp:  # mangled symbols, C++ runtime, C++ source rules
+    if ctx.spec.language.is_cpp:
         return run_cpp_integrity(ctx)
-    t0 = time.monotonic()
-    spec = ctx.spec
-    snap = Path(os.path.realpath(ctx.snapshot_dir))
-    obj_root = ctx.build_dir / "obj"
-    raw_root = ctx.raw_dir / STAGE
-    raw_root.mkdir(parents=True, exist_ok=True)
-    nm = _find(("llvm-nm-18", "llvm-nm", "nm"))
-    readelf = _find(("llvm-readelf-18", "llvm-readelf", "readelf"))
-    details: dict = {
-        "tools": {"clang": ctx.tools.clang, "nm": nm, "readelf": readelf},
-        "rules": sorted(RULES),
-        "allowed_imports": sorted(ALLOWED_IMPORTS),
-        "files": [],
-        "violations": 0,
-    }
-    invocations = []
-    problems: list[str] = []
-    timeouts: list[str] = []
-    limits = Limits(timeout_s=ctx.timeout(60), max_output_bytes=16 * 1024 * 1024)
-    violations: list[PolicyViolation] = []
-    raw_refs: dict[tuple[str, str], str] = {}
-
-    headers: dict[str, str] = {}
-    for h in spec.sources.headers:
-        p = snap / h
-        if p.is_file():
-            headers[h] = p.read_text(encoding="utf-8", errors="replace")
-        else:
-            problems.append(f"protected header {h} is missing from the snapshot")
-    header_idents, _ = _header_facts(headers)
-
-    def run(tool: str, argv: list[str], rel: str, what: str) -> str | None:
-        proc = ctx.run(argv, limits=limits, cwd=snap)
-        invocations.append(proc.to_invocation(tool, ctx.run_dir, ctx.log_name(STAGE, f"{what}-{rel}")))
-        raw = raw_root / f"{what}-{rel.replace('/', '_')}.txt"
-        raw.write_text(redact(proc.stdout + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else "")),
-                       encoding="utf-8")
-        raw_refs[(rel, what)] = ctx.relrun(raw)
-        if proc.timed_out:
-            timeouts.append(f"{what} of {rel} timed out")
-            return None
-        if not proc.ok or proc.output_truncated:
-            reason = proc.error or ("output truncated" if proc.output_truncated else f"exit {proc.exit_code}")
-            problems.append(f"{what} of {rel} failed ({reason}): {redact(proc.stderr.strip())[:300]}")
-            return None
-        return proc.stdout
-
-    per_file: dict[str, dict] = {}
-    for rel in spec.sources.editable:
-        entry: dict = {"source": rel, "checks": [], "argv": {}}
-        details["files"].append(entry)
-        path = snap / rel
-        if not path.is_file():
-            problems.append(f"editable source {rel} is missing from the snapshot")
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        src = CSource(text)
-        per_file[rel] = {"src": src, "entry": entry}
-        violations += source_violations(spec, rel, text, headers=headers)
-        entry["checks"].append("source")
-
-        if ctx.tools.clang:
-            argv = [
-                ctx.tools.clang,
-                f"-std={spec.language.standard}",
-                *spec.compile.flags,
-                *[d if d.startswith("-D") else f"-D{d}" for d in spec.compile.defines],
-                *ctx.include_args(),
-                "-E",
-                rel,
-            ]
-            entry["argv"]["preprocess"] = argv
-            pp = run("clang", argv, rel, "preprocess")
-            if pp is not None:
-                violations += preprocessed_violations(rel, pp)
-                entry["checks"].append("preprocessed")
-            # Semantic check the preprocessor cannot do: VLAs (also those hidden
-            # behind typedefs or macros) and alloca.  CBMC treats any stack
-            # allocation as valid, so they must never reach a verdict.
-            sargv = [
-                ctx.tools.clang,
-                f"-std={spec.language.standard}",
-                *[d if d.startswith("-D") else f"-D{d}" for d in spec.compile.defines],
-                *ctx.include_args(),
-                "-fsyntax-only",
-                "-fno-color-diagnostics",
-                "-fno-caret-diagnostics",
-                "-Wno-everything",
-                "-Wvla",
-                "-Walloca",
-                "-Werror=vla",
-                "-Werror=alloca",
-                rel,
-            ]
-            entry["argv"]["stack"] = sargv
-            proc = ctx.run(sargv, limits=limits, cwd=snap)
-            invocations.append(proc.to_invocation("clang", ctx.run_dir, ctx.log_name(STAGE, f"stack-{rel}")))
-            if proc.timed_out:
-                timeouts.append(f"stack check of {rel} timed out")
-            elif proc.error:
-                problems.append(f"stack check of {rel} failed: {proc.error}")
-            else:
-                hits = 0
-                for m in _STACK_DIAG_RE.finditer(proc.stderr):
-                    hits += 1
-                    line = int(m.group("line"))
-                    violations.append(
-                        _v("UNBOUNDED_STACK", f"{m.group('msg').strip()} (CBMC cannot model stack exhaustion)",
-                           m.group("file") if m.group("file") == rel else rel, line)
-                    )
-                if proc.exit_code not in (0, None) and not hits:
-                    problems.append(f"stack check of {rel} failed (exit {proc.exit_code}): "
-                                    f"{redact(proc.stderr.strip())[:300]}")
-                entry["checks"].append("stack")
-        else:
-            problems.append("clang not found: cannot check the preprocessed source")
-
-        obj = obj_root / (rel[:-2] + ".o" if rel.endswith(".c") else rel + ".o")
-        if not obj.is_file():
-            problems.append(f"object file for {rel} not found ({obj}); the compile gate must run first")
-            continue
-        real_obj = os.path.realpath(obj)
-        if nm:
-            argv = [nm, "-P", real_obj]
-            entry["argv"]["nm"] = argv
-            out = run("nm", argv, rel, "nm")
-            if out is not None:
-                syms = parse_nm(out)
-                per_file[rel]["symbols"] = syms
-                entry["defined"] = sorted(n for n, t in syms if t.isupper() and t != "U")
-                entry["undefined"] = sorted(n for n, t in syms if t in ("U", "w", "v"))
-                entry["checks"].append("symbols")
-        else:
-            problems.append("nm / llvm-nm not found: cannot check object symbols")
-        if readelf:
-            argv = [readelf, "-S", "-W", real_obj]
-            entry["argv"]["readelf"] = argv
-            out = run("readelf", argv, rel, "sections")
-            if out is not None:
-                entry["sections"] = [s for s in dict.fromkeys(_SECTION_RE.findall(out)) if s != "NULL"]
-                violations += section_violations(rel, out, src)
-                entry["checks"].append("sections")
-        else:
-            problems.append("readelf / llvm-readelf not found: cannot check object sections")
-
-    # symbol rules need every object's definitions (calls between editable files are fine)
-    all_defined: dict[str, set[str]] = {
-        rel: {n for n, t in info.get("symbols", []) if t.isupper() and t not in ("U",)} for rel, info in per_file.items()
-    }
-    target_defined = any(
-        (spec.target.function, "T") in info.get("symbols", []) for info in per_file.values()
-    )
-    for rel, info in per_file.items():
-        if "symbols" not in info:
-            continue
-        elsewhere = set().union(*(d for r, d in all_defined.items() if r != rel)) if len(all_defined) > 1 else set()
-        violations += check_object_symbols(
-            spec, rel, info["symbols"], header_idents=header_idents, defined_elsewhere=elsewhere, src=info["src"]
-        )
-    if per_file and all("symbols" in i for i in per_file.values()) and not target_defined:
-        violations.append(_v("MISSING_TARGET", f"no editable object defines the target function "
-                             f"'{spec.target.function}' (as a global function)", None, None))
-
-    # report
-    order = {r: k for k, r in enumerate(RULES)}
-    uniq: dict[tuple, PolicyViolation] = {}
-    for v in violations:
-        uniq.setdefault((v.rule, v.file, v.line) if v.line else (v.rule, v.file, v.message), v)
-    vs = sorted(uniq.values(), key=lambda v: (v.file or "", v.line or 0, order.get(v.rule, 99), v.message))
-    details["violations"] = len(vs)
-    details["problems"] = problems + timeouts
-    diagnostics: list[Diagnostic] = []
-    failures: list[FailureReport] = []
-    seen_ids: set[str] = set()
-    for v in vs:
-        loc = Location(file=v.file, line=v.line) if v.file else None
-        diagnostics.append(Diagnostic(tool=TOOL, rule_id=v.rule, severity="error", message=v.message, location=loc))
-        base = f"{STAGE}:{v.rule}:{v.file or '-'}:{v.line or 0}"
-        fid, n = base, 2
-        while fid in seen_ids:
-            fid, n = f"{base}#{n}", n + 1
-        seen_ids.add(fid)
-        failures.append(
-            FailureReport(
-                id=fid,
-                kind="policy",
-                tool=TOOL,
-                property_id=v.rule,
-                description=v.message,
-                location=loc,
-                explanation=RULES.get(v.rule, ""),
-                raw_ref=raw_refs.get((v.file or "", "nm")) if v.rule in ("SYMBOL_OVERRIDE", "DANGEROUS_IMPORT") else None,
-            )
-        )
-
-    def result(outcome: Outcome, summary: str, status: Status | None) -> StageResult:
-        return StageResult(
-            stage=STAGE,
-            outcome=outcome,
-            status=status,
-            summary=summary,
-            diagnostics=diagnostics,
-            failures=failures,
-            invocations=invocations,
-            details=details,
-            duration_s=round(time.monotonic() - t0, 3),
-        )
-
-    if vs:
-        rules = ", ".join(dict.fromkeys(v.rule for v in vs))
-        incomplete = f"; some checks could not run: {'; '.join(problems + timeouts)}" if problems or timeouts else ""
-        return result(
-            Outcome.FAIL,
-            f"{len(vs)} source-integrity violation(s) ({rules}): the code under test tampers with or diverges "
-            f"between the verification tools{incomplete}",
-            Status.STATIC_ANALYSIS_WARNING,
-        )
-    if timeouts:
-        return result(Outcome.TIMEOUT, "; ".join(timeouts), outcome_to_status(STAGE, Outcome.TIMEOUT))
-    if problems:
-        return result(Outcome.ERROR, "source-integrity checks could not run: " + "; ".join(problems),
-                      outcome_to_status(STAGE, Outcome.ERROR))
-    checked = ", ".join(f"{f['source']} ({'/'.join(f['checks'])})" for f in details["files"])
-    return result(Outcome.PASS, f"source integrity OK: {checked}", None)
+    return _CIntegrityGate(ctx, time.monotonic()).run()
 
 
-# =========================================================================== the C++ gate
-def _object_path(obj_root: Path, rel: str) -> Path:
-    return obj_root / (rel[:-2] + ".o" if rel.endswith(".c") else rel + ".o")
-
-
-def run_cpp_integrity(ctx) -> StageResult:
-    """The integrity gate for C++ specs (see :mod:`leanc.rules.cpp_rules`); called by
-    :func:`run_integrity`."""
-    t0 = time.monotonic()
-    spec = ctx.spec
-    cxx = compiler(ctx)
-    snap = Path(os.path.realpath(ctx.snapshot_dir))
-    obj_root = ctx.build_dir / "obj"
-    raw_root = ctx.raw_dir / STAGE
-    raw_root.mkdir(parents=True, exist_ok=True)
-    nm_tool = _find(("llvm-nm-18", "llvm-nm", "nm"))
-    readelf = _find(("llvm-readelf-18", "llvm-readelf", "readelf"))
-    demangler = _find(("llvm-cxxfilt-18", "llvm-cxxfilt", "c++filt"))
-    details: dict = {
-        "language": "c++",
-        "tools": {"clang++": cxx, "nm": nm_tool, "readelf": readelf, "demangler": demangler},
-        "rules": sorted(CPP_RULES),
-        "allowed_imports": sorted(ALLOWED_IMPORTS),
-        "allowed_cpp_runtime_imports": sorted(CPP_ALLOWED_RUNTIME_IMPORTS)
-        + ["global operator new/delete", "std::nothrow", "std::__throw_*", "std::__glibcxx_assert_fail",
-           "vtable for __cxxabiv1::__*class_type_info", "std::terminate/__cxa_begin_catch (from __clang_call_terminate)"],
-        "files": [],
-        "violations": 0,
-    }
-    invocations = []
-    problems: list[str] = []
-    timeouts: list[str] = []
-    limits = Limits(timeout_s=ctx.timeout(60), max_output_bytes=16 * 1024 * 1024)
-    violations: list[PolicyViolation] = []
-    raw_refs: dict[tuple[str, str], str] = {}
-
-    headers: dict[str, str] = {}
-    for h in spec.sources.headers:
-        p = snap / h
-        if p.is_file():
-            headers[h] = p.read_text(encoding="utf-8", errors="replace")
-        else:
-            problems.append(f"protected header {h} is missing from the snapshot")
-    facts = header_facts(headers)
-
-    def run(tool: str, argv: list[str], rel: str, what: str, stdin: bytes | None = None) -> str | None:
-        proc = ctx.run(argv, limits=limits, cwd=snap, stdin_data=stdin)
-        invocations.append(proc.to_invocation(tool, ctx.run_dir, ctx.log_name(STAGE, f"{what}-{rel}")))
-        raw = raw_root / f"{what}-{rel.replace('/', '_')}.txt"
-        raw.write_text(redact(proc.stdout + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else "")),
-                       encoding="utf-8")
-        raw_refs[(rel, what)] = ctx.relrun(raw)
-        if proc.timed_out:
-            timeouts.append(f"{what} of {rel} timed out")
-            return None
-        if not proc.ok or proc.output_truncated:
-            reason = proc.error or ("output truncated" if proc.output_truncated else f"exit {proc.exit_code}")
-            problems.append(f"{what} of {rel} failed ({reason}): {redact(proc.stderr.strip())[:300]}")
-            return None
-        return proc.stdout
-
-    defines = [d if d.startswith("-D") else f"-D{d}" for d in spec.compile.defines]
-    per_file: dict[str, dict] = {}
-    for rel in spec.sources.editable:
-        entry: dict = {"source": rel, "checks": [], "argv": {}}
-        details["files"].append(entry)
-        path = snap / rel
-        if not path.is_file():
-            problems.append(f"editable source {rel} is missing from the snapshot")
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        src = CppSource(text)
-        per_file[rel] = {"src": src, "entry": entry}
-        violations += cpp_source_violations(spec, rel, text, headers=headers)
-        entry["checks"].append("source")
-
-        if cxx:
-            argv = [cxx, f"-std={spec.language.standard}", *spec.compile.flags, *defines, *ctx.include_args(),
-                    "-E", rel]
-            entry["argv"]["preprocess"] = argv
-            pp = run("clang++", argv, rel, "preprocess")
-            if pp is not None:
-                violations += cpp_preprocessed_violations(rel, pp, facts)
-                entry["checks"].append("preprocessed")
-            sargv = [cxx, f"-std={spec.language.standard}", *defines, *ctx.include_args(), "-fsyntax-only",
-                     "-fno-color-diagnostics", "-fno-caret-diagnostics", "-Wno-everything", "-Wvla", "-Walloca",
-                     "-Werror=vla", "-Werror=alloca", rel]
-            entry["argv"]["stack"] = sargv
-            proc = ctx.run(sargv, limits=limits, cwd=snap)
-            invocations.append(proc.to_invocation("clang++", ctx.run_dir, ctx.log_name(STAGE, f"stack-{rel}")))
-            if proc.timed_out:
-                timeouts.append(f"stack check of {rel} timed out")
-            elif proc.error:
-                problems.append(f"stack check of {rel} failed: {proc.error}")
-            else:
-                hits = 0
-                for m in _STACK_DIAG_RE.finditer(proc.stderr):
-                    hits += 1
-                    violations.append(_v("UNBOUNDED_STACK", f"{m.group('msg').strip()} (a stack allocation of "
-                                            "input-dependent size)", rel, int(m.group("line"))))
-                if proc.exit_code not in (0, None) and not hits:
-                    problems.append(f"stack check of {rel} failed (exit {proc.exit_code}): "
-                                    f"{redact(proc.stderr.strip())[:300]}")
-                entry["checks"].append("stack")
-        else:
-            problems.append("clang++ not found: cannot check the preprocessed source")
-
-        obj = _object_path(obj_root, rel)
-        if not obj.is_file():
-            problems.append(f"object file for {rel} not found ({obj}); the compile gate must run first")
-            continue
-        real_obj = os.path.realpath(obj)
-        if nm_tool and demangler:
-            argv = [nm_tool, "-P", real_obj]
-            entry["argv"]["nm"] = argv
-            out = run("nm", argv, rel, "nm")
-            if out is not None:
-                syms = parse_nm(out)
-                names = [n for n, _ in syms]
-                dem_out = run("c++filt", [demangler], rel, "demangle", ("\n".join(names) + "\n").encode()) \
-                    if names else ""
-                if dem_out is not None:
-                    dem = dem_out.split("\n")[: len(names)] if names else []
-                    if len(dem) != len(names) or any(not d.strip() for d in dem):
-                        problems.append(f"demangling the symbols of {rel} produced unexpected output")
-                    else:
-                        triples = [(n, t, d.strip()) for (n, t), d in zip(syms, dem)]
-                        per_file[rel]["symbols"] = triples
-                        entry["defined"] = sorted(d for _, t, d in triples if t.isupper() and t != "U")
-                        entry["undefined"] = sorted(d for _, t, d in triples if t in ("U", "w", "v"))
-                        entry["checks"].append("symbols")
-        else:
-            problems.append("nm / llvm-nm or a C++ demangler (llvm-cxxfilt / c++filt) not found: cannot check "
-                            "object symbols")
-        if readelf:
-            argv = [readelf, "-S", "-W", real_obj]
-            entry["argv"]["readelf"] = argv
-            out = run("readelf", argv, rel, "sections")
-            if out is not None:
-                entry["sections"] = [s for s in dict.fromkeys(_SECTION_RE.findall(out)) if s != "NULL"]
-                violations += section_violations(rel, out, src)
-                entry["checks"].append("sections")
-        else:
-            problems.append("readelf / llvm-readelf not found: cannot check object sections")
-
-    all_defined = {
-        rel: {n for n, t, _ in info.get("symbols", []) if t not in ("U", "w", "v")} for rel, info in per_file.items()
-    }
-    for rel, info in per_file.items():
-        if "symbols" not in info:
-            continue
-        elsewhere = set().union(*(d for r, d in all_defined.items() if r != rel)) if len(all_defined) > 1 else set()
-        violations += check_cpp_object_symbols(spec, rel, info["symbols"], facts=facts, defined_elsewhere=elsewhere,
-                                               src=info["src"])
-    if per_file and all("symbols" in i for i in per_file.values()) and not any(
-        _defines_target(i["symbols"], spec.target.function) for i in per_file.values()
-    ):
-        violations.append(_v("MISSING_TARGET", f"no editable object defines the target function "
-                                f"'{spec.target.function}' (as an external function or member function)", None, None))
-
-    order = {r: k for k, r in enumerate(CPP_RULES)}
-    uniq: dict[tuple, PolicyViolation] = {}
-    for v in violations:
-        uniq.setdefault((v.rule, v.file, v.line) if v.line else (v.rule, v.file, v.message), v)
-    vs = sorted(uniq.values(), key=lambda v: (v.file or "", v.line or 0, order.get(v.rule, 99), v.message))
-    details["violations"] = len(vs)
-    details["problems"] = problems + timeouts
-    diagnostics: list[Diagnostic] = []
-    failures: list[FailureReport] = []
-    seen_ids: set[str] = set()
-    for v in vs:
-        loc = Location(file=v.file, line=v.line) if v.file else None
-        diagnostics.append(Diagnostic(tool=TOOL, rule_id=v.rule, severity="error", message=v.message, location=loc))
-        base = f"{STAGE}:{v.rule}:{v.file or '-'}:{v.line or 0}"
-        fid, n = base, 2
-        while fid in seen_ids:
-            fid, n = f"{base}#{n}", n + 1
-        seen_ids.add(fid)
-        failures.append(
-            FailureReport(
-                id=fid,
-                kind="policy",
-                tool=TOOL,
-                property_id=v.rule,
-                description=v.message,
-                location=loc,
-                explanation=CPP_RULES.get(v.rule, ""),
-                raw_ref=raw_refs.get((v.file or "", "demangle")) or raw_refs.get((v.file or "", "nm"))
-                if v.rule in ("SYMBOL_OVERRIDE", "DANGEROUS_IMPORT", "EXCEPTIONS", "CPP_RUNTIME", "TERMINATION")
-                else None,
-            )
-        )
-
-    def result(outcome: Outcome, summary: str, status: Status | None) -> StageResult:
-        return StageResult(
-            stage=STAGE,
-            outcome=outcome,
-            status=status,
-            summary=summary,
-            diagnostics=diagnostics,
-            failures=failures,
-            invocations=invocations,
-            details=details,
-            duration_s=round(time.monotonic() - t0, 3),
-        )
-
-    if vs:
-        rules = ", ".join(dict.fromkeys(v.rule for v in vs))
-        incomplete = f"; some checks could not run: {'; '.join(problems + timeouts)}" if problems or timeouts else ""
-        return result(
-            Outcome.FAIL,
-            f"{len(vs)} source-integrity violation(s) ({rules}): the C++ code under test tampers with or diverges "
-            f"between the verification tools{incomplete}",
-            Status.STATIC_ANALYSIS_WARNING,
-        )
-    if timeouts:
-        return result(Outcome.TIMEOUT, "; ".join(timeouts), outcome_to_status(STAGE, Outcome.TIMEOUT))
-    if problems:
-        return result(Outcome.ERROR, "source-integrity checks could not run: " + "; ".join(problems),
-                      outcome_to_status(STAGE, Outcome.ERROR))
-    checked = ", ".join(f"{f['source']} ({'/'.join(f['checks'])})" for f in details["files"])
-    return result(Outcome.PASS, f"source integrity OK (C++): {checked}", None)
+def run_cpp_integrity(ctx: BackendContext) -> StageResult:
+    started = time.monotonic()
+    return _CppIntegrityGate(ctx, started, compiler(ctx)).run()

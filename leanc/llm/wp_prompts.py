@@ -1,9 +1,4 @@
-"""Prompt additions for specs that use the Frama-C/WP gate (V2).
-
-Kept separate from :mod:`leanc.llm.prompts` (a shared module) so the WP
-guidance can evolve with :mod:`leanc.backends.wp` and
-:mod:`leanc.rules.acsl`, which define what is actually accepted.
-"""
+"""Repair-prompt section for specs that use the Frama-C/WP gate (V2)."""
 
 from __future__ import annotations
 
@@ -28,16 +23,14 @@ far) and be followed by `loop assigns` listing exactly those variables; at loop 
 negated loop condition must imply the post-condition.
 """
 
+TERMINATION_REQUIREMENT = " Termination is required: every loop needs a `loop variant` (and recursion a `decreases`)."
+
 
 def wp_repair_note(spec: Spec) -> str | None:
     """Extra repair-prompt section for specs with the ``wp`` gate (else None)."""
     if "wp" not in spec.gates or spec.wp is None:
         return None
-    termination = (
-        " Termination is required: every loop needs a `loop variant` (and recursion a `decreases`)."
-        if spec.wp.require_termination
-        else ""
-    )
+    termination = TERMINATION_REQUIREMENT if spec.wp.require_termination else ""
     return WP_REPAIR_NOTE.format(
         target=spec.target.function,
         headers=", ".join(f"`{h}`" for h in spec.sources.headers) or "(none)",

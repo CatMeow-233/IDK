@@ -1,15 +1,13 @@
-"""System prompts for C++ specs (V2 C++ support).
-
-The C prompts in :mod:`leanc.llm.prompts` describe a C17 pipeline with CBMC;
-for a spec with ``language.is_cpp`` the code generator, repair agent and
-failure analyst instead get prompts that describe what actually judges C++
-code here (clang++, the Clang Static Analyzer, the trusted C++ test driver
-under ASan/UBSan/LSan, the C++ integrity rules) and that there is no formal
-gate.  For C specs :func:`cpp_system` returns the C prompt unchanged, so C
-prompts stay byte-for-byte identical.
-"""
+"""System prompts for C++ specs (V2): what judges C++ code here, and that C++ has no formal gate."""
 
 from __future__ import annotations
+
+from typing import Literal
+
+from leanc.specs.model import Spec
+
+PromptKind = Literal["codegen", "repair", "analyze"]
+STANDARD_PLACEHOLDER = "{std}"
 
 _CPP_INTEGRITY_RULES = """\
 - no exceptions (throw, try/catch), no RTTI (typeid, dynamic_cast), no coroutines;
@@ -90,13 +88,15 @@ missing. Do not claim the code is correct or verified - only the tools decide th
 formal verification gate.
 """
 
-_CPP_SYSTEMS = {"codegen": CPP_CODEGEN_SYSTEM, "repair": CPP_REPAIR_SYSTEM, "analyze": CPP_ANALYZE_SYSTEM}
+_CPP_SYSTEMS: dict[PromptKind, str] = {
+    "codegen": CPP_CODEGEN_SYSTEM,
+    "repair": CPP_REPAIR_SYSTEM,
+    "analyze": CPP_ANALYZE_SYSTEM,
+}
 
 
-def cpp_system(spec, kind: str, c_system: str) -> str:
-    """The system prompt of ``kind`` ("codegen" | "repair" | "analyze") for
-    ``spec``: the C prompt ``c_system`` unchanged for C specs, the C++
-    variant for C++ specs."""
+def cpp_system(spec: Spec, kind: PromptKind, c_system: str) -> str:
+    """The system prompt of kind for spec: c_system unchanged for C specs, the C++ variant for C++ specs."""
     if not spec.language.is_cpp:
         return c_system
-    return _CPP_SYSTEMS[kind].replace("{std}", spec.language.standard.upper())
+    return _CPP_SYSTEMS[kind].replace(STANDARD_PLACEHOLDER, spec.language.standard.upper())

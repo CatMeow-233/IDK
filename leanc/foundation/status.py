@@ -1,22 +1,4 @@
-"""Verification status vocabulary and the rules for combining statuses.
-
-The statuses are deliberately explicit.  In particular:
-
-* ``VERIFIED_BOUNDED`` means *only* "no violation of the checked properties was
-  found by CBMC for the approved harness, input constraints and unwind bound,
-  every loop was fully unwound (unwinding assertions passed) and the harness was
-  shown to be non-vacuous".  It is never promoted to ``PROVED`` automatically.
-* ``PROVED`` is produced only by the V2 ``wp`` gate: Frama-C/WP discharged
-  every proof obligation of the approved ACSL contract *and* every runtime-
-  error guard (``-wp-rte``), the smoke tests found no inconsistent
-  precondition, and every other required gate passed.  It is a deductive,
-  unbounded result within WP's memory and machine model (partial correctness
-  unless the spec requires termination).  CBMC never produces it, and Lean
-  model proofs never upgrade a C verdict to it.
-* "No counterexample found" is not success by itself: timeouts, insufficient
-  unwinding, vacuous harnesses, skipped gates and tool failures all map to
-  non-success statuses.
-"""
+"""Verification statuses, stage outcomes and the rules for combining them (see docs/status-semantics.md)."""
 
 from __future__ import annotations
 
@@ -37,7 +19,7 @@ class Status(str, Enum):
     SPEC_UNAPPROVED = "SPEC_UNAPPROVED"
     REPAIR_EXHAUSTED = "REPAIR_EXHAUSTED"
 
-    def __str__(self) -> str:  # pragma: no cover - trivial
+    def __str__(self) -> str:
         return self.value
 
 
@@ -45,19 +27,17 @@ class Outcome(str, Enum):
     """Outcome of a single pipeline stage (gate)."""
 
     PASS = "PASS"
-    FAIL = "FAIL"  # definite evidence of a defect (or a blocking policy violation)
-    INCONCLUSIVE = "INCONCLUSIVE"  # ran, but cannot support a verdict (unwind, vacuity, ...)
+    FAIL = "FAIL"
+    INCONCLUSIVE = "INCONCLUSIVE"
     TIMEOUT = "TIMEOUT"
-    ERROR = "ERROR"  # the tool itself failed / is missing / produced unparsable output
-    SKIPPED = "SKIPPED"  # not run (earlier blocking failure, sandbox unavailable, disabled)
+    ERROR = "ERROR"
+    SKIPPED = "SKIPPED"
 
-    def __str__(self) -> str:  # pragma: no cover - trivial
+    def __str__(self) -> str:
         return self.value
 
 
-# Worst first.  Definite defects dominate inconclusive results, because a known
-# defect is the most useful thing to report (and to feed to the repair agent).
-PRECEDENCE: tuple[Status, ...] = (
+PRECEDENCE_WORST_FIRST: tuple[Status, ...] = (
     Status.SPEC_UNAPPROVED,
     Status.COMPILE_ERROR,
     Status.COUNTEREXAMPLE_FOUND,
@@ -81,15 +61,12 @@ DEFINITE_FAILURES = frozenset(
     }
 )
 
-#: Statuses the repair agent may act on.  Inconclusive results (UNKNOWN,
-#: TIMEOUT, TOOL_ERROR) are *not* repairable by editing code under test in a
-#: trustworthy way, and SPEC_UNAPPROVED must be resolved by a human.
 REPAIRABLE = DEFINITE_FAILURES
 
-# Process exit codes for the CLI.  0 is reserved for success statuses.
+SUCCESS_EXIT_CODE = 0
 EXIT_CODES: dict[Status, int] = {
-    Status.VERIFIED_BOUNDED: 0,
-    Status.PROVED: 0,
+    Status.VERIFIED_BOUNDED: SUCCESS_EXIT_CODE,
+    Status.PROVED: SUCCESS_EXIT_CODE,
     Status.COMPILE_ERROR: 10,
     Status.STATIC_ANALYSIS_WARNING: 11,
     Status.RUNTIME_TEST_FAILED: 12,
@@ -103,13 +80,35 @@ EXIT_CODES: dict[Status, int] = {
 EXIT_USAGE = 2
 EXIT_INTERNAL = 70
 
+_WORKFLOW_STATUSES_RANKED_AFTER_SPEC_UNAPPROVED: tuple[Status, ...] = (Status.REPAIR_EXHAUSTED,)
+_RANK_ORDER: tuple[Status, ...] = (
+    PRECEDENCE_WORST_FIRST[0],
+    *_WORKFLOW_STATUSES_RANKED_AFTER_SPEC_UNAPPROVED,
+    *PRECEDENCE_WORST_FIRST[1:],
+)
 
-_RANK_ORDER: tuple[Status, ...] = (PRECEDENCE[0], Status.REPAIR_EXHAUSTED) + PRECEDENCE[1:]
+STATUS_OF_FAILED_STAGE: dict[str, Status] = {
+    "spec": Status.SPEC_UNAPPROVED,
+    "compile": Status.COMPILE_ERROR,
+    "static_analysis": Status.STATIC_ANALYSIS_WARNING,
+    "integrity": Status.STATIC_ANALYSIS_WARNING,
+    "sanitizer": Status.RUNTIME_TEST_FAILED,
+    "cbmc": Status.COUNTEREXAMPLE_FOUND,
+    "wp": Status.COUNTEREXAMPLE_FOUND,
+    "lean": Status.RUNTIME_TEST_FAILED,
+    "policy": Status.TOOL_ERROR,
+}
+
+_STATUS_OF_UNDECIDED_OUTCOME: dict[Outcome, Status] = {
+    Outcome.ERROR: Status.TOOL_ERROR,
+    Outcome.TIMEOUT: Status.TIMEOUT,
+    Outcome.INCONCLUSIVE: Status.UNKNOWN,
+    Outcome.SKIPPED: Status.UNKNOWN,
+}
 
 
 def rank(status: Status) -> int:
-    """Lower rank = worse.  REPAIR_EXHAUSTED is a workflow-level status ranked
-    just after SPEC_UNAPPROVED so it can never be mistaken for success."""
+    """Lower rank = worse; REPAIR_EXHAUSTED ranks right after SPEC_UNAPPROVED, so it is never mistaken for success."""
     return _RANK_ORDER.index(status)
 
 
@@ -129,34 +128,9 @@ def exit_code(status: Status) -> int:
 
 
 def outcome_to_status(stage: str, outcome: Outcome) -> Status | None:
-    """Map a stage outcome to the global status it contributes.
-
-    Returns ``None`` for PASS (a passing non-formal stage contributes nothing; a
-    passing formal stage is handled by the controller).
-    """
+    """Global status a stage outcome contributes; None for PASS (the controller handles passing formal stages)."""
     if outcome is Outcome.PASS:
         return None
-    if outcome is Outcome.ERROR:
-        return Status.TOOL_ERROR
-    if outcome is Outcome.TIMEOUT:
-        return Status.TIMEOUT
-    if outcome in (Outcome.INCONCLUSIVE, Outcome.SKIPPED):
-        return Status.UNKNOWN
-    # FAIL
-    return {
-        "spec": Status.SPEC_UNAPPROVED,
-        "compile": Status.COMPILE_ERROR,
-        "static_analysis": Status.STATIC_ANALYSIS_WARNING,
-        # The mandatory source-integrity gate is a static check of the code
-        # under test (verification-hostile constructs, symbol overrides, ...).
-        "integrity": Status.STATIC_ANALYSIS_WARNING,
-        "sanitizer": Status.RUNTIME_TEST_FAILED,
-        "cbmc": Status.COUNTEREXAMPLE_FOUND,
-        # WP never "disproves" (unproved goals are INCONCLUSIVE); a FAIL means a
-        # goal was refuted by a prover / an RTE guard is definitely violated.
-        "wp": Status.COUNTEREXAMPLE_FOUND,
-        # Lean FAIL = the C implementation disagrees with the proved model on a
-        # concrete test vector.
-        "lean": Status.RUNTIME_TEST_FAILED,
-        "policy": Status.TOOL_ERROR,
-    }.get(stage, Status.UNKNOWN)
+    if outcome in _STATUS_OF_UNDECIDED_OUTCOME:
+        return _STATUS_OF_UNDECIDED_OUTCOME[outcome]
+    return STATUS_OF_FAILED_STAGE.get(stage, Status.UNKNOWN)

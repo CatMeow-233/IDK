@@ -1,25 +1,4 @@
-"""Provider for any OpenAI-compatible ``/chat/completions`` endpoint.
-
-Implemented with :mod:`urllib.request` only, so Lean C has no vendor SDK
-dependency and works with OpenAI, Azure-style gateways, vLLM, llama.cpp,
-Ollama's OpenAI endpoint, LiteLLM, ...
-
-Security properties (tested):
-
-* the API key is sent only in the ``Authorization: Bearer`` header; it is never
-  part of an exception message, log record, ``repr`` or transcript (every such
-  text is passed through :func:`leanc.foundation.redact.redact` with the key as an
-  extra secret);
-* HTTP redirects are not followed (urllib would otherwise re-send the
-  Authorization header to whatever host the redirect names);
-* plain ``http://`` is refused for non-loopback hosts when a key is configured,
-  unless explicitly allowed;
-* response bodies are size-capped.
-
-Transient failures (HTTP 408/409/429/5xx, connection errors, timeouts) are
-retried with exponential backoff (honouring ``Retry-After``); everything else
-raises :class:`~leanc.foundation.errors.ProviderError` immediately.
-"""
+"""Provider for any OpenAI-compatible ``/chat/completions`` endpoint, built on :mod:`urllib` (no vendor SDK)."""
 
 from __future__ import annotations
 
@@ -28,6 +7,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import ssl
 import time
 import urllib.error
@@ -51,30 +31,36 @@ from leanc.llm.base import (
     SpecDraftRequest,
 )
 from leanc.llm.parsing import excerpt, parse_code_response, parse_repair_response, parse_spec_draft_response
-from leanc.llm.prompts import (
-    DEFAULT_LIMITS,
-    Prompt,
-    PromptLimits,
-    build_analyze_prompt,
-    build_codegen_prompt,
-    build_explain_prompt,
-    build_repair_prompt,
-    build_spec_draft_prompt,
-)
+from leanc.llm.prompts.analysis import build_analyze_prompt, build_explain_prompt
+from leanc.llm.prompts.codegen import build_codegen_prompt
+from leanc.llm.prompts.repair import build_repair_prompt
+from leanc.llm.prompts.spec_draft import build_spec_draft_prompt
+from leanc.llm.prompts.text import DEFAULT_LIMITS, Prompt, PromptLimits
 from leanc.specs.model import Spec
 
 log = logging.getLogger("leanc.llm")
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_ERROR_BODY_BYTES = 64 * 1024
+ERROR_DETAIL_CHARS = 300
+MAX_RETRIES_LIMIT = 10
 RETRYABLE_STATUS = frozenset({408, 409, 429})
-_TRUE = {"1", "true", "yes", "on"}
+AUTH_FAILURE_STATUS = frozenset({401, 403})
+NOT_FOUND_STATUS = 404
+FIRST_SERVER_ERROR_STATUS = 500
+FINISH_REASON_CUT_OFF = "length"
+MIN_KEY_CHARS_SCRUBBED_VERBATIM = 4
+
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+_UNSET_TEMPERATURE_VALUES = ("default", "none")
+_PROXY_MODES = ("env", "none")
+_DELAY_SECONDS_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+_CUT_OFF_ANSWER_HINT = " (finish_reason=length: the answer was cut off; raise LEANC_LLM_MAX_TOKENS or reduce context)"
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Turn every redirect into an HTTPError instead of following it."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401 - urllib API
+class _RedirectsBecomeHTTPErrors(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -98,15 +84,107 @@ def _is_loopback(host: str | None) -> bool:
 def _parse_retry_after(value: str | None) -> float | None:
     if not value:
         return None
+    text = value.strip()
+    if not _DELAY_SECONDS_RE.fullmatch(text):
+        return None
+    seconds = float(text)
+    return seconds if seconds >= 0 else None
+
+
+def _is_transient_status(status: int) -> bool:
+    return status in RETRYABLE_STATUS or status >= FIRST_SERVER_ERROR_STATUS
+
+
+def _is_redirect_status(status: int) -> bool:
+    return 300 <= status < 400
+
+
+def _read_error_body(exc: urllib.error.HTTPError) -> str:
     try:
-        secs = float(value.strip())
+        return exc.read(MAX_ERROR_BODY_BYTES).decode("utf-8", "replace")
+    except (OSError, http.client.HTTPException):
+        return ""
+    finally:
+        exc.close()
+
+
+def _error_message(body: str) -> str:
+    try:
+        data = json.loads(body)
     except ValueError:
-        return None  # HTTP-date form: fall back to exponential backoff
-    return secs if secs >= 0 else None
+        return body
+    if not isinstance(data, dict):
+        return body
+    err = data.get("error", data)
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("code") or err)
+    return str(err)
+
+
+def _text_of_content_parts(parts: list) -> str:
+    return "".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text")
+
+
+def _env_reader(env: Mapping[str, str]) -> Callable[[str], str]:
+    def get(name: str) -> str:
+        return (env.get(name) or "").strip()
+
+    return get
+
+
+def _env_timeout(raw: str) -> float:
+    message = f"LEANC_LLM_TIMEOUT must be a positive number of seconds, got {raw!r}"
+    try:
+        timeout = float(raw)
+    except ValueError:
+        raise ProviderError(message) from None
+    if not timeout > 0:
+        raise ProviderError(message)
+    return timeout
+
+
+def _env_temperature(raw: str) -> float | None:
+    if raw.lower() in _UNSET_TEMPERATURE_VALUES:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise ProviderError(f"LEANC_LLM_TEMPERATURE must be a number or 'default', got {raw!r}") from None
+
+
+def _optional_settings_from_env(get: Callable[[str], str]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if get("LEANC_LLM_TIMEOUT"):
+        kwargs["timeout_s"] = _env_timeout(get("LEANC_LLM_TIMEOUT"))
+    if get("LEANC_LLM_MAX_RETRIES"):
+        raw = get("LEANC_LLM_MAX_RETRIES")
+        if not raw.isdigit() or int(raw) > MAX_RETRIES_LIMIT:
+            raise ProviderError(f"LEANC_LLM_MAX_RETRIES must be an integer in 0..{MAX_RETRIES_LIMIT}, got {raw!r}")
+        kwargs["max_retries"] = int(raw)
+    if get("LEANC_LLM_MAX_TOKENS"):
+        raw = get("LEANC_LLM_MAX_TOKENS")
+        if not raw.isdigit() or int(raw) <= 0:
+            raise ProviderError(f"LEANC_LLM_MAX_TOKENS must be a positive integer, got {raw!r}")
+        kwargs["max_tokens"] = int(raw)
+    if get("LEANC_LLM_TEMPERATURE"):
+        kwargs["temperature"] = _env_temperature(get("LEANC_LLM_TEMPERATURE"))
+    if get("LEANC_LLM_PROXY"):
+        raw = get("LEANC_LLM_PROXY").lower()
+        if raw not in _PROXY_MODES:
+            raise ProviderError(f"LEANC_LLM_PROXY must be 'env' or 'none', got {raw!r}")
+        kwargs["proxy"] = raw
+    kwargs["json_mode"] = get("LEANC_LLM_JSON_MODE").lower() in _TRUTHY_ENV_VALUES
+    kwargs["allow_insecure_http"] = get("LEANC_ALLOW_INSECURE_HTTP").lower() in _TRUTHY_ENV_VALUES
+    return kwargs
+
+
+def _is_default_openai_host(base_url: str) -> bool:
+    host = urllib.parse.urlsplit(base_url).hostname or ""
+    return host == urllib.parse.urlsplit(DEFAULT_BASE_URL).hostname
 
 
 class OpenAICompatProvider(LLMProvider):
-    """Chat-completions client.  See module docstring for the guarantees."""
+    """Chat-completions client that never leaks its key, follows no redirects and caps response sizes."""
 
     def __init__(
         self,
@@ -134,9 +212,9 @@ class OpenAICompatProvider(LLMProvider):
         self.base_url = self._check_base_url(base_url, allow_insecure_http)
         if not (isinstance(timeout_s, (int, float)) and timeout_s > 0):
             raise ProviderError(f"LLM timeout must be a positive number of seconds, got {timeout_s!r}")
-        if not (isinstance(max_retries, int) and 0 <= max_retries <= 10):
-            raise ProviderError(f"max_retries must be an integer in 0..10, got {max_retries!r}")
-        if proxy not in ("env", "none"):
+        if not (isinstance(max_retries, int) and 0 <= max_retries <= MAX_RETRIES_LIMIT):
+            raise ProviderError(f"max_retries must be an integer in 0..{MAX_RETRIES_LIMIT}, got {max_retries!r}")
+        if proxy not in _PROXY_MODES:
             raise ProviderError(f"proxy must be 'env' or 'none', got {proxy!r}")
         if max_tokens is not None and (not isinstance(max_tokens, int) or max_tokens <= 0):
             raise ProviderError(f"max_tokens must be a positive integer, got {max_tokens!r}")
@@ -153,13 +231,12 @@ class OpenAICompatProvider(LLMProvider):
         self._sleep = sleep
         self._seq = 0
         self.last_transcript: Path | None = None
-        handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+        handlers: list[urllib.request.BaseHandler] = [_RedirectsBecomeHTTPErrors()]
         if proxy == "none":
             handlers.append(urllib.request.ProxyHandler({}))
         self._opener = urllib.request.build_opener(*handlers)
         self.info = ProviderInfo(name="openai-compatible", model=self.model, real_llm=True)
 
-    # ------------------------------------------------------------------ construction helpers
     def _check_base_url(self, base_url: str, allow_insecure_http: bool) -> str:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ProviderError("LLM base URL is empty (set LEANC_BASE_URL, e.g. https://api.openai.com/v1)")
@@ -186,19 +263,8 @@ class OpenAICompatProvider(LLMProvider):
         environ: Mapping[str, str] | None = None,
         **overrides: Any,
     ) -> OpenAICompatProvider:
-        """Configure from environment variables.
-
-        ``LEANC_API_KEY`` (fallback ``OPENAI_API_KEY``), ``LEANC_BASE_URL``
-        (default ``https://api.openai.com/v1``), ``LEANC_MODEL`` (required),
-        ``LEANC_LLM_TIMEOUT`` (seconds), ``LEANC_LLM_JSON_MODE=1``, and the
-        optional ``LEANC_LLM_MAX_RETRIES``, ``LEANC_LLM_MAX_TOKENS``,
-        ``LEANC_LLM_TEMPERATURE`` (number, or ``default`` to omit it),
-        ``LEANC_LLM_PROXY`` (``env``/``none``), ``LEANC_ALLOW_INSECURE_HTTP=1``."""
-        env = os.environ if environ is None else environ
-
-        def get(name: str) -> str:
-            return (env.get(name) or "").strip()
-
+        """Configure from the LEANC_* environment variables (LEANC_MODEL is required)."""
+        get = _env_reader(os.environ if environ is None else environ)
         model = get("LEANC_MODEL")
         if not model:
             raise ProviderError(
@@ -208,85 +274,52 @@ class OpenAICompatProvider(LLMProvider):
             )
         api_key = get("LEANC_API_KEY") or get("OPENAI_API_KEY")
         base_url = get("LEANC_BASE_URL") or DEFAULT_BASE_URL
-        host = urllib.parse.urlsplit(base_url).hostname or ""
-        if not api_key and host == urllib.parse.urlsplit(DEFAULT_BASE_URL).hostname:
+        targets_openai = _is_default_openai_host(base_url)
+        if not api_key and targets_openai:
             raise ProviderError(
                 "no API key: export LEANC_API_KEY (or OPENAI_API_KEY) for the OpenAI API, or point "
                 "LEANC_BASE_URL at a local OpenAI-compatible server that needs no key"
             )
-        kwargs: dict[str, Any] = {}
-        if get("LEANC_LLM_TIMEOUT"):
-            raw = get("LEANC_LLM_TIMEOUT")
-            try:
-                timeout = float(raw)
-            except ValueError:
-                timeout = -1.0
-            if not timeout > 0:
-                raise ProviderError(f"LEANC_LLM_TIMEOUT must be a positive number of seconds, got {raw!r}")
-            kwargs["timeout_s"] = timeout
-        if get("LEANC_LLM_MAX_RETRIES"):
-            raw = get("LEANC_LLM_MAX_RETRIES")
-            if not raw.isdigit() or int(raw) > 10:
-                raise ProviderError(f"LEANC_LLM_MAX_RETRIES must be an integer in 0..10, got {raw!r}")
-            kwargs["max_retries"] = int(raw)
-        if get("LEANC_LLM_MAX_TOKENS"):
-            raw = get("LEANC_LLM_MAX_TOKENS")
-            if not raw.isdigit() or int(raw) <= 0:
-                raise ProviderError(f"LEANC_LLM_MAX_TOKENS must be a positive integer, got {raw!r}")
-            kwargs["max_tokens"] = int(raw)
-        if get("LEANC_LLM_TEMPERATURE"):
-            raw = get("LEANC_LLM_TEMPERATURE")
-            if raw.lower() in ("default", "none"):
-                kwargs["temperature"] = None
-            else:
-                try:
-                    kwargs["temperature"] = float(raw)
-                except ValueError:
-                    raise ProviderError(f"LEANC_LLM_TEMPERATURE must be a number or 'default', got {raw!r}") from None
-        if get("LEANC_LLM_PROXY"):
-            raw = get("LEANC_LLM_PROXY").lower()
-            if raw not in ("env", "none"):
-                raise ProviderError(f"LEANC_LLM_PROXY must be 'env' or 'none', got {raw!r}")
-            kwargs["proxy"] = raw
-        kwargs["json_mode"] = get("LEANC_LLM_JSON_MODE").lower() in _TRUE
-        kwargs["allow_insecure_http"] = get("LEANC_ALLOW_INSECURE_HTTP").lower() in _TRUE
+        kwargs = _optional_settings_from_env(get)
         kwargs.update(overrides)
         return cls(base_url, api_key, model, transcript_dir=transcript_dir, **kwargs)
 
     def __repr__(self) -> str:
         return f"<OpenAICompatProvider base_url={self.base_url!r} model={self.model!r}>"
 
-    # ------------------------------------------------------------------ redaction / transcripts
     def _redact(self, text: str) -> str:
         if not text:
             return text
         key = getattr(self, "_api_key", "")
-        if key and len(key) >= 4:  # redact() itself ignores very short values
+        if key and len(key) >= MIN_KEY_CHARS_SCRUBBED_VERBATIM:
             text = text.replace(key, REDACTED)
         return redact(text, extra_secrets=[key] if key else None)
+
+    def _next_transcript_path(self, purpose: str) -> Path:
+        while True:
+            self._seq += 1
+            path = self.transcript_dir / f"{self._seq:03d}-{purpose}.json"
+            if not path.exists():
+                return path
 
     def _write_transcript(self, purpose: str, record: dict[str, Any]) -> None:
         if self.transcript_dir is None:
             return
+        text = self._redact(json.dumps(record, indent=2, ensure_ascii=False, default=str)) + "\n"
         try:
             self.transcript_dir.mkdir(parents=True, exist_ok=True)
-            while True:
-                self._seq += 1
-                path = self.transcript_dir / f"{self._seq:03d}-{purpose}.json"
-                if not path.exists():
-                    break
-            text = json.dumps(record, indent=2, ensure_ascii=False, default=str)
-            path.write_text(self._redact(text) + "\n", encoding="utf-8")
-            self.last_transcript = path
-        except OSError as exc:  # a transcript problem must not hide the real result
+            path = self._next_transcript_path(purpose)
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
             log.warning("could not write LLM transcript: %s", exc)
+            return
+        self.last_transcript = path
 
-    # ------------------------------------------------------------------ HTTP
+    def _messages_without_own_key(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [{**m, "content": self._redact(m.get("content", ""))} for m in messages]
+
     def _request_body(self, messages: list[dict[str, str]], want_json: bool) -> dict[str, Any]:
-        # Prompts are already redacted by the builders, but only this object
-        # knows the key it was constructed with: scrub it from the content too.
-        messages = [{**m, "content": self._redact(m.get("content", ""))} for m in messages]
-        body: dict[str, Any] = {"model": self.model, "messages": messages}
+        body: dict[str, Any] = {"model": self.model, "messages": self._messages_without_own_key(messages)}
         if self.temperature is not None:
             body["temperature"] = self.temperature
         if self.max_tokens is not None:
@@ -305,46 +338,42 @@ class OpenAICompatProvider(LLMProvider):
             h["Authorization"] = f"Bearer {self._api_key}"
         return h
 
+    def _http_error(self, exc: urllib.error.HTTPError) -> _Retryable | ProviderError:
+        status = exc.code
+        detail = self._error_detail(_read_error_body(exc))
+        if _is_transient_status(status):
+            retry_after = _parse_retry_after(exc.headers.get("Retry-After") if exc.headers else None)
+            return _Retryable(f"HTTP {status}{detail}", retry_after=retry_after)
+        if _is_redirect_status(status):
+            location = exc.headers.get("Location", "?") if exc.headers else "?"
+            return ProviderError(
+                f"LLM endpoint answered with a redirect (HTTP {status} to {self._redact(location)}); redirects are not "
+                "followed - set LEANC_BASE_URL to the final URL"
+            )
+        hint = ""
+        if status in AUTH_FAILURE_STATUS:
+            hint = " - check LEANC_API_KEY / OPENAI_API_KEY and that the key may use this model"
+        elif status == NOT_FOUND_STATUS:
+            hint = f" - check LEANC_BASE_URL ({self.base_url}) and LEANC_MODEL ({self.model})"
+        return ProviderError(f"LLM request failed: HTTP {status}{detail}{hint}")
+
+    def _connection_error(self, reason: object) -> _Retryable | ProviderError:
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return ProviderError(f"TLS certificate verification failed for {self.base_url}: {reason}")
+        if isinstance(reason, TimeoutError):
+            return _Retryable(f"timed out after {self.timeout_s:g}s")
+        return _Retryable(f"connection error: {reason}")
+
     def _attempt(self, url: str, data: bytes) -> tuple[int, str]:
-        """One HTTP round trip.  Returns (status, body text) for 2xx; raises
-        :class:`_Retryable` for transient problems, ProviderError otherwise."""
         req = urllib.request.Request(url, data=data, method="POST", headers=self._headers())
         try:
             with self._opener.open(req, timeout=self.timeout_s) as resp:
                 raw = resp.read(MAX_RESPONSE_BYTES + 1)
                 status = getattr(resp, "status", 200)
         except urllib.error.HTTPError as exc:
-            status = exc.code
-            try:
-                err_body = exc.read(64 * 1024).decode("utf-8", "replace")
-            except Exception:
-                err_body = ""
-            finally:
-                exc.close()
-            detail = self._error_detail(err_body)
-            if status in RETRYABLE_STATUS or status >= 500:
-                raise _Retryable(
-                    f"HTTP {status}{detail}", retry_after=_parse_retry_after(exc.headers.get("Retry-After") if exc.headers else None)
-                ) from None
-            if 300 <= status < 400:
-                loc = exc.headers.get("Location", "?") if exc.headers else "?"
-                raise ProviderError(
-                    f"LLM endpoint answered with a redirect (HTTP {status} to {self._redact(loc)}); redirects are not "
-                    "followed - set LEANC_BASE_URL to the final URL"
-                ) from None
-            hint = ""
-            if status in (401, 403):
-                hint = " - check LEANC_API_KEY / OPENAI_API_KEY and that the key may use this model"
-            elif status == 404:
-                hint = f" - check LEANC_BASE_URL ({self.base_url}) and LEANC_MODEL ({self.model})"
-            raise ProviderError(f"LLM request failed: HTTP {status}{detail}{hint}") from None
+            raise self._http_error(exc) from None
         except urllib.error.URLError as exc:
-            reason = exc.reason
-            if isinstance(reason, ssl.SSLCertVerificationError):
-                raise ProviderError(f"TLS certificate verification failed for {self.base_url}: {reason}") from None
-            if isinstance(reason, TimeoutError):
-                raise _Retryable(f"timed out after {self.timeout_s:g}s") from None
-            raise _Retryable(f"connection error: {reason}") from None
+            raise self._connection_error(exc.reason) from None
         except TimeoutError:
             raise _Retryable(f"timed out after {self.timeout_s:g}s") from None
         except (http.client.HTTPException, ConnectionError) as exc:
@@ -356,21 +385,44 @@ class OpenAICompatProvider(LLMProvider):
     def _error_detail(self, body: str) -> str:
         if not body:
             return ""
-        msg = body
-        try:
-            data = json.loads(body)
-            if isinstance(data, dict):
-                err = data.get("error", data)
-                if isinstance(err, dict):
-                    msg = str(err.get("message") or err.get("code") or err)
-                else:
-                    msg = str(err)
-        except ValueError:
-            pass
-        return f": {excerpt(self._redact(msg), 300)}"
+        return f": {excerpt(self._redact(_error_message(body)), ERROR_DETAIL_CHARS)}"
+
+    def _retry_delay(self, attempt: int, retry_after: float | None) -> float:
+        delay = retry_after if retry_after is not None else self.backoff_s * (2 ** (attempt - 1))
+        return min(delay, self.max_backoff_s)
+
+    def _send_with_retries(self, url: str, data: bytes, purpose: str, record: dict[str, Any]) -> tuple[str, str | None]:
+        attempts = self.max_retries + 1
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            started = time.monotonic()
+            try:
+                status, text = self._attempt(url, data)
+            except _Retryable as exc:
+                last_error = self._redact(str(exc))
+                record["attempts"].append(
+                    {"attempt": attempt, "error": last_error, "duration_s": round(time.monotonic() - started, 3)}
+                )
+                if attempt == attempts:
+                    break
+                delay = self._retry_delay(attempt, exc.retry_after)
+                log.info(
+                    "LLM %s attempt %d/%d failed (%s); retrying in %.1fs", purpose, attempt, attempts, last_error, delay
+                )
+                if delay > 0:
+                    self._sleep(delay)
+                continue
+            record["attempts"].append(
+                {"attempt": attempt, "status": status, "duration_s": round(time.monotonic() - started, 3)}
+            )
+            record["response"] = {"status": status, "body": text}
+            content, finish = self._extract_content(text)
+            record["response"]["content"] = content
+            record["response"]["finish_reason"] = finish
+            return content, finish
+        raise ProviderError(f"LLM request to {url} failed after {attempts} attempt(s): {last_error}")
 
     def _chat(self, prompt: Prompt, purpose: str, *, want_json: bool) -> tuple[str, str | None]:
-        """Send one chat request (with retries).  Returns (content, finish_reason)."""
         url = f"{self.base_url}/chat/completions"
         body = self._request_body(prompt.messages(), want_json)
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -383,44 +435,15 @@ class OpenAICompatProvider(LLMProvider):
             "request": body,
             "attempts": [],
         }
-        t0 = time.monotonic()
-        attempts = self.max_retries + 1
-        last_error = ""
+        started = time.monotonic()
         try:
-            for n in range(1, attempts + 1):
-                a0 = time.monotonic()
-                try:
-                    status, text = self._attempt(url, data)
-                except _Retryable as exc:
-                    last_error = self._redact(str(exc))
-                    record["attempts"].append(
-                        {"attempt": n, "error": last_error, "duration_s": round(time.monotonic() - a0, 3)}
-                    )
-                    if n == attempts:
-                        break
-                    delay = self.backoff_s * (2 ** (n - 1))
-                    if exc.retry_after is not None:
-                        delay = exc.retry_after
-                    delay = min(delay, self.max_backoff_s)
-                    log.info("LLM %s attempt %d/%d failed (%s); retrying in %.1fs", purpose, n, attempts, last_error, delay)
-                    if delay > 0:
-                        self._sleep(delay)
-                    continue
-                record["attempts"].append({"attempt": n, "status": status, "duration_s": round(time.monotonic() - a0, 3)})
-                record["response"] = {"status": status, "body": text}
-                content, finish = self._extract_content(text)
-                record["response"]["content"] = content
-                record["response"]["finish_reason"] = finish
-                return content, finish
-            raise ProviderError(
-                f"LLM request to {url} failed after {attempts} attempt(s): {last_error}"
-            )
+            return self._send_with_retries(url, data, purpose, record)
         except ProviderError as exc:
             msg = self._redact(str(exc))
             record["error"] = msg
             raise ProviderError(msg) from None
         finally:
-            record["duration_s"] = round(time.monotonic() - t0, 3)
+            record["duration_s"] = round(time.monotonic() - started, 3)
             self._write_transcript(purpose, record)
 
     def _extract_content(self, text: str) -> tuple[str, str | None]:
@@ -442,8 +465,8 @@ class OpenAICompatProvider(LLMProvider):
         if not isinstance(message, dict):
             raise ProviderError("LLM response choice has no message")
         content = message.get("content")
-        if isinstance(content, list):  # content-parts form
-            content = "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+        if isinstance(content, list):
+            content = _text_of_content_parts(content)
         if content is None or (isinstance(content, str) and not content.strip()):
             refusal = message.get("refusal")
             if refusal:
@@ -459,12 +482,9 @@ class OpenAICompatProvider(LLMProvider):
         try:
             return parser(content)
         except ProviderError as exc:
-            hint = ""
-            if finish == "length":
-                hint = " (finish_reason=length: the answer was cut off; raise LEANC_LLM_MAX_TOKENS or reduce context)"
+            hint = _CUT_OFF_ANSWER_HINT if finish == FINISH_REASON_CUT_OFF else ""
             raise ProviderError(self._redact(f"{purpose}: malformed model answer: {exc}{hint}")) from None
 
-    # ------------------------------------------------------------------ provider API
     def generate_spec_draft(self, req: SpecDraftRequest) -> SpecDraft:
         draft = self._complete(build_spec_draft_prompt(req, self.limits), "spec-draft", parse_spec_draft_response)
         draft.raw_response = self._redact(draft.raw_response)

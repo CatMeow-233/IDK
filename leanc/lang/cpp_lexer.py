@@ -8,8 +8,7 @@ from leanc.lang.c_lexer import CSource
 
 __all__ = ["CppSource", "cpp_normalize"]
 
-# One pattern for the tokens that matter to the normaliser, tried in order.
-_NORM_RE = re.compile(
+_NORMALISER_TOKENS_IN_PRIORITY_ORDER_RE = re.compile(
     r"(?P<lc>//[^\n]*)"
     r"|(?P<bc>/\*.*?(?:\*/|\Z))"
     r'|(?P<raw>(?<![\w])(?:u8|u|U|L)?R")'
@@ -22,55 +21,59 @@ _NORM_RE = re.compile(
 _RAW_DELIM_RE = re.compile(r'[^\s()\\"]{0,16}\(')
 
 
-def cpp_normalize(text: str) -> str:
-    """Rewrite C++-only lexical forms so the C lexer of
-    :class:`~leanc.lang.c_lexer.CSource` reads the file correctly, keeping
-    every offset and line break:
+def _valid_raw_string_end(text: str, delimiter_start: int) -> int | None:
+    delimiter_match = _RAW_DELIM_RE.match(text, delimiter_start)
+    if delimiter_match is None:
+        return None
+    closing = ")" + delimiter_match.group()[:-1] + '"'
+    close = text.find(closing, delimiter_match.end())
+    return len(text) if close < 0 else close + len(closing)
 
-    * digit separators (``1'000'000``) become ``0`` digits (a ``'`` would
-      otherwise open a character literal and blank the rest of the line);
-    * raw string literals (``R"x(...)x"``, possibly multi-line) become ``""``
-      followed by blanks (the C lexer would end them at the first newline and
-      treat the next line as a string, which could hide code).
-    """
+
+def _raw_string_as_empty_c_string(literal: str) -> str:
+    if len(literal) < 2:
+        return " " * len(literal)
+    return '""' + re.sub(r"[^\n]", " ", literal[2:])
+
+
+def _digit_separators_as_zeros(number: str) -> str:
+    return number.replace("'", "0")
+
+
+def cpp_normalize(text: str) -> str:
+    """Rewrite C++-only digit separators and raw strings into C-lexable text, keeping every offset and line break."""
     out: list[str] = []
     pos = 0
     n = len(text)
     while pos < n:
-        m = _NORM_RE.search(text, pos)
-        if m is None:
+        match = _NORMALISER_TOKENS_IN_PRIORITY_ORDER_RE.search(text, pos)
+        if match is None:
             break
-        kind = m.lastgroup
+        kind = match.lastgroup
         if kind == "raw":
-            start = m.start()
-            dm = _RAW_DELIM_RE.match(text, m.end())
-            if dm is None:  # not a valid raw string: leave it to the C lexer
-                out.append(text[pos : m.end()])
-                pos = m.end()
+            end = _valid_raw_string_end(text, match.end())
+            if end is None:
+                out.append(text[pos : match.end()])
+                pos = match.end()
                 continue
-            delim = dm.group()[:-1]
-            close = text.find(")" + delim + '"', dm.end())
-            end = n if close < 0 else close + len(delim) + 2
-            out.append(text[pos:start])
-            lit = text[start:end]
-            out.append('""' + re.sub(r"[^\n]", " ", lit[2:]) if len(lit) >= 2 else " " * len(lit))
+            out.append(text[pos : match.start()])
+            out.append(_raw_string_as_empty_c_string(text[match.start() : end]))
             pos = end
             continue
-        out.append(text[pos : m.start()])
-        tok = m.group()
-        if kind == "num" and "'" in tok:
-            tok = tok.replace("'", "0")
-        out.append(tok)
-        pos = m.end()
+        out.append(text[pos : match.start()])
+        token = match.group()
+        if kind == "num" and "'" in token:
+            token = _digit_separators_as_zeros(token)
+        out.append(token)
+        pos = match.end()
     out.append(text[pos:])
-    res = "".join(out)
-    assert len(res) == len(text)
-    return res
+    normalised = "".join(out)
+    assert len(normalised) == len(text)
+    return normalised
 
 
 class CppSource(CSource):
-    """:class:`CSource` views of a C++ file (after :func:`cpp_normalize`);
-    ``raw`` stays the original text, so reported lines show the real code."""
+    """:class:`CSource` views of a C++ file after :func:`cpp_normalize`; ``raw`` stays the original text."""
 
     def __init__(self, raw: str):
         super().__init__(cpp_normalize(raw))

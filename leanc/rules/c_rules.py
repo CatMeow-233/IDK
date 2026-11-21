@@ -1,23 +1,75 @@
-"""Pure C rules of the source-integrity gate: source text (A), preprocessed text (B), object symbols (C)."""
+"""C rules of the source-integrity gate: source text, macro-expanded text and object symbols."""
 
 from __future__ import annotations
 
-import posixpath
 import re
+from typing import NamedTuple
 
 from leanc.foundation.models import PolicyViolation
 from leanc.lang.c_lexer import CSource
 from leanc.rules.acsl import ACSL_RULES, acsl_violations
+from leanc.rules.c_names import (
+    ALLOWED_IMPORTS,
+    COMPILER_RT_ARITHMETIC_HELPER_RE,
+    C_KEYWORDS,
+    DANGEROUS_NAMES,
+    LIBC_NAMES,
+    TERMINATION_NAMES,
+    forbidden_definition,
+    is_dangerous_import,
+    is_verifier_hook,
+)
 from leanc.rules.definitions import defined_functions
+from leanc.rules.findings import Finding, Problem, first_mention_line, to_violations, violation
+from leanc.rules.preprocessor import (
+    AFTER_EXPANSION,
+    C_HEADER_SUFFIX,
+    MACRO_DEFINITION_DIRECTIVES,
+    TOOL_DEPENDENT_PREDEFINED_MACRO_RE,
+    UNCHECKED_DIRECTIVES,
+    Directive,
+    assertion_predicate_findings,
+    computed_include_findings,
+    defined_macro,
+    defined_macro_names,
+    divergent_macro_findings,
+    expanded_pragma_findings,
+    expanded_view,
+    identifiers,
+    include_path_problem,
+    included_header,
+    irregular_directive_findings,
+    is_irregular,
+    is_tool_specific_macro,
+    normalized_header_path,
+    parse_directives,
+    pragma_directive_findings,
+    pragma_operator_findings,
+    redefinition_findings,
+    tool_specific_identifiers,
+)
+from leanc.rules.symbol_types import (
+    INDIRECT_FUNCTION_TYPES,
+    UNDEFINED_TYPES,
+    WEAK_DEFINITION_TYPES,
+    WEAK_UNDEFINED_TYPES,
+    has_external_linkage,
+)
 from leanc.specs.model import Spec
 
 __all__ = [
-    "ALLOWED_IMPORTS",
+    "CBMC_TERMINATION_CONSEQUENCE",
     "RULES",
+    "SECTION_RE",
+    "CHeaderFacts",
+    "TokenRule",
+    "c_header_facts",
     "c_source_violations",
     "check_object_symbols",
+    "parse_nm",
     "preprocessed_violations",
     "section_violations",
+    "token_findings",
 ]
 
 RULES: dict[str, str] = {
@@ -47,144 +99,62 @@ RULES: dict[str, str] = {
     "MISSING_TARGET": "no editable object defines the target function",
     "UNBOUNDED_STACK": "variable-length arrays or alloca: CBMC has no model of stack limits, so an input-sized "
     "stack allocation verifies while crashing natively",
+    **ACSL_RULES,
 }
-RULES.update(ACSL_RULES)  # ACSL trust rules for the wp gate (leanc.rules.acsl)
 
-# =========================================================================== name sets
-#: Library functions (and data) an editable object may import: CBMC ships a
-#: faithful model of each, and they behave the same natively.  Anything else
-#: is body-less for CBMC (= returns arbitrary values) and is rejected.
-ALLOWED_IMPORTS: frozenset[str] = frozenset(
-    {
-        "memcpy", "memmove", "memset", "memcmp", "memchr",
-        "strlen", "strnlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
-        "strchr", "strrchr", "strstr",
-        "malloc", "calloc", "realloc", "free",
-        "abs", "labs", "llabs",
-        "__assert_fail",
-        "printf", "fprintf", "puts", "putchar", "fputs", "fputc", "putc", "stdout", "stderr",
-        "__errno_location", "__stack_chk_fail", "__stack_chk_guard",
-    }
-)  # fmt: skip
+CBMC_TERMINATION_CONSEQUENCE = "CBMC prunes such paths and the native tests can report success"
+_PRAGMA_CONSEQUENCE = "pragmas can disable CBMC checks or diagnostics, or mark code as a system header"
+_DIVERGENCE_CONSEQUENCE = "make clang, the sanitizer build and CBMC see different code"
 
-#: compiler-rt helpers clang emits for wide arithmetic (e.g. __int128 division).
-_COMPILER_RT_RE = re.compile(
-    r"^__(?:u?div|u?mod|mul|mulo|ashl|ashr|lshr|neg|u?cmp|popcount|parity|clz|ctz|ffs|bswap)[a-z]*[23]$"
-)
 
-TERMINATION_NAMES: frozenset[str] = frozenset(
-    {
-        "exit", "_exit", "_Exit", "quick_exit", "abort", "atexit", "at_quick_exit", "on_exit",
-        "__cxa_atexit", "__cxa_finalize", "setjmp", "_setjmp", "__sigsetjmp", "sigsetjmp", "longjmp",
-        "_longjmp", "siglongjmp", "__longjmp_chk", "raise", "kill", "signal", "sigaction", "thrd_exit",
-        "pthread_exit", "__assert", "__assert_perror_fail",
-    }
-)  # fmt: skip
+class TokenRule(NamedTuple):
+    rule: str
+    pattern: re.Pattern[str]
+    what: str
 
-DANGEROUS_NAMES: frozenset[str] = frozenset(
-    {
-        "fork", "vfork", "clone", "clone3", "daemon", "execl", "execle", "execlp", "execv", "execve",
-        "execvp", "execvpe", "execveat", "fexecve", "posix_spawn", "posix_spawnp", "system", "popen",
-        "dlopen", "dlmopen", "dlsym", "dlvsym", "syscall", "ptrace", "socket", "socketpair", "connect",
-        "bind", "listen", "accept", "accept4", "sendto", "recvfrom", "prctl", "setrlimit", "mprotect",
-    }
-)  # fmt: skip
-_DANGEROUS_PREFIX_RE = re.compile(r"^(?:pthread_|thrd_|__(?:asan|lsan|ubsan|msan|tsan|hwasan|dfsan|sanitizer)_)")
 
-#: libc / CBMC-model names an editable file must never define or #define.
-LIBC_NAMES: frozenset[str] = (
-    ALLOWED_IMPORTS
-    | TERMINATION_NAMES
-    | DANGEROUS_NAMES
-    | frozenset(
-        {
-            "assert", "static_assert", "main", "aligned_alloc", "strdup", "strndup", "sprintf",
-            "snprintf", "vprintf", "vfprintf", "vsnprintf", "getchar", "fgets", "fopen", "fclose",
-            "fread", "fwrite", "read", "write", "open", "close", "rand", "srand", "time", "clock",
-            "sleep", "usleep", "atoi", "atol", "strtol", "strtoul", "strtoll", "strtoull", "qsort",
-            "bsearch", "errno", "offsetof", "NULL", "EOF", "true", "false", "bool", "isalpha",
-            "isdigit", "isspace", "toupper", "tolower", "div", "ldiv",
-        }
-    )
-)  # fmt: skip
-
-C_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
-        "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return",
-        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-        "volatile", "while", "alignas", "alignof", "typeof", "typeof_unqual", "constexpr", "nullptr",
-        "thread_local",
-    }
-)  # fmt: skip
-
-_RESERVED_RE = re.compile(r"^(?:__\w*|_[A-Z]\w*)$")
-_DIRECTIVE_IDENT_RE = re.compile(r"\b(__\w+|_[A-Z]\w*|LEANC_\w*|NDEBUG)\b")
-_STD_DIRECTIVES = frozenset(
-    {"include", "define", "undef", "if", "ifdef", "ifndef", "elif", "elifdef", "elifndef", "else", "endif",
-     "error", "warning", "pragma", "line"}
-)  # fmt: skip
-
-_WS = r"[^\S\n]*"
-_DIRECTIVE_RE = re.compile(rf"^{_WS}#{_WS}(\w*)(.*)$", re.MULTILINE)
-_HEADER_NAME_RE = re.compile(r'^(<[^>\n]*>|"[^"\n]*")')
-_DEFINE_HEAD_RE = re.compile(r"^\s*(\w+)(\([^)\n]*\))?(.*)$")
-_PLAIN_STRING_ARG_RE = re.compile(r'\(\s*"((?:[^"\\\n]|\\.)*)"\s*\)')
-
-# identifiers whose value differs between clang / optimiser levels / CBMC / runs
-_PREDEFINED_DIVERGENT_RE = re.compile(
-    r"\b(__clang\w*|__GNUC\w*|__OPTIMIZE\w*|__llvm\w*|__TIME__|__DATE__|__TIMESTAMP__|__COUNTER__|"
-    r"__INCLUDE_LEVEL__|__BASE_FILE__|__FILE_NAME__|__VERSION__|__SANITIZE_\w+|__has_\w+|__is_identifier|"
-    r"__NO_INLINE__|__STDC_HOSTED__)\b"
-)
-
-_TOKEN_RULES: list[tuple[str, re.Pattern[str], str]] = [
-    ("CPROVER_BUILTIN", re.compile(r"\b__CPROVER\w*"), "CBMC built-in"),
-    ("CPROVER_BUILTIN", re.compile(r"\b__VERIFIER_\w+"), "SV-COMP verifier built-in"),
-    ("CPROVER_BUILTIN", re.compile(r"\bnondet_\w+"), "harness-only nondeterministic input function"),
-    ("CPROVER_BUILTIN", re.compile(r"\bLEANC_\w+"), "Lean C harness macro"),
-    ("INLINE_ASM", re.compile(r"\b(?:asm|__asm__|__asm)\b"), "inline assembly"),
-    ("ASSUMPTION_INJECTION", re.compile(r"\b__builtin_(?:unreachable|assume\w*)(?=\s*\()"), "assumption built-in"),
-    ("ASSUMPTION_INJECTION", re.compile(r"\b__assume(?=\s*\()"), "assumption built-in"),
-    ("ASSUMPTION_INJECTION", re.compile(r"\b_Noreturn\b"), "_Noreturn function"),
-    ("ASSUMPTION_INJECTION", re.compile(r"(?<![\w.])(?<!->)\bunreachable(?=\s*\(\s*\))"), "C23 unreachable()"),
-    ("TERMINATION", re.compile(r"\b__builtin_(?:trap|debugtrap|abort)(?=\s*\()"), "trapping built-in"),
-    (
-        "TOOL_DIVERGENCE",
-        re.compile(r"\b__builtin_(?:constant_p|object_size|dynamic_object_size)(?=\s*\()"),
-        "optimisation-dependent built-in",
-    ),
-    (
-        "DANGEROUS_IMPORT",
-        re.compile(r"\b__(?:asan|lsan|ubsan|msan|tsan|hwasan|dfsan|sanitizer)_\w+"),
-        "sanitizer runtime interface",
-    ),
-    ("PRAGMA", re.compile(r"\b__pragma(?=\s*\()"), "MS-style __pragma"),
-    (
-        "UNBOUNDED_STACK",
-        re.compile(r"(?<![\w.])(?<!->)\b(?:alloca|__builtin_alloca\w*)(?=\s*\()"),
-        "stack allocation (alloca)",
-    ),
-    (
-        "TERMINATION",
-        re.compile(r"\b__builtin_(?:setjmp|longjmp|unwind_init|eh_return)(?=\s*\()"),
-        "non-local control-flow built-in",
-    ),
-    (
-        "TOOL_DIVERGENCE",
-        re.compile(r"\b__builtin_(?:frame_address|return_address|extract_return_addr|stack_save|stack_restore)"
-                   r"(?=\s*\()"),
-        "stack/frame introspection built-in",
-    ),
+_TOKEN_RULES: list[TokenRule] = [
+    TokenRule("CPROVER_BUILTIN", re.compile(r"\b__CPROVER\w*"), "CBMC built-in"),
+    TokenRule("CPROVER_BUILTIN", re.compile(r"\b__VERIFIER_\w+"), "SV-COMP verifier built-in"),
+    TokenRule("CPROVER_BUILTIN", re.compile(r"\bnondet_\w+"), "harness-only nondeterministic input function"),
+    TokenRule("CPROVER_BUILTIN", re.compile(r"\bLEANC_\w+"), "Lean C harness macro"),
+    TokenRule("INLINE_ASM", re.compile(r"\b(?:asm|__asm__|__asm)\b"), "inline assembly"),
+    TokenRule("ASSUMPTION_INJECTION", re.compile(r"\b__builtin_(?:unreachable|assume\w*)(?=\s*\()"),
+               "assumption built-in"),
+    TokenRule("ASSUMPTION_INJECTION", re.compile(r"\b__assume(?=\s*\()"), "assumption built-in"),
+    TokenRule("ASSUMPTION_INJECTION", re.compile(r"\b_Noreturn\b"), "_Noreturn function"),
+    TokenRule("ASSUMPTION_INJECTION", re.compile(r"(?<![\w.])(?<!->)\bunreachable(?=\s*\(\s*\))"),
+               "C23 unreachable()"),
+    TokenRule("TERMINATION", re.compile(r"\b__builtin_(?:trap|debugtrap|abort)(?=\s*\()"), "trapping built-in"),
+    TokenRule("TOOL_DIVERGENCE", re.compile(r"\b__builtin_(?:constant_p|object_size|dynamic_object_size)(?=\s*\()"),
+               "optimisation-dependent built-in"),
+    TokenRule("DANGEROUS_IMPORT", re.compile(r"\b__(?:asan|lsan|ubsan|msan|tsan|hwasan|dfsan|sanitizer)_\w+"),
+               "sanitizer runtime interface"),
+    TokenRule("PRAGMA", re.compile(r"\b__pragma(?=\s*\()"), "MS-style __pragma"),
+    TokenRule("UNBOUNDED_STACK", re.compile(r"(?<![\w.])(?<!->)\b(?:alloca|__builtin_alloca\w*)(?=\s*\()"),
+               "stack allocation (alloca)"),
+    TokenRule("TERMINATION", re.compile(r"\b__builtin_(?:setjmp|longjmp|unwind_init|eh_return)(?=\s*\()"),
+               "non-local control-flow built-in"),
+    TokenRule("TOOL_DIVERGENCE",
+               re.compile(r"\b__builtin_(?:frame_address|return_address|extract_return_addr|stack_save|"
+                          r"stack_restore)(?=\s*\()"),
+               "stack/frame introspection built-in"),
 ]
 
-_NAMES_ALT = "|".join(sorted(TERMINATION_NAMES | DANGEROUS_NAMES, key=len, reverse=True))
-_NAME_CALL_RE = re.compile(rf"(?<![\w.])(?<!->)\b({_NAMES_ALT}|pthread_\w+|thrd_\w+)(?=\s*\()")
-_NAME_VALUE_RE = re.compile(rf"(?:[=&,(:?]|\breturn\b)\s*\b({_NAMES_ALT}|pthread_\w+|thrd_\w+)\b(?=\s*[;,)])")
+_LIBRARY_API_ALTERNATIVES = "|".join(sorted(TERMINATION_NAMES | DANGEROUS_NAMES, key=len, reverse=True))
+_LIBRARY_API_CALL_RE = re.compile(rf"(?<![\w.])(?<!->)\b({_LIBRARY_API_ALTERNATIVES}|pthread_\w+|thrd_\w+)(?=\s*\()")
+_LIBRARY_API_VALUE_RE = re.compile(
+    rf"(?:[=&,(:?]|\breturn\b)\s*\b({_LIBRARY_API_ALTERNATIVES}|pthread_\w+|thrd_\w+)\b(?=\s*[;,)])"
+)
 
-_ATTR_START_RE = re.compile(r"\b(__attribute__|__attribute|__declspec)\s*\(|\[\s*\[")
-_ATTR_TOKEN_RE = re.compile(r"[()]|(?:([A-Za-z_]\w*)\s*::\s*)?([A-Za-z_]\w*)")
-_ATTR_RULES: dict[str, str] = {
+_ATTRIBUTE_START_RE = re.compile(r"\b(__attribute__|__attribute|__declspec)\s*\(|\[\s*\[")
+_ATTRIBUTE_TOKEN_RE = re.compile(r"[()]|(?:([A-Za-z_]\w*)\s*::\s*)?([A-Za-z_]\w*)")
+_DECLSPEC = "__declspec"
+_DECLSPEC_LIST_DEPTH = 1
+_GNU_ATTRIBUTE_LIST_DEPTH = 2
+_STANDARD_ATTRIBUTE_LIST_DEPTH = 0
+_SANITIZER_SUPPRESSION_PREFIX = "no_sanitize"
+_ATTRIBUTE_RULES: dict[str, str] = {
     **dict.fromkeys(("constructor", "destructor", "section", "used", "retain", "init_priority"), "CONSTRUCTOR"),
     **dict.fromkeys(("weak", "weakref", "alias", "ifunc", "visibility", "selectany", "externally_visible"),
                     "SYMBOL_OVERRIDE"),
@@ -194,338 +164,278 @@ _ATTR_RULES: dict[str, str] = {
     **dict.fromkeys(("assume", "assume_aligned", "nonnull", "returns_nonnull", "noreturn", "const", "pure"),
                     "ASSUMPTION_INJECTION"),
     **dict.fromkeys(("suppress", "analyzer_noreturn"), "WARNING_SUPPRESSION"),
-}  # fmt: skip
+}
+
+SECTION_RE = re.compile(r"^\s*\[\s*\d+\]\s+(\S+)", re.MULTILINE)
+_CODE_OUTSIDE_TEST_SECTION_RE = re.compile(
+    r"^\.(?:rela?\.)?(?:init_array|fini_array|preinit_array|ctors|dtors|init|fini)(?:\.|$)"
+)
+_CONSTRUCTOR_MENTIONS = ("constructor", "destructor", "section", "init_array")
+_ARCHIVE_MEMBER_SUFFIX = ":"
 
 
-
-# =========================================================================== helpers
-def _v(rule: str, message: str, rel: str | None, line: int | None) -> PolicyViolation:
-    return PolicyViolation(rule=rule, message=message, file=rel, line=line)
-
-
-def _identifiers(text: str) -> set[str]:
-    return set(re.findall(r"\b[A-Za-z_]\w*\b", text))
+class CHeaderFacts(NamedTuple):
+    idents: set[str]
+    macros: set[str]
 
 
-def _header_facts(headers: dict[str, str] | None) -> tuple[set[str], set[str]]:
-    """(identifiers, macro names) of the protected headers, comment-stripped."""
-    idents: set[str] = set()
-    macros: set[str] = set()
+def c_header_facts(headers: dict[str, str] | None) -> CHeaderFacts:
+    """Identifiers and macro names of the protected headers (comments stripped)."""
+    facts = CHeaderFacts(set(), set())
     for text in (headers or {}).values():
-        src = CSource(text)
-        idents |= _identifiers(src.code)
-        for m in _DIRECTIVE_RE.finditer(src.code):
-            if m.group(1) == "define":
-                dm = _DEFINE_HEAD_RE.match(m.group(2))
-                if dm:
-                    macros.add(dm.group(1))
-    return idents, macros
+        code = CSource(text).code
+        facts.idents.update(identifiers(code))
+        facts.macros.update(defined_macro_names(code))
+    return facts
 
 
-def _attr_names(region: str, base_depth: int) -> list[tuple[str, int]]:
-    """Attribute names (namespace stripped, ``__x__`` -> ``x``) at the
-    attribute-list nesting level of ``region``, with their offsets."""
+def _rule_summary(rule: str) -> str:
+    return RULES[rule].split("(")[0].strip()
+
+
+def _normalized_attribute_name(name: str) -> str:
+    return name.strip("_") if name.startswith("__") and name.endswith("__") else name
+
+
+class _AttributeList(NamedTuple):
+    text: str
+    list_depth: int
+    start: int
+    close: int
+
+
+def _attribute_names(attributes: _AttributeList) -> list[tuple[str, int]]:
     out: list[tuple[str, int]] = []
     depth = 0
-    for m in _ATTR_TOKEN_RE.finditer(region):
-        tok = m.group()
-        if tok == "(":
+    for token in _ATTRIBUTE_TOKEN_RE.finditer(attributes.text):
+        if token.group() == "(":
             depth += 1
-        elif tok == ")":
+        elif token.group() == ")":
             depth -= 1
-        elif depth == base_depth and m.group(2):
-            name = m.group(2)
-            norm = name.strip("_") if name.startswith("__") and name.endswith("__") else name
-            out.append((norm, m.start(2)))
+        elif depth == attributes.list_depth and token.group(2):
+            out.append((_normalized_attribute_name(token.group(2)), token.start(2)))
     return out
 
 
-def _attribute_violations(src: CSource, where: str) -> list[tuple[str, str, int]]:
-    """(rule, message, offset) for forbidden attributes in GNU, MS and C23 form."""
-    code = src.code
-    out: list[tuple[str, str, int]] = []
+def _keyword_attribute_list(src: CSource, start: re.Match[str]) -> _AttributeList:
+    open_at = start.end() - 1
+    close = src.pairs.get(open_at)
+    if close is None:
+        end_of_line = src.code.find("\n", open_at)
+        close = len(src.code) if end_of_line < 0 else end_of_line
+    depth = _DECLSPEC_LIST_DEPTH if start.group(1) == _DECLSPEC else _GNU_ATTRIBUTE_LIST_DEPTH
+    return _AttributeList(src.code[open_at : close + 1], depth, open_at, close)
+
+
+def _standard_attribute_list(src: CSource, start: re.Match[str]) -> _AttributeList | None:
+    close = src.pairs.get(start.start())
+    if close is None:
+        return None
+    return _AttributeList(src.code[start.end() : close], _STANDARD_ATTRIBUTE_LIST_DEPTH, start.end(), close)
+
+
+def _attribute_rule(name: str) -> str | None:
+    rule = _ATTRIBUTE_RULES.get(name)
+    if rule is None and name.startswith(_SANITIZER_SUPPRESSION_PREFIX):
+        return "SANITIZER_SUPPRESSION"
+    return rule
+
+
+def _attribute_findings(src: CSource, where: str) -> list[Finding]:
+    """Forbidden attributes in GNU (``__attribute__``), MS (``__declspec``) and C23 (``[[...]]``) form."""
+    out: list[Finding] = []
     covered = -1
-    for m in _ATTR_START_RE.finditer(code):
-        if m.start() < covered:
+    for start in _ATTRIBUTE_START_RE.finditer(src.code):
+        if start.start() < covered:
             continue
-        if m.group(1):  # __attribute__(( ... )) / __declspec( ... )
-            open_at = m.end() - 1
-            close = src.pairs.get(open_at)
-            if close is None:
-                eol = code.find("\n", open_at)
-                close = len(code) if eol < 0 else eol
-            region, base, start = code[open_at : close + 1], (1 if m.group(1) == "__declspec" else 2), open_at
-        else:  # [[ ... ]]
-            close = src.pairs.get(m.start())
-            if close is None:
-                continue
-            region, base, start = code[m.end() : close], 0, m.end()
-        covered = close
-        for name, off in _attr_names(region, base):
-            rule = _ATTR_RULES.get(name)
-            if rule is None and name.startswith("no_sanitize"):
-                rule = "SANITIZER_SUPPRESSION"
+        attributes = _keyword_attribute_list(src, start) if start.group(1) else _standard_attribute_list(src, start)
+        if attributes is None:
+            continue
+        covered = attributes.close
+        for name, offset in _attribute_names(attributes):
+            rule = _attribute_rule(name)
             if rule is not None:
-                out.append((rule, f"attribute '{name}' is not allowed ({RULES[rule].split('(')[0].strip()}){where}",
-                            start + off))
+                out.append(Finding(rule, f"attribute '{name}' is not allowed ({_rule_summary(rule)}){where}",
+                                   attributes.start + offset))
     return out
 
 
-def _token_violations(src: CSource, where: str = "") -> list[tuple[str, str, int]]:
-    """Rules that apply to both the source and its macro expansion."""
-    code = src.code
-    out: list[tuple[str, str, int]] = []
-    for rule, rx, what in _TOKEN_RULES:
-        for m in rx.finditer(code):
-            out.append((rule, f"{what} '{m.group()}' is not allowed in code under verification{where}", m.start()))
-    for rx in (_NAME_CALL_RE, _NAME_VALUE_RE):
-        for m in rx.finditer(code):
-            name = m.group(1)
-            if name in TERMINATION_NAMES or name in ("pthread_exit", "thrd_exit"):
-                out.append(("TERMINATION", (f"'{name}' terminates the process or escapes control flow: CBMC "
-                            f"prunes such paths and the native tests can report success{where}"), m.start(1)))
+def _library_api_findings(src: CSource, where: str) -> list[Finding]:
+    out: list[Finding] = []
+    for pattern in (_LIBRARY_API_CALL_RE, _LIBRARY_API_VALUE_RE):
+        for use in pattern.finditer(src.code):
+            name = use.group(1)
+            if name in TERMINATION_NAMES:
+                out.append(Finding("TERMINATION", (f"'{name}' terminates the process or escapes control flow: "
+                                   f"{CBMC_TERMINATION_CONSEQUENCE}{where}"), use.start(1)))
             else:
-                out.append(("DANGEROUS_IMPORT", (f"'{name}' (process/network/loader/thread API) is not allowed"
-                            f"{where}"), m.start(1)))
-    out.extend(_attribute_violations(src, where))
+                out.append(Finding("DANGEROUS_IMPORT", f"'{name}' (process/network/loader/thread API) is not allowed"
+                                   f"{where}", use.start(1)))
     return out
 
 
-def _forbidden_definition(name: str) -> str | None:
-    """Why ``name`` may never be defined by code under verification."""
-    if name == "main":
-        return "'main' belongs to the trusted harness / test driver"
-    if name.startswith("nondet_"):
-        return f"'{name}' is a harness input generator: giving it a body narrows the symbolic inputs"
-    if _RESERVED_RE.match(name):
-        return f"'{name}' is a reserved identifier (C library / compiler / verifier hook)"
-    if name in LIBC_NAMES:
-        return f"'{name}' is a C library / CBMC model function"
-    return None
+def token_findings(src: CSource, where: str = "") -> list[Finding]:
+    """Rules that apply both to a source text and to its macro expansion."""
+    out: list[Finding] = []
+    for token_rule in _TOKEN_RULES:
+        for use in token_rule.pattern.finditer(src.code):
+            out.append(Finding(token_rule.rule, (f"{token_rule.what} '{use.group()}' is not allowed in code under "
+                               f"verification{where}"), use.start()))
+    out.extend(_library_api_findings(src, where))
+    out.extend(_attribute_findings(src, where))
+    return out
 
 
 def _include_problem(spec: Spec, name: str, quoted: bool) -> str | None:
-    if not name:
-        return "empty header name"
-    if "\\" in name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
-        return f"absolute or backslash header path {name!r}"
-    parts = [p for p in name.split("/") if p not in ("", ".")]
-    if ".." in parts:
-        return f"'..' in header path {name!r}"
-    norm = "/".join(parts)
-    if parts and parts[-1] == "leanc.h":
-        return "leanc.h is for the trusted harness only"
-    others = [*([spec.verification.harness] if spec.verification else []), *spec.sources.editable] + (
-        [spec.tests.driver] if spec.tests.driver else []
-    )
-    for p in others:
-        if norm == p or posixpath.basename(p) == parts[-1] or p.endswith("/" + norm):
-            return f"{name!r} names a harness, test or source file, not a header"
-    if quoted:
-        candidates = set()
-        for h in spec.sources.headers:
-            candidates.add(h)
-            for d in spec.sources.include_dirs:
-                if h.startswith(d.rstrip("/") + "/"):
-                    candidates.add(h[len(d.rstrip("/")) + 1 :])
-            candidates.add(posixpath.basename(h))
-        if norm not in candidates:
-            return (
-                f'"{name}" is not a protected header of the spec ({", ".join(spec.sources.headers) or "none"}); '
-                "use <...> for system headers"
-            )
-    elif not norm.endswith(".h"):
+    problem = include_path_problem(spec, name, quoted)
+    if problem is None and not quoted and not normalized_header_path(name).endswith(C_HEADER_SUFFIX):
         return f"<{name}> is not a header"
+    return problem
+
+
+def _include_findings(spec: Spec, src: CSource, directive: Directive) -> list[Finding]:
+    header = included_header(src, directive)
+    if header is None:
+        return computed_include_findings(src, directive)
+    problem = _include_problem(spec, header.name, header.quoted)
+    if problem:
+        return [Finding("INCLUDE_ESCAPE", f"#include {header.spelling}: {problem}", directive.offset)]
+    return []
+
+
+def _redefined_entity(spec: Spec, macro: str, header_macros: set[str], header_idents: set[str]) -> str | None:
+    if macro == spec.target.function:
+        return "the target function"
+    if macro in header_macros:
+        return "a macro of the protected interface"
+    if macro in C_KEYWORDS:
+        return "a C keyword"
+    if macro in header_idents:
+        return "an identifier used by the protected interface"
+    if macro in LIBC_NAMES:
+        return "a C library name"
     return None
 
 
-def _directive_violations(
-    spec: Spec, rel: str, src: CSource, header_macros: set[str], header_idents: set[str] | None = None
-) -> list[tuple[str, str, int]]:
-    code, noc = src.code, src.nocomment
-    out: list[tuple[str, str, int]] = []
-    # Any identifier of the protected interface (types like size_t, parameter
-    # and type names, macros): a #define before the protected #include would
-    # silently change the approved prototype / contract for every gate.
+def _macro_definition_findings(
+    spec: Spec, directive: Directive, header_macros: set[str], header_idents: set[str]
+) -> list[Finding]:
+    macro = defined_macro(directive)
+    redefined = _redefined_entity(spec, macro, header_macros, header_idents)
+    if redefined is None or is_tool_specific_macro(macro):
+        return []
+    return redefinition_findings(directive, macro, redefined)
+
+
+def _directive_findings(
+    spec: Spec, src: CSource, header_macros: set[str], header_idents: set[str] | None = None
+) -> list[Finding]:
     header_idents = set(header_idents or ())
-    override_names = LIBC_NAMES | C_KEYWORDS | header_macros | header_idents | {spec.target.function}
-    for m in _DIRECTIVE_RE.finditer(code):
-        name, rest = m.group(1), m.group(2)
-        at = m.start()
-        if name == "":
-            if rest.strip():  # e.g. "# 1 "x.c" 3" (digits are \w, so this is non-word junk)
-                out.append(("TOOL_DIVERGENCE", f"malformed directive `#{rest.strip()[:40]}`", at))
-            continue
-        if name.isdigit():
-            out.append(("LINE_DIRECTIVE", ("GNU linemarkers re-attribute code (e.g. mark it as a system header, "
-                        "which hides analyzer findings) and are not allowed"), at))
-            continue
-        if name == "line":
-            out.append(("LINE_DIRECTIVE", "#line re-attributes code to other files/lines and is not allowed", at))
-            continue
-        if name in ("include_next", "import", "embed"):
-            out.append(("INCLUDE_ESCAPE", f"#{name} is not allowed", at))
-            continue
-        if name not in _STD_DIRECTIVES:
-            out.append(("TOOL_DIVERGENCE", f"non-standard directive #{name} (preprocessors disagree on it)", at))
-            continue
-        if name == "pragma":
-            body = " ".join(noc[m.start(2) : m.end(2)].split())
-            if body != "once":
-                out.append(("PRAGMA", (f"`#pragma {body[:60]}` is not allowed (pragmas can disable CBMC checks or "
-                            "diagnostics, or mark code as a system header)"), at))
-            continue
-        if name == "include":
-            body = noc[m.start(2) : m.end(2)].strip()
-            hm = _HEADER_NAME_RE.match(body)
-            if not hm:
-                out.append(("INCLUDE_ESCAPE", f"computed #include ({body[:40]!r}) cannot be checked", at))
-                continue
-            problem = _include_problem(spec, hm.group(1)[1:-1].strip(), hm.group(1)[0] == '"')
-            if problem:
-                out.append(("INCLUDE_ESCAPE", f"#include {hm.group(1)}: {problem}", at))
-            continue
-        if name in ("error", "warning", "else", "endif"):
-            continue
-        idents = _DIRECTIVE_IDENT_RE.findall(rest)
-        if name in ("define", "undef"):
-            dm = _DEFINE_HEAD_RE.match(rest)
-            macro = dm.group(1) if dm else ""
-            if macro in override_names and not _DIRECTIVE_IDENT_RE.fullmatch(macro):
-                what = (
-                    "the target function" if macro == spec.target.function
-                    else "a macro of the protected interface" if macro in header_macros
-                    else "a C keyword" if macro in C_KEYWORDS
-                    else "an identifier used by the protected interface" if macro in header_idents
-                    else "a C library name"
-                )
-                out.append(("SYMBOL_OVERRIDE", f"#{name} {macro}: redefining {what} is not allowed", at))
-        if idents:
-            uniq = ", ".join(dict.fromkeys(idents))
-            out.append(("TOOL_DIVERGENCE", (f"#{name} on {uniq}: compiler-, optimiser- or verifier-specific "
-                        "macros make clang, the sanitizer build and CBMC see different code"), at))
-        if name in ("if", "elif") and "#" in rest:
-            out.append(("TOOL_DIVERGENCE", (f"#{name} uses an assertion predicate (#...), which preprocessors "
-                        "treat differently"), at))
+    out: list[Finding] = []
+    for directive in parse_directives(src.code):
+        if is_irregular(directive):
+            out.extend(irregular_directive_findings(directive))
+        elif directive.name == "pragma":
+            out.extend(pragma_directive_findings(src, directive, _PRAGMA_CONSEQUENCE))
+        elif directive.name == "include":
+            out.extend(_include_findings(spec, src, directive))
+        elif directive.name not in UNCHECKED_DIRECTIVES:
+            if directive.name in MACRO_DEFINITION_DIRECTIVES:
+                out.extend(_macro_definition_findings(spec, directive, header_macros, header_idents))
+            out.extend(divergent_macro_findings(directive, tool_specific_identifiers(directive),
+                                                _DIVERGENCE_CONSEQUENCE))
+            out.extend(assertion_predicate_findings(directive))
     return out
 
 
-def _pragma_operator_violations(src: CSource) -> list[tuple[str, str, int]]:
-    code, noc = src.code, src.nocomment
-    out: list[tuple[str, str, int]] = []
-    for m in re.finditer(r"\b_Pragma\s*\(", code):
-        sm = _PLAIN_STRING_ARG_RE.match(noc, m.end() - 1)
-        if not sm:
-            out.append(("OBFUSCATION", ("_Pragma(...) whose argument is not a single plain string literal "
-                        "(e.g. built by a macro) cannot be checked"), m.start()))
-        elif sm.group(1).strip() != "once":
-            out.append(("PRAGMA", (f"_Pragma(\"{sm.group(1)[:60]}\") is not allowed (pragmas can disable CBMC "
-                        "checks or diagnostics)"), m.start()))
-    return out
+def _predefined_macro_use_findings(src: CSource) -> list[Finding]:
+    return [
+        Finding("TOOL_DIVERGENCE", (f"'{use.group(1)}' has a different value (or none) under clang, the optimised "
+                "sanitizer build and CBMC"), use.start())
+        for use in TOOL_DEPENDENT_PREDEFINED_MACRO_RE.finditer(src.code_nodirectives)
+    ]
 
 
-# =========================================================================== level A: source
+def _forbidden_function_findings(src: CSource) -> list[Finding]:
+    return [
+        Finding("SYMBOL_OVERRIDE", f"defines function {name}(): {why}", offset)
+        for name, offset in defined_functions(src)
+        if (why := forbidden_definition(name))
+    ]
+
+
 def c_source_violations(
     spec: Spec, rel: str, text: str, *, headers: dict[str, str] | None = None
 ) -> list[PolicyViolation]:
     """The C rules of :func:`leanc.rules.source.source_violations` for one editable C file."""
     src = CSource(text)
-    header_idents, header_macros = _header_facts(headers)
-    found: list[tuple[str, str, int]] = []
-    found += _directive_violations(spec, rel, src, header_macros, header_idents)
-    found += _pragma_operator_violations(src)
-    found += _token_violations(src)
-    # divergent predefined macros used in ordinary code (directives were checked above)
-    for m in _PREDEFINED_DIVERGENT_RE.finditer(src.code_nodirectives):
-        found.append(("TOOL_DIVERGENCE", (f"'{m.group(1)}' has a different value (or none) under clang, the "
-                      "optimised sanitizer build and CBMC"), m.start()))
-    for name, off in defined_functions(src):
-        why = _forbidden_definition(name)
-        if why:
-            found.append(("SYMBOL_OVERRIDE", f"defines function {name}(): {why}", off))
-    found += acsl_violations(spec, src, headers)  # ACSL trust rules (wp gate only), leanc.rules.acsl
-    return _to_violations(src, rel, found)
-
-
-def _to_violations(
-    src: CSource, rel: str, found: list[tuple[str, str, int]], line_map: list[int] | None = None
-) -> list[PolicyViolation]:
-    out: list[PolicyViolation] = []
-    seen: set[tuple[str, int]] = set()
-    for rule, message, off in sorted(found, key=lambda f: (f[2], f[0])):
-        line = src.line_of(off)
-        if line_map is not None:
-            line = line_map[line - 1] if 0 < line <= len(line_map) else 0
-        if (rule, line) in seen:
-            continue
-        seen.add((rule, line))
-        shown = src.shown_line(src.line_of(off))
-        out.append(_v(rule, f"{message}: `{shown}`" if shown else message, rel, line or None))
-    return out
-
-
-# =========================================================================== level B: preprocessed
-_LINEMARKER_RE = re.compile(r'^#\s*(\d+)\s+"((?:[^"\\]|\\.)*)"')
-
-
-def _expanded_view(rel: str, pp: str) -> tuple[str, list[int]]:
-    """Lines of ``clang -E`` output attributed to ``rel`` itself, with the
-    source line number of each (macro expansions appear on the line that
-    uses the macro)."""
-    lines: list[str] = []
-    origin: list[int] = []
-    cur_file: str | None = None
-    cur_line = 0
-    for line in pp.split("\n"):
-        m = _LINEMARKER_RE.match(line)
-        if m:
-            cur_line = int(m.group(1))
-            cur_file = m.group(2).replace('\\"', '"').replace("\\\\", "\\")
-            continue
-        if cur_file is not None and posixpath.normpath(cur_file) == posixpath.normpath(rel):
-            lines.append(line)
-            origin.append(cur_line)
-        cur_line += 1
-    return "\n".join(lines), origin
+    header_idents, header_macros = c_header_facts(headers)
+    found = [
+        *_directive_findings(spec, src, header_macros, header_idents),
+        *pragma_operator_findings(src),
+        *token_findings(src),
+        *_predefined_macro_use_findings(src),
+        *_forbidden_function_findings(src),
+        *acsl_violations(spec, src, headers),
+    ]
+    return to_violations(src, rel, found)
 
 
 def preprocessed_violations(rel: str, pp_output: str) -> list[PolicyViolation]:
-    """Rules applied to the macro-expanded code of ``rel`` (``clang -E``
-    output): pragmas produced by ``_Pragma``/macros, built-ins, attributes,
-    termination/dangerous calls that only appear after expansion."""
-    text, origin = _expanded_view(rel, pp_output)
+    """Rules for the macro-expanded code of ``rel`` (its lines of ``clang -E`` output)."""
+    text, origin = expanded_view(rel, pp_output)
     src = CSource(text)
-    where = " (after macro expansion)"
-    found = _token_violations(src, where)
-    for m in re.finditer(rf"^{_WS}#{_WS}pragma\b(.*)$", src.code, re.MULTILINE):
-        body = " ".join(src.nocomment[m.start(1) : m.end(1)].split())
-        if body != "once":
-            found.append(("PRAGMA", f"`#pragma {body[:60]}`{where} is not allowed", m.start()))
-    for m in re.finditer(r"\b_Pragma\b", src.code):
-        found.append(("PRAGMA", f"_Pragma{where} is not allowed", m.start()))
-    return _to_violations(src, rel, found, origin)
+    found = [*token_findings(src, AFTER_EXPANSION), *expanded_pragma_findings(src)]
+    return to_violations(src, rel, found, origin)
 
 
-# =========================================================================== level C: objects
-_SECTION_RE = re.compile(r"^\s*\[\s*\d+\]\s+(\S+)", re.MULTILINE)
-_BAD_SECTION_RE = re.compile(r"^\.(?:rela?\.)?(?:init_array|fini_array|preinit_array|ctors|dtors|init|fini)(?:\.|$)")
+def _is_nm_symbol_line(line: str, fields: list[str]) -> bool:
+    return len(fields) >= 2 and len(fields[1]) == 1 and not line.endswith(_ARCHIVE_MEMBER_SUFFIX)
 
 
 def parse_nm(output: str) -> list[tuple[str, str]]:
     """``(name, type)`` pairs from ``nm -P`` output."""
     out: list[tuple[str, str]] = []
     for line in output.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and len(parts[1]) == 1 and not line.endswith(":"):
-            out.append((parts[0], parts[1]))
+        fields = line.split()
+        if _is_nm_symbol_line(line, fields):
+            out.append((fields[0], fields[1]))
     return out
 
 
-def _first_mention(src: CSource | None, name: str) -> int | None:
-    if src is None:
+def _import_problem(
+    name: str, nm_type: str, header_idents: set[str], defined_elsewhere: set[str]
+) -> Problem | None:
+    if nm_type in WEAK_UNDEFINED_TYPES:
+        return Problem("DANGEROUS_IMPORT", (f"weak undefined reference to '{name}': it resolves differently under "
+                       "the verifier and natively (e.g. __VERIFIER_assume)"))
+    if name in TERMINATION_NAMES:
+        return Problem("TERMINATION", (f"imports '{name}': termination / non-local control flow is not allowed "
+                       "(CBMC prunes such paths; native tests can fake success)"))
+    if is_verifier_hook(name):
+        return Problem("CPROVER_BUILTIN", f"imports verifier hook '{name}'")
+    if is_dangerous_import(name):
+        return Problem("DANGEROUS_IMPORT", f"imports '{name}' (process/network/loader/thread/sanitizer API)")
+    if (name in defined_elsewhere or name in header_idents or name in ALLOWED_IMPORTS
+            or COMPILER_RT_ARITHMETIC_HELPER_RE.match(name)):
         return None
-    m = re.search(rf"\b{re.escape(name)}\b", src.code)
-    return src.line_of(m.start()) if m else None
+    return Problem("DANGEROUS_IMPORT", (f"imports '{name}', which is not on the allowlist of library functions "
+                   "CBMC models faithfully (a body-less function returns arbitrary values under CBMC); allowed: "
+                   f"{', '.join(sorted(ALLOWED_IMPORTS))}"))
+
+
+def _definition_problem(name: str, nm_type: str, allowed_definitions: set[str]) -> Problem | None:
+    if nm_type in WEAK_DEFINITION_TYPES:
+        return Problem("SYMBOL_OVERRIDE", f"weak definition of '{name}' is not allowed")
+    if nm_type in INDIRECT_FUNCTION_TYPES:
+        return Problem("SYMBOL_OVERRIDE", f"indirect function (ifunc) '{name}' is not allowed")
+    why = forbidden_definition(name)
+    if why:
+        return Problem("SYMBOL_OVERRIDE", f"defines external symbol {name}: {why}")
+    if name not in allowed_definitions:
+        return Problem("SYMBOL_OVERRIDE", (f"defines external symbol '{name}', which the protected headers do not "
+                       "declare; make it static"))
+    return None
 
 
 def check_object_symbols(
@@ -538,56 +448,31 @@ def check_object_symbols(
     src: CSource | None = None,
 ) -> list[PolicyViolation]:
     """Symbol-table rules for one editable object."""
+    allowed_definitions = header_idents | {spec.target.function}
     out: list[PolicyViolation] = []
-    target = spec.target.function
-    allowed_defs = header_idents | {target}
-    for name, typ in symbols:
-        line = _first_mention(src, name)
-        if typ in ("U", "w", "v"):
-            if typ in ("w", "v"):
-                out.append(_v("DANGEROUS_IMPORT", f"weak undefined reference to '{name}': it resolves differently "
-                              "under the verifier and natively (e.g. __VERIFIER_assume)", rel, line))
-            elif name in TERMINATION_NAMES:
-                out.append(_v("TERMINATION", f"imports '{name}': termination / non-local control flow is not "
-                              "allowed (CBMC prunes such paths; native tests can fake success)", rel, line))
-            elif name.startswith(("__CPROVER", "__VERIFIER", "nondet_")):
-                out.append(_v("CPROVER_BUILTIN", f"imports verifier hook '{name}'", rel, line))
-            elif name in DANGEROUS_NAMES or _DANGEROUS_PREFIX_RE.match(name):
-                out.append(_v("DANGEROUS_IMPORT", f"imports '{name}' (process/network/loader/thread/sanitizer API)",
-                              rel, line))
-            elif name in defined_elsewhere or name in header_idents or name in ALLOWED_IMPORTS \
-                    or _COMPILER_RT_RE.match(name):
-                continue
-            else:
-                out.append(_v("DANGEROUS_IMPORT", f"imports '{name}', which is not on the allowlist of library "
-                              "functions CBMC models faithfully (a body-less function returns arbitrary values "
-                              f"under CBMC); allowed: {', '.join(sorted(ALLOWED_IMPORTS))}", rel, line))
+    for name, nm_type in symbols:
+        if nm_type in UNDEFINED_TYPES:
+            problem = _import_problem(name, nm_type, header_idents, defined_elsewhere)
+        elif has_external_linkage(nm_type):
+            problem = _definition_problem(name, nm_type, allowed_definitions)
+        else:
             continue
-        if not (typ.isupper() or typ == "i"):
-            continue  # local (static) symbols
-        if typ in ("W", "V"):
-            out.append(_v("SYMBOL_OVERRIDE", f"weak definition of '{name}' is not allowed", rel, line))
-            continue
-        if typ in ("i", "I"):
-            out.append(_v("SYMBOL_OVERRIDE", f"indirect function (ifunc) '{name}' is not allowed", rel, line))
-            continue
-        why = _forbidden_definition(name)
-        if why:
-            out.append(_v("SYMBOL_OVERRIDE", f"defines external symbol {name}: {why}", rel, line))
-        elif name not in allowed_defs:
-            out.append(_v("SYMBOL_OVERRIDE", f"defines external symbol '{name}', which the protected headers do "
-                          "not declare; make it static", rel, line))
+        if problem is not None:
+            out.append(violation(problem.rule, problem.message, rel, first_mention_line(src, name)))
     return out
 
 
 def section_violations(rel: str, readelf_output: str, src: CSource | None = None) -> list[PolicyViolation]:
+    """Sections whose code runs before or after the function under test (``readelf -S`` output)."""
     out: list[PolicyViolation] = []
-    for name in dict.fromkeys(_SECTION_RE.findall(readelf_output)):
-        if _BAD_SECTION_RE.match(name):
-            line = next(
-                (ln for w in ("constructor", "destructor", "section", "init_array") if (ln := _first_mention(src, w))),
-                None,
-            )
-            out.append(_v("CONSTRUCTOR", f"object has section {name}: code would run before/after the function "
-                          "under test (constructors/destructors)", rel, line))
+    for name in dict.fromkeys(SECTION_RE.findall(readelf_output)):
+        if _CODE_OUTSIDE_TEST_SECTION_RE.match(name):
+            line = next((ln for word in _CONSTRUCTOR_MENTIONS if (ln := first_mention_line(src, word))), None)
+            out.append(violation("CONSTRUCTOR", (f"object has section {name}: code would run before/after the "
+                                 "function under test (constructors/destructors)"), rel, line))
     return out
+
+
+_v = violation
+_header_facts = c_header_facts
+_SECTION_RE = SECTION_RE

@@ -1,5 +1,4 @@
-"""Unified-diff parsing/applying, proposal handling and diff statistics
-(leanc.repair.patch).  Pure Python: no external tools needed."""
+"""Unified-diff parsing/applying, proposal handling and diff statistics (leanc.repair.patch), no external tools."""
 
 from __future__ import annotations
 
@@ -54,7 +53,6 @@ def reader(files: dict[str, str]):
     return files.get
 
 
-# ----------------------------------------------------------------------------- parsing
 def test_parse_basic_hunk_and_prefixes():
     (fp,) = parse_unified_diff(FIX_PATCH)
     assert fp.old_path == fp.new_path == "src/safe_array.c"
@@ -92,7 +90,6 @@ def test_parse_no_newline_marker():
 
 
 def test_parse_removed_line_that_looks_like_a_header():
-    # a removed line "-- x" is "--- x" in the diff; counts tell it apart from a file header
     text = "--- a/f\n+++ b/f\n@@ -1,2 +1,1 @@\n--- x\n keep\n"
     (fp,) = parse_unified_diff(text)
     assert fp.hunks[0].lines == [("-", "-- x\n"), (" ", "keep\n")]
@@ -141,18 +138,18 @@ def test_parse_errors(text, msg):
 
 def test_parse_rejects_non_string():
     with pytest.raises(PatchError):
-        parse_unified_diff(None)  # type: ignore[arg-type]
+        parse_unified_diff(None)
 
 
-# ----------------------------------------------------------------------------- applying
 def test_apply_simple_fix():
     assert apply_unified_diff(FIX_PATCH, reader({"src/safe_array.c": SRC})) == {"src/safe_array.c": FIXED}
 
 
 def test_apply_with_offset_drift():
-    shifted = "/* a */\n/* b */\n/* c */\n" + SRC  # hunk header now 3 lines off
+    three_lines_before_the_header_position = "/* a */\n/* b */\n/* c */\n"
+    shifted = three_lines_before_the_header_position + SRC
     out = apply_unified_diff(FIX_PATCH, reader({"src/safe_array.c": shifted}))
-    assert out["src/safe_array.c"] == "/* a */\n/* b */\n/* c */\n" + FIXED
+    assert out["src/safe_array.c"] == three_lines_before_the_header_position + FIXED
 
 
 def test_apply_offset_window_is_limited():
@@ -236,9 +233,9 @@ def test_apply_no_newline_handling():
     old = "a\nb"
     text = "--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n"
     assert apply_unified_diff(text, reader({"f": old})) == {"f": "a\nb\n"}
-    # without the marker the context does not match exactly (fuzz 0)
+    context_needing_fuzz_without_the_marker = "--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n"
     with pytest.raises(PatchError):
-        apply_unified_diff("--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n", reader({"f": old}))
+        apply_unified_diff(context_needing_fuzz_without_the_marker, reader({"f": old}))
 
 
 def test_no_newline_marker_in_the_middle_is_rejected():
@@ -259,7 +256,6 @@ def test_crlf_files_round_trip():
     assert apply_unified_diff(make_unified_diff(old, new), reader(old)) == new
 
 
-# ----------------------------------------------------------------------------- round trip
 def _random_text(rng: random.Random, n: int) -> str:
     pool = ["{", "}", "", "return 0;", "x++;", "if (a) {", "int y = 1;", "/* c */", "\tz--;", "  "]
     lines = [rng.choice(pool) for _ in range(n)]
@@ -326,15 +322,13 @@ def test_make_unified_diff_handles_odd_path_names():
     assert apply_unified_diff(diff, reader(old)) == new
 
 
-def test_large_file_diff_is_minimal():
-    # many repeated lines: difflib's autojunk would make a needlessly big diff
+def test_large_repetitive_file_diff_is_minimal_without_difflib_autojunk():
     body = "".join("    x = x + 1;\n}\n\n" for _ in range(200))
     old = {"f.c": body}
     new = {"f.c": body.replace("    x = x + 1;\n", "    x = x + 2;\n", 1)}
     assert diff_stats(old, new) == (1, 1)
 
 
-# ----------------------------------------------------------------------------- stats & hash
 def test_diff_stats_and_changed_paths():
     old = {"a": "1\n2\n3\n", "b": "same\n", "gone": "x\n"}
     new = {"a": "1\n3\n4\n5\n", "b": "same\n", "added": "n1\nn2\n"}
@@ -349,19 +343,17 @@ def test_candidate_hash_is_canonical():
     assert candidate_hash(a) == candidate_hash(b)
     assert len(candidate_hash(a)) == 64
     assert candidate_hash(a) != candidate_hash({"src/a.c": "x", "src/b.c": "y "})
-    # no ambiguity from concatenating path and content
-    assert candidate_hash({"ab": "c"}) != candidate_hash({"a": "bc"})
+    assert candidate_hash({"ab": "c"}) != candidate_hash({"a": "bc"}), "path and content are not concatenated"
     assert candidate_hash({}) == candidate_hash({})
 
 
-# ----------------------------------------------------------------------------- proposals
 CURRENT = {"src/safe_array.c": SRC}
 
 
 def test_proposal_full_files():
     out = proposal_to_contents({"src/safe_array.c": FIXED}, None, CURRENT)
     assert out == {"src/safe_array.c": FIXED}
-    assert CURRENT == {"src/safe_array.c": SRC}  # input not mutated
+    assert CURRENT == {"src/safe_array.c": SRC}, "the input is not mutated"
 
 
 def test_proposal_patch():
@@ -383,13 +375,12 @@ def test_proposal_both_is_ambiguous():
 def test_proposal_files_keys_normalised_or_kept_for_policy():
     out = proposal_to_contents({"./src/safe_array.c": FIXED}, None, CURRENT)
     assert out == {"src/safe_array.c": FIXED}
-    # invalid / protected paths are kept so the policy can name the violation
-    out = proposal_to_contents({"/etc/passwd": "x", "harness/h.c": "y"}, None, CURRENT)
-    assert out["/etc/passwd"] == "x" and out["harness/h.c"] == "y"
+    kept_for_the_policy_to_name = proposal_to_contents({"/etc/passwd": "x", "harness/h.c": "y"}, None, CURRENT)
+    assert kept_for_the_policy_to_name["/etc/passwd"] == "x" and kept_for_the_policy_to_name["harness/h.c"] == "y"
     with pytest.raises(PatchError, match="same file"):
         proposal_to_contents({"src/safe_array.c": "a", "src//safe_array.c": "b"}, None, CURRENT)
     with pytest.raises(PatchError):
-        proposal_to_contents({"src/safe_array.c": 3}, None, CURRENT)  # type: ignore[dict-item]
+        proposal_to_contents({"src/safe_array.c": 3}, None, CURRENT)
 
 
 def test_proposal_patch_touching_protected_file_raises_with_clear_message():
@@ -415,7 +406,7 @@ def test_proposal_patch_errors_are_patch_errors():
     with pytest.raises(PatchError):
         proposal_to_contents(None, FIX_PATCH.replace("*out = arr[idx];", "*out = 0;"), CURRENT)
     with pytest.raises(PatchError):
-        proposal_to_contents(None, 42, CURRENT)  # type: ignore[arg-type]
+        proposal_to_contents(None, 42, CURRENT)
 
 
 def test_identical_proposal_produces_identical_candidate():

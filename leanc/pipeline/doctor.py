@@ -8,10 +8,11 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, minimal_env, run_command
-from leanc.foundation.sandbox import SandboxMounts, detect_sandbox, network_probe_blocked
+from leanc.foundation.sandbox import NetworkIsolation, Sandbox, SandboxMounts, detect_sandbox, network_probe_blocked
 from leanc.specs.approval import leanc_home
 from leanc.toolchain.cxx import find_clangxx
 from leanc.toolchain.framac import INSTALL_HINT as WP_HINT
@@ -21,6 +22,24 @@ from leanc.toolchain.lean import find_lean
 from leanc.toolchain.tools import find_cbmc, find_clang, tool_version
 
 APT_HINT = "sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap   (Ubuntu 24.04 / Debian)"
+MIN_PYTHON = (3, 11)
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+ANALYZER_PROBE_C = "int f(int *p){ if(!p) return *p; return 0; }\n"
+SANITIZER_PROBE_C = (
+    "#include <stdlib.h>\nint main(int c,char**v){int *p=malloc(4*sizeof(int)); int r=p[c]; free(p); return r*0;}\n"
+)
+CBMC_PROBE_C = (
+    "#include <assert.h>\nint nondet_int(void);\nint main(void){int x=nondet_int(); if(x>0 && x<10) assert(x*2<20); "
+    "return 0;}\n"
+)
+ANALYZER_TIMEOUT_S = 60
+SANITIZER_BUILD_TIMEOUT_S = 120
+SANITIZER_RUN_TIMEOUT_S = 30
+CBMC_TIMEOUT_S = 120
+SHOWN_STDERR_CHARS = 300
+SHOWN_RUN_STDERR_CHARS = 200
+CBMC_SUCCESS_MARKERS = ('"cProverStatus": "success"', '"cProverStatus":"success"')
 
 
 @dataclass
@@ -32,162 +51,173 @@ class Check:
     fix: str = ""
 
 
-def _tiny_c(dir_: Path, name: str, text: str) -> Path:
-    p = dir_ / name
-    p.write_text(text, encoding="utf-8")
-    return p
+def _tiny_c(directory: Path, name: str, text: str) -> Path:
+    path = directory / name
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def _safe_url(url: str) -> str:
     """Strip userinfo, query and fragment before printing a URL."""
-    from urllib.parse import urlsplit, urlunsplit
-
     try:
         parts = urlsplit(url)
         host = parts.hostname or ""
         if parts.port:
             host += f":{parts.port}"
-        return redact(urlunsplit((parts.scheme, host, parts.path, "", "")))
     except ValueError:
         return "[unparsable URL]"
+    return redact(urlunsplit((parts.scheme, host, parts.path, "", "")))
 
 
-def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
-    checks: list[Check] = []
-    py_ok = sys.version_info >= (3, 11)
-    checks.append(
-        Check("python", py_ok, True, sys.version.split()[0], "" if py_ok else "Python 3.11+ is required")
+def _python_check() -> Check:
+    ok = sys.version_info >= MIN_PYTHON
+    return Check("python", ok, True, sys.version.split()[0], "" if ok else "Python 3.11+ is required")
+
+
+def _missing_clang_checks() -> list[Check]:
+    hint = (
+        f"LEANC_CLANG={os.environ['LEANC_CLANG']!r} is not an executable"
+        if os.environ.get("LEANC_CLANG")
+        else f"install clang ({APT_HINT}) or set LEANC_CLANG"
     )
-    clang = find_clang()
-    cbmc = find_cbmc()
-    sb = detect_sandbox(sandbox_preference)
-    with tempfile.TemporaryDirectory(prefix="leanc-doctor-") as td:
-        tdir = Path(td)
-        # ------------------------------------------------------------ clang
+    return [
+        Check("clang", False, True, "not found", hint),
+        Check("clang-static-analyzer", False, True, "not checked: clang missing", hint),
+        Check("sanitizers", False, True, "not checked: clang missing", hint),
+    ]
+
+
+def _sarif_finding_count(sarif: Path) -> int:
+    return len(json.loads(sarif.read_text())["runs"][0]["results"])
+
+
+def _static_analyzer_check(clang: str, workdir: Path) -> Check:
+    src = _tiny_c(workdir, "sa.c", ANALYZER_PROBE_C)
+    sarif = workdir / "sa.sarif"
+    result = run_command(
+        [clang, "--analyze", "--analyzer-output", "sarif", "-o", str(sarif), str(src)],
+        cwd=workdir,
+        limits=Limits(timeout_s=ANALYZER_TIMEOUT_S),
+        env=minimal_env(),
+    )
+    ok = False
+    detail = result.error or result.stderr.strip()[-SHOWN_STDERR_CHARS:]
+    if sarif.exists():
+        try:
+            findings = _sarif_finding_count(sarif)
+        except (ValueError, KeyError, IndexError) as exc:
+            detail = f"SARIF unparsable: {exc}"
+        else:
+            ok = findings >= 1
+            detail = f"SARIF output ok ({findings} finding(s) on probe file)"
+    return Check("clang-static-analyzer", ok, True, detail, "" if ok else "clang --analyze with SARIF output must work")
+
+
+def _sandboxed_sanitizer_run(exe: Path, workdir: Path, sandbox: Sandbox) -> tuple[bool, str]:
+    run = run_command(
+        [str(exe)],
+        cwd=workdir,
+        limits=Limits(timeout_s=SANITIZER_RUN_TIMEOUT_S),
+        env=minimal_env({"ASAN_OPTIONS": "detect_leaks=1"}),
+        sandbox=sandbox,
+        mounts=SandboxMounts(ro=[str(workdir)]),
+    )
+    if run.exit_code == 0:
+        return True, "; sandboxed run ok"
+    return False, f"; sandboxed run exit {run.exit_code}: {run.stderr.strip()[-SHOWN_RUN_STDERR_CHARS:]}"
+
+
+def _sanitizer_check(clang: str, workdir: Path, sandbox: Sandbox) -> Check:
+    src = _tiny_c(workdir, "san.c", SANITIZER_PROBE_C)
+    exe = workdir / "san"
+    build = run_command(
+        [clang, "-g", "-fsanitize=address,undefined", str(src), "-o", str(exe)],
+        cwd=workdir,
+        limits=Limits(timeout_s=SANITIZER_BUILD_TIMEOUT_S),
+        env=minimal_env(),
+    )
+    if not (build.ok and exe.exists()):
+        return Check(
+            "sanitizers",
+            False,
+            True,
+            (build.error or build.stderr.strip())[-SHOWN_STDERR_CHARS:],
+            "install the sanitizer runtime, e.g. libclang-rt-18-dev",
+        )
+    if sandbox.active:
+        ok, run_detail = _sandboxed_sanitizer_run(exe, workdir, sandbox)
+    else:
+        ok, run_detail = True, "; run skipped (no sandbox)"
+    return Check("sanitizers", ok, True, "ASan+UBSan build ok" + run_detail, "" if ok else "install libclang-rt-18-dev")
+
+
+def _cbmc_check(cbmc: str | None, workdir: Path) -> Check:
+    if not cbmc:
+        return Check("cbmc", False, True, "not found", f"install CBMC ({APT_HINT}) or set LEANC_CBMC")
+    src = _tiny_c(workdir, "cb.c", CBMC_PROBE_C)
+    result = run_command(
+        [cbmc, str(src), "--signed-overflow-check", "--json-ui"],
+        cwd=workdir,
+        limits=Limits(timeout_s=CBMC_TIMEOUT_S),
+        env=minimal_env(),
+    )
+    ok = any(marker in result.stdout for marker in CBMC_SUCCESS_MARKERS)
+    return Check(
+        "cbmc",
+        ok,
+        True,
+        f"{cbmc}: {tool_version(cbmc)}"
+        + ("" if ok else f"; probe failed: {(result.error or result.stderr)[-SHOWN_RUN_STDERR_CHARS:]}"),
+        "" if ok else "CBMC needs a working C preprocessor (gcc or cc on PATH)",
+    )
+
+
+def _network_note(network: NetworkIsolation) -> str:
+    return f"; network: {network.value}"
+
+
+def _sandbox_check(sandbox_preference: str, sandbox: Sandbox, workdir: Path) -> Check:
+    if sandbox_preference == "none":
+        return Check("sandbox", True, False, "skipped (--no-sandbox); untrusted tests would be SKIPPED")
+    if sandbox.active:
+        network = network_probe_blocked(sandbox, workdir)
+        blocked = network is NetworkIsolation.BLOCKED
+        return Check(
+            "sandbox",
+            blocked,
+            True,
+            sandbox.note + _network_note(network),
+            "" if blocked else "bwrap must isolate the network",
+        )
+    return Check(
+        "sandbox",
+        False,
+        True,
+        sandbox.note,
+        "install bubblewrap and enable unprivileged user namespaces; without it Lean C refuses to execute "
+        "untrusted test programs (static analysis and CBMC still run)",
+    )
+
+
+def _toolchain_checks(clang: str | None, cbmc: str | None, sandbox: Sandbox, sandbox_preference: str) -> list[Check]:
+    checks: list[Check] = []
+    with tempfile.TemporaryDirectory(prefix="leanc-doctor-") as temporary:
+        workdir = Path(temporary)
         if clang:
             checks.append(Check("clang", True, True, f"{clang}: {tool_version(clang)}"))
+            checks.append(_static_analyzer_check(clang, workdir))
+            checks.append(_sanitizer_check(clang, workdir, sandbox))
         else:
-            hint = (
-                f"LEANC_CLANG={os.environ['LEANC_CLANG']!r} is not an executable"
-                if os.environ.get("LEANC_CLANG")
-                else f"install clang ({APT_HINT}) or set LEANC_CLANG"
-            )
-            checks.append(Check("clang", False, True, "not found", hint))
-            checks.append(Check("clang-static-analyzer", False, True, "not checked: clang missing", hint))
-            checks.append(Check("sanitizers", False, True, "not checked: clang missing", hint))
-        # ------------------------------------------------- static analyzer
-        if clang:
-            src = _tiny_c(tdir, "sa.c", "int f(int *p){ if(!p) return *p; return 0; }\n")
-            out = tdir / "sa.sarif"
-            r = run_command(
-                [clang, "--analyze", "--analyzer-output", "sarif", "-o", str(out), str(src)],
-                cwd=tdir,
-                limits=Limits(timeout_s=60),
-                env=minimal_env(),
-            )
-            ok = False
-            detail = r.error or r.stderr.strip()[-300:]
-            if out.exists():
-                try:
-                    data = json.loads(out.read_text())
-                    n = len(data["runs"][0]["results"])
-                    ok = n >= 1
-                    detail = f"SARIF output ok ({n} finding(s) on probe file)"
-                except (ValueError, KeyError, IndexError) as exc:
-                    detail = f"SARIF unparsable: {exc}"
-            checks.append(
-                Check("clang-static-analyzer", ok, True, detail, "" if ok else "clang --analyze with SARIF output must work")
-            )
-        # -------------------------------------------------------- sanitizers
-        if clang:
-            src = _tiny_c(
-                tdir,
-                "san.c",
-                "#include <stdlib.h>\nint main(int c,char**v){int *p=malloc(4*sizeof(int)); int r=p[c]; free(p); return r*0;}\n",
-            )
-            exe = tdir / "san"
-            r = run_command(
-                [clang, "-g", "-fsanitize=address,undefined", str(src), "-o", str(exe)],
-                cwd=tdir,
-                limits=Limits(timeout_s=120),
-                env=minimal_env(),
-            )
-            if r.ok and exe.exists():
-                detail = "ASan+UBSan build ok"
-                if sb.active:
-                    rr = run_command(
-                        [str(exe)],
-                        cwd=tdir,
-                        limits=Limits(timeout_s=30),
-                        env=minimal_env({"ASAN_OPTIONS": "detect_leaks=1"}),
-                        sandbox=sb,
-                        mounts=SandboxMounts(ro=[str(tdir)]),
-                    )
-                    detail += "; sandboxed run ok" if rr.exit_code == 0 else f"; sandboxed run exit {rr.exit_code}: {rr.stderr.strip()[-200:]}"
-                    ok = rr.exit_code == 0
-                else:
-                    ok = True
-                    detail += "; run skipped (no sandbox)"
-                checks.append(Check("sanitizers", ok, True, detail, "" if ok else "install libclang-rt-18-dev"))
-            else:
-                checks.append(
-                    Check(
-                        "sanitizers",
-                        False,
-                        True,
-                        (r.error or r.stderr.strip())[-300:],
-                        "install the sanitizer runtime, e.g. libclang-rt-18-dev",
-                    )
-                )
-        # -------------------------------------------------------------- CBMC
-        if cbmc:
-            src = _tiny_c(
-                tdir,
-                "cb.c",
-                "#include <assert.h>\nint nondet_int(void);\nint main(void){int x=nondet_int(); if(x>0 && x<10) assert(x*2<20); return 0;}\n",
-            )
-            r = run_command(
-                [cbmc, str(src), "--signed-overflow-check", "--json-ui"],
-                cwd=tdir,
-                limits=Limits(timeout_s=120),
-                env=minimal_env(),
-            )
-            ok = '"cProverStatus": "success"' in r.stdout or '"cProverStatus":"success"' in r.stdout
-            checks.append(
-                Check(
-                    "cbmc",
-                    ok,
-                    True,
-                    f"{cbmc}: {tool_version(cbmc)}" + ("" if ok else f"; probe failed: {(r.error or r.stderr)[-200:]}"),
-                    "" if ok else "CBMC needs a working C preprocessor (gcc or cc on PATH)",
-                )
-            )
-        else:
-            checks.append(Check("cbmc", False, True, "not found", f"install CBMC ({APT_HINT}) or set LEANC_CBMC"))
-        # ----------------------------------------------------------- sandbox
-        if sandbox_preference == "none":
-            checks.append(Check("sandbox", True, False, "skipped (--no-sandbox); untrusted tests would be SKIPPED"))
-        elif sb.active:
-            blocked = network_probe_blocked(sb, tdir)
-            detail = sb.note + (
-                "; network: blocked" if blocked else "; network: COULD NOT CONFIRM isolation" if blocked is None else "; network: VISIBLE"
-            )
-            checks.append(Check("sandbox", bool(blocked), True, detail, "" if blocked else "bwrap must isolate the network"))
-        else:
-            checks.append(
-                Check(
-                    "sandbox",
-                    False,
-                    True,
-                    sb.note,
-                    "install bubblewrap and enable unprivileged user namespaces; without it Lean C refuses to execute "
-                    "untrusted test programs (static analysis and CBMC still run)",
-                )
-            )
-    # ------------------------------------------------------------------ LLM
+            checks.extend(_missing_clang_checks())
+        checks.append(_cbmc_check(cbmc, workdir))
+        checks.append(_sandbox_check(sandbox_preference, sandbox, workdir))
+    return checks
+
+
+def _llm_provider_check() -> Check:
     key = bool(os.environ.get("LEANC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
     model = os.environ.get("LEANC_MODEL")
-    base = _safe_url(os.environ.get("LEANC_BASE_URL", "https://api.openai.com/v1"))
+    base = _safe_url(os.environ.get("LEANC_BASE_URL", DEFAULT_OPENAI_BASE_URL))
     custom_base = bool(os.environ.get("LEANC_BASE_URL"))
     configured = bool(model and (key or custom_base))
     if configured:
@@ -196,40 +226,67 @@ def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
         detail = "API key present but LEANC_MODEL not set"
     else:
         detail = "no API key: offline mode (verification works; use --provider mock for generation/repair demos)"
-    checks.append(
-        Check("llm-provider", configured, False, detail, "" if configured else "set LEANC_API_KEY and LEANC_MODEL (optional)")
+    return Check(
+        "llm-provider", configured, False, detail, "" if configured else "set LEANC_API_KEY and LEANC_MODEL (optional)"
     )
-    # ---------------------------------------------------- V2 (optional) tools
+
+
+def _clangxx_check(clang: str | None) -> Check:
     cxx = find_clangxx(clang)
-    checks.append(
-        Check("clang++ (C++20 specs)", bool(cxx), False, f"{cxx}: {tool_version(cxx)}" if cxx else "not found",
-              "" if cxx else "install clang++ (same version as clang) or set LEANC_CLANGXX")
+    return Check(
+        "clang++ (C++20 specs)",
+        bool(cxx),
+        False,
+        f"{cxx}: {tool_version(cxx)}" if cxx else "not found",
+        "" if cxx else "install clang++ (same version as clang) or set LEANC_CLANGXX",
     )
-    fc = find_framac()
-    if fc:
-        detail = f"{fc.frama_c}: {tool_version(fc.frama_c)}" + (f"; why3 {fc.why3}" if fc.why3 else "; why3 missing")
-        checks.append(Check("frama-c-wp (wp gate)", bool(fc.why3), False, detail, "" if fc.why3 else WP_HINT))
-    else:
-        checks.append(Check("frama-c-wp (wp gate)", False, False, "not found", WP_HINT))
-    lt = find_lean()
-    if lt:
-        ok = bool(lt.leanchecker)
-        checks.append(
-            Check("lean (lean gate)", ok, False,
-                  f"{lt.lean}: {lt.version_line or lt.version}" + ("; leanchecker ok" if ok else "; leanchecker MISSING"),
-                  "" if ok else "the lean gate requires leanchecker (ships with Lean 4 release toolchains)")
-        )
-    else:
-        checks.append(Check("lean (lean gate)", False, False, "not found", LEAN_HINT))
-    kp = leanc_home() / "approval.key"
-    checks.append(
-        Check(
-            "approval-key",
-            kp.is_file(),
-            False,
-            f"{kp} {'exists' if kp.is_file() else 'will be created on first `leanc spec approve`'}",
-        )
+
+
+def _framac_check() -> Check:
+    framac = find_framac()
+    if not framac:
+        return Check("frama-c-wp (wp gate)", False, False, "not found", WP_HINT)
+    detail = f"{framac.frama_c}: {tool_version(framac.frama_c)}" + (
+        f"; why3 {framac.why3}" if framac.why3 else "; why3 missing"
     )
+    return Check("frama-c-wp (wp gate)", bool(framac.why3), False, detail, "" if framac.why3 else WP_HINT)
+
+
+def _lean_check() -> Check:
+    lean = find_lean()
+    if not lean:
+        return Check("lean (lean gate)", False, False, "not found", LEAN_HINT)
+    ok = bool(lean.leanchecker)
+    return Check(
+        "lean (lean gate)",
+        ok,
+        False,
+        f"{lean.lean}: {lean.version_line or lean.version}" + ("; leanchecker ok" if ok else "; leanchecker MISSING"),
+        "" if ok else "the lean gate requires leanchecker (ships with Lean 4 release toolchains)",
+    )
+
+
+def _approval_key_check() -> Check:
+    key_path = leanc_home() / "approval.key"
+    return Check(
+        "approval-key",
+        key_path.is_file(),
+        False,
+        f"{key_path} {'exists' if key_path.is_file() else 'will be created on first `leanc spec approve`'}",
+    )
+
+
+def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
+    checks = [_python_check()]
+    clang = find_clang()
+    cbmc = find_cbmc()
+    sandbox = detect_sandbox(sandbox_preference)
+    checks.extend(_toolchain_checks(clang, cbmc, sandbox, sandbox_preference))
+    checks.append(_llm_provider_check())
+    checks.append(_clangxx_check(clang))
+    checks.append(_framac_check())
+    checks.append(_lean_check())
+    checks.append(_approval_key_check())
     return checks
 
 

@@ -1,22 +1,11 @@
-"""Robust extraction and validation of the JSON objects models answer with.
-
-Models are asked to answer with *only* a JSON object, but in practice they
-wrap it in markdown fences, prepend prose ("Here is the fix:"), or emit raw
-newlines inside strings.  :func:`extract_json_object` tolerates exactly those
-quirks and nothing more: it never "repairs" broken JSON by guessing, because a
-silently mis-parsed response would be worse than a clear :class:`ProviderError`.
-
-The ``*_from_obj`` validators are shared by the HTTP provider (``strict=False``:
-unknown keys are ignored, missing explanatory fields default to "") and the
-mock provider (``strict=True``: fixtures must match the documented format
-exactly, so a typo in a fixture is reported instead of silently ignored).
-"""
+"""Extraction and validation of model JSON answers: tolerates fences, prose and raw newlines, never guesses."""
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from enum import Enum
 from typing import Any
 
 import yaml
@@ -26,18 +15,17 @@ from leanc.foundation.redact import redact
 from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import GeneratedCode, RepairProposal, SpecDraft
 
-#: Responses larger than this are rejected outright (protects the scanner and
-#: everything downstream from pathological output).
 MAX_RESPONSE_CHARS = 4_000_000
-#: At most this many '{' positions are tried by the fallback scanner.
-MAX_SCAN_ATTEMPTS = 2_000
+MAX_BRACE_POSITIONS_SCANNED = 2_000
+BYTE_ORDER_MARK = "﻿"
 
 _FENCE_RE = re.compile(r"(?P<fence>`{3,}|~{3,})[ \t]*(?P<tag>[A-Za-z0-9_+.-]*)[^\n]*\n(?P<body>.*?)(?P=fence)", re.S)
 _JSON_TAGS = {"json", "json5", "jsonc", "javascript", "js"}
-# strict=False lets control characters (raw newlines/tabs) appear inside
-# strings - the most common way models break otherwise valid JSON when they
-# embed source code.
-_DECODER = json.JSONDecoder(strict=False)
+_DECODER_TOLERATING_RAW_CONTROL_CHARS = json.JSONDecoder(strict=False)
+
+
+class _Decoding(Enum):
+    NOT_JSON = "the candidate text is not one JSON document"
 
 
 def excerpt(text: str, limit: int = 300) -> str:
@@ -47,106 +35,84 @@ def excerpt(text: str, limit: int = 300) -> str:
     return s if len(s) <= limit else s[:limit] + "..."
 
 
-def _try_loads(candidate: str) -> Any:
+def _decode_document(candidate: str) -> Any:
     try:
-        return _DECODER.decode(candidate)
+        return _DECODER_TOLERATING_RAW_CONTROL_CHARS.decode(candidate)
     except ValueError:
-        return None
+        return _Decoding.NOT_JSON
 
 
 def _fenced_blocks(text: str) -> list[str]:
-    """Bodies of markdown code fences: json-tagged first, then untagged, then
-    the rest (a model sometimes tags JSON as ``text``)."""
-    tagged, untagged, other = [], [], []
-    for m in _FENCE_RE.finditer(text):
-        tag = m.group("tag").lower()
-        body = m.group("body").strip()
+    json_tagged, untagged, other_tagged = [], [], []
+    for match in _FENCE_RE.finditer(text):
+        tag = match.group("tag").lower()
+        body = match.group("body").strip()
         if not body:
             continue
         if tag in _JSON_TAGS:
-            tagged.append(body)
+            json_tagged.append(body)
         elif not tag:
             untagged.append(body)
         else:
-            other.append(body)
-    return tagged + untagged + other
+            other_tagged.append(body)
+    return json_tagged + untagged + other_tagged
 
 
-def _scan_objects(text: str) -> Iterable[dict]:
-    """Yield top-level JSON objects embedded anywhere in ``text``.
-
-    ``raw_decode`` is a real JSON parser, so braces inside strings (C code in
-    a ``files`` value, say) are handled correctly.  After a successful decode
-    the scan continues *after* that object, so nested objects are not yielded
-    separately."""
+def _embedded_top_level_objects(text: str) -> Iterator[dict]:
     pos = 0
     attempts = 0
-    n = len(text)
-    while pos < n and attempts < MAX_SCAN_ATTEMPTS:
-        i = text.find("{", pos)
-        if i < 0:
+    while pos < len(text) and attempts < MAX_BRACE_POSITIONS_SCANNED:
+        brace = text.find("{", pos)
+        if brace < 0:
             return
         attempts += 1
         try:
-            obj, end = _DECODER.raw_decode(text, i)
+            obj, object_end = _DECODER_TOLERATING_RAW_CONTROL_CHARS.raw_decode(text, brace)
         except ValueError:
-            pos = i + 1
+            pos = brace + 1
             continue
         if isinstance(obj, dict):
             yield obj
-        pos = max(end, i + 1)
+        pos = max(object_end, brace + 1)
+
+
+def _candidates(body: str) -> Iterator[Any]:
+    if body.startswith("{"):
+        yield _decode_document(body)
+    for block in _fenced_blocks(body):
+        yield _decode_document(block)
+    yield from _embedded_top_level_objects(body)
+
+
+def _answered_with_json_array(body: str) -> bool:
+    return body.startswith("[") and isinstance(_decode_document(body), list)
 
 
 def extract_json_object(text: str, *, expect_keys: Iterable[str] = ()) -> dict[str, Any]:
-    """Return the JSON object a model answered with.
-
-    Tries, in order: the whole (stripped) text; markdown code fences (json
-    first); every top-level ``{...}`` embedded in prose.  If ``expect_keys`` is
-    given, the first candidate containing *all* of them wins (so a small JSON
-    example quoted in leading prose does not shadow the real answer);
-    otherwise the first object found.  Raises :class:`ProviderError` if no
-    JSON object can be found.
-    """
+    """The first candidate object (whole text, fences, embedded) having all expect_keys, else the first object."""
     if not isinstance(text, str):
         raise ProviderError(f"model response is not text (got {type(text).__name__})")
     if len(text) > MAX_RESPONSE_CHARS:
         raise ProviderError(f"model response too large ({len(text)} characters > {MAX_RESPONSE_CHARS})")
-    body = text.lstrip("﻿").strip()
+    body = text.lstrip(BYTE_ORDER_MARK).strip()
     if not body:
         raise ProviderError("model response is empty (expected a JSON object)")
     keys = tuple(expect_keys)
     first: dict[str, Any] | None = None
-
-    def consider(obj: Any) -> dict[str, Any] | None:
-        nonlocal first
-        if not isinstance(obj, dict):
-            return None
-        if all(k in obj for k in keys):
-            return obj
+    for candidate in _candidates(body):
+        if not isinstance(candidate, dict):
+            continue
+        if all(k in candidate for k in keys):
+            return candidate
         if first is None:
-            first = obj
-        return None
-
-    if body.startswith("{"):
-        hit = consider(_try_loads(body))
-        if hit is not None:
-            return hit
-    for block in _fenced_blocks(body):
-        hit = consider(_try_loads(block))
-        if hit is not None:
-            return hit
-    for obj in _scan_objects(body):
-        hit = consider(obj)
-        if hit is not None:
-            return hit
+            first = candidate
     if first is not None:
         return first
-    if body.startswith("[") and isinstance(_try_loads(body), list):
+    if _answered_with_json_array(body):
         raise ProviderError("model answered with a JSON array; expected a JSON object")
     raise ProviderError(f"no JSON object found in model response: {excerpt(body)!r}")
 
 
-# ------------------------------------------------------------------ field validators
 def check_keys(
     obj: dict[str, Any],
     *,
@@ -155,9 +121,7 @@ def check_keys(
     strict: bool = False,
     where: str = "response",
 ) -> list[str]:
-    """Check presence of ``required`` keys; return the unknown keys.
-
-    With ``strict`` unknown keys are an error (used for fixtures)."""
+    """Check that the required keys are present and return the unknown ones (an error when strict)."""
     if not isinstance(obj, dict):
         raise ProviderError(f"{where}: expected a JSON object, got {type(obj).__name__}")
     req = list(required)
@@ -180,29 +144,27 @@ def expect_str(
     allow_empty: bool = True,
     where: str = "response",
 ) -> str:
-    """Return ``obj[key]`` as a string (a list of strings is joined by
-    newlines; ``null``/absent gives ``default`` unless ``required``)."""
+    """``obj[key]`` as a string (a list of strings joined by newlines; null/absent gives default unless required)."""
     if key not in obj or obj[key] is None:
         if required:
             raise ProviderError(f"{where}: missing required string {key!r}")
         return default
-    v = obj[key]
-    if isinstance(v, list) and all(isinstance(x, str) for x in v):
-        v = "\n".join(v)
-    if not isinstance(v, str):
-        raise ProviderError(f"{where}: {key!r} must be a string, got {type(v).__name__}")
-    if not allow_empty and not v.strip():
+    value = obj[key]
+    if isinstance(value, list) and all(isinstance(x, str) for x in value):
+        value = "\n".join(value)
+    if not isinstance(value, str):
+        raise ProviderError(f"{where}: {key!r} must be a string, got {type(value).__name__}")
+    if not allow_empty and not value.strip():
         raise ProviderError(f"{where}: {key!r} must not be empty")
-    return v
+    return value
 
 
 def strip_code_fence(content: str) -> str:
-    """Remove one markdown fence wrapping an entire value (models sometimes
-    put ```c ... ``` inside a JSON string)."""
+    """Remove one markdown fence wrapping an entire value (models sometimes fence code inside a JSON string)."""
     s = content.strip()
-    m = re.fullmatch(r"(`{3,}|~{3,})[^\n]*\n(.*?)\n?\1", s, re.S)
-    if m:
-        return m.group(2) + "\n"
+    match = re.fullmatch(r"(`{3,}|~{3,})[^\n]*\n(.*?)\n?\1", s, re.S)
+    if match:
+        return match.group(2) + "\n"
     return content
 
 
@@ -213,6 +175,13 @@ def _normalise_source(content: str) -> str:
     return content
 
 
+def _normalised_or_verbatim_for_policy_rejection(path: str) -> str:
+    try:
+        return normalize_relpath(path.strip())
+    except WorkspaceError:
+        return path
+
+
 def expect_files(
     obj: dict[str, Any],
     key: str = "files",
@@ -221,39 +190,29 @@ def expect_files(
     clean: bool = True,
     where: str = "response",
 ) -> dict[str, str] | None:
-    """Validate a ``{relative path: full content}`` map.
-
-    Paths are normalised (``./src/a.c`` -> ``src/a.c``) when they are valid
-    workspace-relative paths; invalid ones (absolute, ``..``) are kept verbatim
-    so that the generation/repair policy rejects them visibly instead of the
-    parser silently fixing an attempted escape.  With ``clean`` (model output)
-    a wrapping markdown fence is removed, CRLF normalised and a final newline
-    ensured; fixtures (``clean=False``) are returned byte-for-byte.  Returns
-    ``None`` when the key is absent/null/empty and not required."""
-    v = obj.get(key)
-    if v is None or v == {}:
+    """Validate a ``{relative path: full content}`` map (None when absent/empty and not required)."""
+    value = obj.get(key)
+    if value is None or value == {}:
         if required:
             raise ProviderError(f"{where}: {key!r} must be a non-empty object mapping file paths to contents")
         return None
-    if not isinstance(v, dict):
-        raise ProviderError(f"{where}: {key!r} must be an object mapping file paths to contents, got {type(v).__name__}")
+    if not isinstance(value, dict):
+        raise ProviderError(
+            f"{where}: {key!r} must be an object mapping file paths to contents, got {type(value).__name__}"
+        )
     out: dict[str, str] = {}
-    for path, content in v.items():
+    for path, content in value.items():
         if not isinstance(path, str) or not path.strip():
             raise ProviderError(f"{where}: {key!r} has an empty file path")
         if not isinstance(content, str):
             raise ProviderError(f"{where}: content of {path!r} must be a string, got {type(content).__name__}")
-        try:
-            norm = normalize_relpath(path.strip())
-        except WorkspaceError:
-            norm = path
+        norm = _normalised_or_verbatim_for_policy_rejection(path)
         if norm in out:
             raise ProviderError(f"{where}: file {norm!r} given more than once")
         out[norm] = _normalise_source(content) if clean else content
     return out
 
 
-# ------------------------------------------------------------------ typed parsers
 CODEGEN_KEYS = ("files",)
 CODEGEN_OPTIONAL = ("notes",)
 SPEC_DRAFT_KEYS = ("spec_yaml",)
@@ -262,31 +221,35 @@ REPAIR_KEYS = ("root_cause", "rationale")
 REPAIR_OPTIONAL = ("files", "patch", "note")
 
 
+def _with_ignored_keys_note(notes: str, unknown: list[str]) -> str:
+    if not unknown:
+        return notes
+    return (notes + "\n" if notes else "") + f"(ignored unexpected keys: {', '.join(unknown)})"
+
+
 def generated_code_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> GeneratedCode:
     where = "code generation response"
     unknown = check_keys(obj, required=CODEGEN_KEYS, optional=CODEGEN_OPTIONAL, strict=strict, where=where)
     files = expect_files(obj, "files", required=True, clean=not strict, where=where) or {}
-    notes = expect_str(obj, "notes", required=False, where=where)
-    if unknown:
-        notes = (notes + "\n" if notes else "") + f"(ignored unexpected keys: {', '.join(unknown)})"
+    notes = _with_ignored_keys_note(expect_str(obj, "notes", required=False, where=where), unknown)
     return GeneratedCode(files=files, notes=notes, raw_response=raw)
+
+
+def _model_sent_spec_as_mapping(spec_value: Any, strict: bool) -> bool:
+    return isinstance(spec_value, dict) and not strict
 
 
 def spec_draft_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> SpecDraft:
     where = "spec draft response"
     unknown = check_keys(obj, required=SPEC_DRAFT_KEYS, optional=SPEC_DRAFT_OPTIONAL, strict=strict, where=where)
-    spec_val = obj.get("spec_yaml")
-    if isinstance(spec_val, dict) and not strict:
-        # The model emitted the spec as a JSON object instead of YAML text:
-        # unambiguous, so serialise it rather than failing the request.
-        spec_yaml = yaml.safe_dump(spec_val, sort_keys=False, allow_unicode=True, width=100)
+    spec_value = obj.get("spec_yaml")
+    if _model_sent_spec_as_mapping(spec_value, strict):
+        spec_yaml = yaml.safe_dump(spec_value, sort_keys=False, allow_unicode=True, width=100)
     else:
         spec_yaml = strip_code_fence(expect_str(obj, "spec_yaml", required=True, allow_empty=False, where=where))
     harness = expect_str(obj, "harness_c", required=False, where=where) or None
     tests = expect_str(obj, "tests_c", required=False, where=where) or None
-    notes = expect_str(obj, "notes", required=False, where=where)
-    if unknown:
-        notes = (notes + "\n" if notes else "") + f"(ignored unexpected keys: {', '.join(unknown)})"
+    notes = _with_ignored_keys_note(expect_str(obj, "notes", required=False, where=where), unknown)
     if not strict:
         harness = _normalise_source(harness) if harness else None
         tests = _normalise_source(tests) if tests else None
@@ -300,11 +263,7 @@ def spec_draft_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str =
 
 
 def repair_proposal_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> RepairProposal:
-    """Validate ``{"root_cause", "rationale", "files"}`` or ``{..., "patch"}``.
-
-    Exactly one of ``files``/``patch`` may carry a change (empty values count
-    as absent).  A proposal with neither is returned with an explanatory
-    ``note``; the repair loop records it as a failed round."""
+    """Validate a repair answer whose change is in exactly one of files/patch (neither: no change, with a note)."""
     where = "repair response"
     if strict:
         check_keys(obj, required=REPAIR_KEYS, optional=REPAIR_OPTIONAL, strict=True, where=where)
@@ -313,10 +272,10 @@ def repair_proposal_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: 
     root_cause = expect_str(obj, "root_cause", required=strict, where=where)
     rationale = expect_str(obj, "rationale", required=strict, where=where)
     files = expect_files(obj, "files", required=False, clean=not strict, where=where)
-    patch_val = obj.get("patch")
-    if patch_val is not None and not isinstance(patch_val, str):
-        raise ProviderError(f"{where}: 'patch' must be a unified diff string, got {type(patch_val).__name__}")
-    patch = patch_val if patch_val and patch_val.strip() else None
+    patch_value = obj.get("patch")
+    if patch_value is not None and not isinstance(patch_value, str):
+        raise ProviderError(f"{where}: 'patch' must be a unified diff string, got {type(patch_value).__name__}")
+    patch = patch_value if patch_value and patch_value.strip() else None
     if patch is not None and not strict:
         patch = strip_code_fence(patch)
     if files and patch:
@@ -326,7 +285,9 @@ def repair_proposal_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: 
         if strict:
             raise ProviderError(f"{where}: must contain a non-empty 'files' object or a non-empty 'patch' string")
         note = note or "provider response contained neither 'files' nor 'patch' (no change proposed)"
-    return RepairProposal(root_cause=root_cause, rationale=rationale, files=files, patch=patch, raw_response=raw, note=note)
+    return RepairProposal(
+        root_cause=root_cause, rationale=rationale, files=files, patch=patch, raw_response=raw, note=note
+    )
 
 
 def parse_code_response(text: str) -> GeneratedCode:
