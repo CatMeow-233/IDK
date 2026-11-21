@@ -71,15 +71,15 @@ import，但**模組**依賴圖必須無循環。`leanc` 內部的 import 一律
 | C. Compilation Engine | `leanc/backends/clang.py` | `clang -std=c17 -Wall -Wextra -Wpedantic -c`；診斷解析（檔案/行/欄/旗標）；warning 政策 |
 | C'. Source Integrity（強制） | `leanc/backends/integrity.py`、`leanc/rules/c_rules.py`、`source.py`、`definitions.py` | 物件檔符號/匯入/section 檢查、前處理層級規則；確保所有工具看到同一份程式、程式不能覆寫 harness/CBMC/libc 符號或終止行程 |
 | D. Static Analysis Engine | `leanc/backends/analyzer.py` | `clang --analyze --analyzer-output sarif`；SARIF 解析（含 code flow）；不支援時退回文字格式並記錄 |
-| E. Runtime Verification Engine | `leanc/backends/sanitizer.py` | ASan/UBSan/LSan 建置可信測試；在 bubblewrap 沙箱中逐案例執行；逾時/輸出/記憶體限制 |
-| F. Formal Verification Engine | `leanc/backends/cbmc.py` | CBMC 有界模型檢查；強制檢查類別；unwinding assertions；vacuity 探針；可選覆蓋率 |
-| G. Counterexample Analyzer | `leanc/backends/counterexample.py` | 失敗性質、位置、輸入值、呼叫堆疊、精簡 trace、指紋（fingerprint） |
-| H. Repair Agent | `leanc/pipeline/repair_loop.py`、`leanc/repair/patch.py`、`policy.py`、`leanc/llm/*` | 提案 → 補丁 → 政策 → 去重 → 快照驗證 → 改善判定 / 還原 |
+| E. Runtime Verification Engine | `leanc/backends/sanitizer/` | ASan/UBSan/LSan 建置可信測試；在 bubblewrap 沙箱中逐案例執行；逾時/輸出/記憶體限制 |
+| F. Formal Verification Engine | `leanc/backends/cbmc/` | CBMC 有界模型檢查；強制檢查類別；unwinding assertions；vacuity 探針；可選覆蓋率 |
+| G. Counterexample Analyzer | `leanc/backends/counterexample/` | 失敗性質、位置、輸入值、呼叫堆疊、精簡 trace、指紋（fingerprint） |
+| H. Repair Agent | `leanc/pipeline/repair_loop.py`、`leanc/repair/patch/`、`policy.py`、`leanc/llm/*` | 提案 → 補丁 → 政策 → 去重 → 快照驗證 → 改善判定 / 還原 |
 | I. Verification Controller | `leanc/pipeline/controller.py` | 關卡順序、略過規則、狀態彙總 |
 | J. Report Generator | `leanc/reports/json_report.py`、`markdown.py` | JSON 摘要、Markdown 報告（依偵測工具分組） |
-| F'. Deductive Verification（V2） | `leanc/backends/wp.py`、`leanc/rules/acsl.py`、`leanc/toolchain/framac.py` | Frama-C/WP：受保護標頭中的 ACSL 契約 + `-wp-rte` + smoke test；唯一能產生 `PROVED` 的關卡 |
-| F''. Model Proofs（V2，可選） | `leanc/backends/lean.py`、`leanc/rules/lean_rules.py`、`leanc/toolchain/lean.py` | Lean 4 kernel + `leanchecker` 檢查 AI 撰寫的模型證明；差分測試向量連結模型與 C |
-| C++20（V2） | `leanc/toolchain/cxx.py`、`leanc/rules/cpp_rules.py`、`leanc/lang/cpp_lexer.py`、`leanc/llm/cpp_prompts.py` | clang++ 編譯/分析/sanitizer；C++ 完整性規則；沒有形式化關卡 |
+| F'. Deductive Verification（V2） | `leanc/backends/wp/`、`leanc/rules/acsl.py`、`leanc/toolchain/framac.py` | Frama-C/WP：受保護標頭中的 ACSL 契約 + `-wp-rte` + smoke test；唯一能產生 `PROVED` 的關卡 |
+| F''. Model Proofs（V2，可選） | `leanc/backends/lean/`、`leanc/rules/lean_rules.py`、`leanc/toolchain/lean.py` | Lean 4 kernel + `leanchecker` 檢查 AI 撰寫的模型證明；差分測試向量連結模型與 C |
+| C++20（V2） | `leanc/toolchain/cxx.py`、`leanc/rules/cpp_rules/`、`leanc/lang/cpp_lexer.py`、`leanc/llm/cpp_prompts.py` | clang++ 編譯/分析/sanitizer；C++ 完整性規則；沒有形式化關卡 |
 | 基礎設施 | `leanc/foundation/runner.py`、`sandbox.py`、`workspace.py`、`redact.py` | 無 shell 執行、rlimit、輸出上限、bwrap 沙箱、路徑穿越/符號連結防護、憑證遮蔽 |
 
 ## 資料流與快照
