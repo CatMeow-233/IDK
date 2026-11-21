@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
 from typing import Any
 
 LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")

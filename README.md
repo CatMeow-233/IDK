@@ -141,7 +141,7 @@ Use `--json` and branch on the exit code or on `status`. `leanc verify SPEC --js
       "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
       "kind": "...", "property_id": "...", "location": {"file": "src/array_lookup.c", "line": 9, "column": 16, "function": "array_lookup"},
       "inputs": [{"name": "argv", "value": "index_equals_count", "type": null}],
-      "description": "...", "raw_ref": "raw/..."
+      "description": "...", "raw_ref": "raw/...", "ownership_trace": null
     }]
   }
 }
@@ -159,6 +159,19 @@ Run directory layout:
     logs/       stdout / stderr of every tool call, numbered in execution order
     build/
 ```
+
+For a LeakSanitizer failure in a C project, `ownership_trace` holds evidence from an instrumented replay of the leaking test case. It is never part of the verdict, and C++ is not traced. It contains:
+
+- `allocation`: the allocation site.
+- `released_at`: where allocations from that site are freed on other paths.
+- `loss` and `function`: the function-level point at which the last reference disappeared. `loss` is one of:
+  - `inside-function`: gone before the function returned.
+  - `at-function-return`: gone when its frame ended.
+  - `after-return-by-caller`: a probe after the return still saw the block, so the caller dropped it.
+  - `at-or-after-return`: no later event could tell which.
+- `returned_to`: the call site the function returned to.
+
+The repair prompt shows the same evidence with an explicit label. It does not identify which `return` statement ran.
 
 There are two ways for an agent to fix code:
 

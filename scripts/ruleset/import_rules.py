@@ -5,7 +5,15 @@ from collections import defaultdict
 from collections.abc import Iterator
 
 from scripts.ruleset.core import Constraints, Violation
-from scripts.ruleset.sources import layer_of, package_files, package_imports, package_modules, parse, rel, resolve
+from scripts.ruleset.sources import (
+    layer_of,
+    package_files,
+    package_imports,
+    package_modules,
+    parse,
+    rel,
+    resolve,
+)
 
 DYNAMIC_IMPORT_CALLS = frozenset({"import_module", "__import__"})
 

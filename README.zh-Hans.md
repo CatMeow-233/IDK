@@ -141,7 +141,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
       "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
       "kind": "...", "property_id": "...", "location": {"file": "src/array_lookup.c", "line": 9, "column": 16, "function": "array_lookup"},
       "inputs": [{"name": "argv", "value": "index_equals_count", "type": null}],
-      "description": "...", "raw_ref": "raw/..."
+      "description": "...", "raw_ref": "raw/...", "ownership_trace": null
     }]
   }
 }
@@ -159,6 +159,19 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
     logs/       每次工具调用的 stdout / stderr，按执行顺序编号
     build/
 ```
+
+C 项目出现 LeakSanitizer 失败时，`ownership_trace` 保存对该泄漏测试用例做插桩重放得到的证据。它不参与判定，C++ 不追踪。内容如下：
+
+- `allocation`：配置点。
+- `released_at`：同一配置点的内存在其他路径上被释放的位置。
+- `loss` 与 `function`：最后一个引用在函数层级消失的位置。`loss` 是以下之一：
+  - `inside-function`：函数返回前已消失。
+  - `at-function-return`：函数的 frame 结束时消失。
+  - `after-return-by-caller`：返回后的检查仍看得到该内存，所以是调用者丢掉的。
+  - `at-or-after-return`：没有后续事件可以区分是哪一种。
+- `returned_to`：函数返回到的调用点。
+
+修复 prompt 会以明确标签显示同样的证据。它不会指出执行的是哪一行 `return`。
 
 agent 修正代码有两种方式：
 

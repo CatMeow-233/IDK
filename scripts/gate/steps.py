@@ -6,7 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from scripts.gate.approvals import approval_compatibility
-from scripts.gate.environment import command_env, judge_leanc_origin, leanc_origin, run_command
+from scripts.gate.environment import (
+    command_env,
+    judge_leanc_origin,
+    leanc_origin,
+    run_command,
+)
 from scripts.gate.git import Git, remote_ref
 from scripts.gate.junit import judge_junit, read_junit
 from scripts.gate.model import GateState, Runner, Step, StepResult

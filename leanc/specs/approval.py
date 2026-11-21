@@ -13,9 +13,9 @@ from typing import Any, NamedTuple
 
 from leanc import __version__
 from leanc.foundation.errors import JSON_LOAD_ERRORS, ApprovalError, WorkspaceError
-from leanc.foundation.text import has_lone_surrogate
 from leanc.foundation.hashing import canonical_json, sha256_bytes
 from leanc.foundation.models import ApprovalCheck, utcnow
+from leanc.foundation.text import has_lone_surrogate
 from leanc.foundation.workspace import Workspace
 from leanc.specs.loader import spec_canonical_dict, spec_hash
 from leanc.specs.model import Spec

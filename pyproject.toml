@@ -32,7 +32,7 @@ leanc = "leanc.cli:main"
 include = ["leanc*"]
 
 [tool.setuptools.package-data]
-leanc = ["data/include/*.h", "data/templates/*/*", "data/templates/*/*/*", "data/templates/*/*/*/*", "data/templates/*/*/*/*/*"]
+leanc = ["data/include/*.h", "data/runtime/*.c", "data/templates/*/*", "data/templates/*/*/*", "data/templates/*/*/*/*", "data/templates/*/*/*/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

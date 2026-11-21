@@ -34,6 +34,10 @@ def leanc_include_dir() -> Path:
     return Path(str(resources.files("leanc") / "data" / "include"))
 
 
+def leanc_runtime_dir() -> Path:
+    return Path(str(resources.files("leanc") / "data" / "runtime"))
+
+
 def new_run_id(prefix: str = "") -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{prefix}{ts}-{secrets.token_hex(3)}"

@@ -97,6 +97,38 @@ FailureKind = Literal[
 ]
 
 
+OwnershipLoss = Literal["inside-function", "at-function-return", "after-return-by-caller", "at-or-after-return"]
+OWNERSHIP_TRACE_LABEL = (
+    "memory ownership trace (from an instrumented replay of the untrusted program; evidence, not a verdict)"
+)
+OWNERSHIP_LOSS_TEXT: dict[str, str] = {
+    "inside-function": "no reference to it remained when {function} was about to return",
+    "at-function-return": "its last reference was in the frame of {function}: it became unreachable as soon as {function} returned",
+    "after-return-by-caller": "it was still referenced after {function} returned{returned_to}, so the caller dropped it later",
+    "at-or-after-return": "it became unreachable at or after the return of {function}{returned_to}; no later event shows whether {function} or its caller dropped it",
+}
+
+
+class MemoryOwnershipTrace(_Model):
+    test_case: str
+    allocation: Location
+    released_at: list[Location] = Field(default_factory=list)
+    loss: OwnershipLoss
+    function: Location
+    returned_to: Location | None = None
+
+    def describe(self) -> str:
+        function = self.function.function or self.function.short()
+        returned_to = f" to {self.returned_to.short()}" if self.returned_to else ""
+        released = (
+            "allocations from this site are released at " + ", ".join(loc.short() for loc in self.released_at)
+            if self.released_at
+            else "no traced run released an allocation from this site"
+        )
+        loss = OWNERSHIP_LOSS_TEXT[self.loss].format(function=function, returned_to=returned_to)
+        return f"allocated at {self.allocation.short()}; {released}; in test case {self.test_case!r} {loss}"
+
+
 class FailureReport(_Model):
     id: StableFailureId
     kind: FailureKind
@@ -109,6 +141,7 @@ class FailureReport(_Model):
     trace: list[TraceStep] = Field(default_factory=list)
     explanation: str = ""
     raw_ref: str | None = None
+    ownership_trace: MemoryOwnershipTrace | None = None
 
 
 class StageResult(_Model):
