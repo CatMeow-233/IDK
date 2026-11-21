@@ -15,9 +15,8 @@ from leanc.backends.sanitizer.ownership_analysis import (
     UNREACHABLE_BY_NEXT_EVENT,
     UNREACHABLE_BY_RETURN,
     build_trace,
-    classify_losses,
+    call_chain,
     leaked_allocations,
-    probe_plan,
     release_summary,
 )
 from leanc.backends.sanitizer.ownership_attach import TraceCandidate, attach_traces
@@ -27,7 +26,20 @@ from leanc.backends.sanitizer.ownership_log import (
     leaked_objects_per_probe,
     parse_events,
 )
-from leanc.backends.sanitizer.ownership_replay import read_trace_log
+from leanc.backends.sanitizer.ownership_replay import (
+    MAX_LOG_BYTES,
+    read_trace_log,
+    replay_env,
+)
+from leanc.backends.sanitizer.ownership_search import (
+    MAX_PROBED_EXITS,
+    MAX_SEARCH_ROUNDS,
+    classify,
+    narrow,
+    next_probes,
+    replay_matches,
+    start_searches,
+)
 from leanc.backends.sanitizer.ownership_symbols import (
     CodeAddress,
     Symbolized,
@@ -88,7 +100,14 @@ def _classify(record_text: str, probe_text: str, listed, direct=(P1,)):
     events = _events(probe_text)
     probes = leaked_objects_per_probe(_probe_stderr(probe_text, listed), events)
     assert not isinstance(probes, str), probes
-    return classify_losses(record, build_trace(events), selection.allocations, probes)
+    problem = replay_matches(record, build_trace(events), selection.allocations)
+    if problem:
+        return problem
+    searches = start_searches(record, selection.allocations)
+    probed = {o for o, _ in record.exit_positions.items()}
+    for search in searches:
+        narrow(search, probed, probes)
+    return [classify(record, search) for search in searches]
 
 
 def _without_checks(text: str) -> str:
@@ -126,7 +145,7 @@ def test_a_later_function_that_drops_the_only_reference_is_found():
     probe = CALL + f"C 1 in 0\nC 1 after 0\nE {SETTER} {SETTER_SITE}\nX 2 {SETTER} {SETTER_SITE}\nC 2 in 1\n"
     record = _without_checks(probe)
     run = _trace(record)
-    assert probe_plan(run, leaked_allocations(run, frozenset({int(P1, 16)})).allocations) == [1, 2]
+    assert next_probes(start_searches(run, leaked_allocations(run, frozenset({int(P1, 16)})).allocations)) == [1, 2]
     [finding] = _classify(record, probe, {(2, "in"): (P1,)})
     assert finding.loss == UNREACHABLE_BY_RETURN and finding.frame.function == int(SETTER, 16)
 
@@ -146,11 +165,52 @@ def test_inlined_callee_is_flagged_so_no_return_site_is_claimed():
     assert finding.inlined
 
 
-def test_indirect_only_leaks_and_allocations_outside_instrumented_code_are_not_traced():
+def test_indirect_only_leaks_are_not_traced():
     run = _trace(CALL + f"A {P2} 6 {ALLOC_SITE}\n")
     selection = leaked_allocations(run, frozenset(), frozenset({int(P1, 16)}))
     assert selection.allocations == [] and selection.indirect_only == 1
-    assert leaked_allocations(run, frozenset({int(P2, 16)})).allocations == []
+
+
+def test_block_allocated_by_the_driver_and_dropped_by_editable_code_is_traced():
+    probe = f"A {P1} 6 {ALLOC_SITE}\nE {SETTER} {SETTER_SITE}\nX 1 {SETTER} {SETTER_SITE}\nC 1 in 1\n"
+    record = _without_checks(probe)
+    [allocation] = leaked_allocations(_trace(record), frozenset({int(P1, 16)})).allocations
+    assert allocation.frames == ()
+    [finding] = _classify(record, probe, {(1, "in"): (P1,)})
+    assert finding.loss == UNREACHABLE_BY_RETURN and finding.frame.function == int(SETTER, 16) and finding.chain == ()
+
+
+def _recursion(depth: int) -> str:
+    enters = "".join(f"E {MAKE} {MAKE_SITE}\n" for _ in range(depth))
+    exits = "".join(f"X {i} {MAKE} {MAKE_SITE}\n" for i in range(1, depth + 1))
+    return enters + f"A {P1} 6 {ALLOC_SITE}\n" + exits
+
+
+def test_multi_round_search_finds_a_loss_deep_in_a_recursion():
+    depth, lost_at = 500, 437
+    record = _trace(_recursion(depth))
+    [allocation] = leaked_allocations(record, frozenset({int(P1, 16)})).allocations
+    [search] = start_searches(record, [allocation])
+    for _ in range(MAX_SEARCH_ROUNDS):
+        probed = next_probes([search])
+        assert len(probed) <= MAX_PROBED_EXITS
+        listed = {ProbeKey(o, "in"): frozenset({int(P1, 16)}) for o in probed if o >= lost_at}
+        narrow(search, set(probed), listed)
+    assert search.found is not None and search.found.exit_ordinal >= lost_at
+    finding = classify(record, search)
+    assert finding.loss == LOST_DURING_CALL
+    assert search.found.exit_ordinal - lost_at < 2
+
+
+def test_call_sites_outside_the_image_truncate_the_chain():
+    run = _trace(f"E {CALLER} 0x0\nE {MAKE} {MAKE_SITE}\nA {P1} 6 {ALLOC_SITE}\nX 1 {MAKE} {MAKE_SITE}\nX 2 {CALLER} 0x0\n")
+    [allocation] = leaked_allocations(run, frozenset({int(P1, 16)})).allocations
+    assert call_chain(run, allocation) == (int(MAKE_SITE, 16),)
+
+
+def test_events_from_a_second_thread_stop_the_trace_with_a_clear_reason():
+    problem = build_trace(_events(CALL + "T\n"))
+    assert isinstance(problem, str) and "several threads" in problem
 
 
 def test_distinct_leaks_are_capped_and_counted():
@@ -328,7 +388,15 @@ def test_trace_log_reader_refuses_symlinks_fifos_and_oversized_files(tmp_path):
     fifo = tmp_path / "fifo.log"
     os.mkfifo(fifo)
     big = tmp_path / "big.log"
-    big.write_bytes(b"A" * (8 * 1024 * 1024 + 1))
+    big.write_bytes(b"A" * (MAX_LOG_BYTES + 1))
     for path in (link, fifo, big, tmp_path / "missing.log"):
         assert read_trace_log(path).problem is not None
     assert read_trace_log(secret).text == "A 0x1 1 0x1\n"
+
+
+def test_compact_replay_reports_keep_two_frames_because_lsan_drops_single_frame_leaks(tmp_path):
+    inputs = SimpleNamespace(env={"ASAN_OPTIONS": "detect_leaks=1", "LSAN_OPTIONS": "exitcode=88"})
+    env = replay_env(inputs, tmp_path / "ownership.log", [3, 5])
+    assert "malloc_context_size=2" in env["ASAN_OPTIONS"] and "malloc_context_size=2" in env["LSAN_OPTIONS"]
+    assert "report_objects=1" in env["LSAN_OPTIONS"] and env["LEANC_OWNERSHIP_CHECKS"] == "3,5"
+    assert inputs.env == {"ASAN_OPTIONS": "detect_leaks=1", "LSAN_OPTIONS": "exitcode=88"}

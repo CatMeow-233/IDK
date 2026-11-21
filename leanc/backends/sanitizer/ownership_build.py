@@ -20,6 +20,8 @@ TRACE_BINARY_NAME = "trace_bin"
 RUNTIME_SOURCE = "ownership_trace.c"
 RUNTIME_STANDARD = "-std=c17"
 INSTRUMENT_FLAGS: tuple[str, ...] = ("-finstrument-functions",)
+POSITION_INDEPENDENT_COMPILE = "-fPIE"
+POSITION_INDEPENDENT_LINK = "-pie"
 WRAPPED_ALLOCATORS: tuple[str, ...] = ("malloc", "calloc", "realloc", "free")
 
 
@@ -47,6 +49,7 @@ def _project_compile_argv(ctx: BackendContext, plan: SanitizerPlan, source: str,
         f"-I{os.path.realpath(ctx.include_dir)}",
         *DIAGNOSTIC_FLAGS,
         *(INSTRUMENT_FLAGS if instrumented else ()),
+        POSITION_INDEPENDENT_COMPILE,
         "-c",
         source,
         "-o",
@@ -55,7 +58,18 @@ def _project_compile_argv(ctx: BackendContext, plan: SanitizerPlan, source: str,
 
 
 def _runtime_compile_argv(ctx: BackendContext, plan: SanitizerPlan, runtime: Path, obj: Path) -> list[str]:
-    return [compiler(ctx), RUNTIME_STANDARD, *BASE_FLAGS, *plan.compile_flags, *DIAGNOSTIC_FLAGS, "-c", str(runtime), "-o", str(obj)]
+    return [
+        compiler(ctx),
+        RUNTIME_STANDARD,
+        *BASE_FLAGS,
+        *plan.compile_flags,
+        *DIAGNOSTIC_FLAGS,
+        POSITION_INDEPENDENT_COMPILE,
+        "-c",
+        str(runtime),
+        "-o",
+        str(obj),
+    ]
 
 
 def _object(obj_dir: Path, index: int, rel: str) -> Path:
@@ -77,7 +91,18 @@ def build_steps(ctx: BackendContext, plan: SanitizerPlan, out_root: Path) -> tup
     runtime_obj = obj_dir / "runtime.o"
     steps.append(("compile runtime", _runtime_compile_argv(ctx, plan, runtime, runtime_obj)))
     binary = out_root / TRACE_BINARY_NAME
-    link = [compiler(ctx), *plan.compile_flags, *spec.compile.flags, *objects, str(driver_obj), str(runtime_obj), *wrap_flags(), "-o", str(binary)]
+    link = [
+        compiler(ctx),
+        *plan.compile_flags,
+        *spec.compile.flags,
+        *objects,
+        str(driver_obj),
+        str(runtime_obj),
+        *wrap_flags(),
+        POSITION_INDEPENDENT_LINK,
+        "-o",
+        str(binary),
+    ]
     steps.append(("link", link))
     return steps, binary
 

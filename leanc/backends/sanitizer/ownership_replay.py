@@ -30,7 +30,9 @@ LOG_PATH_ENV = "LEANC_OWNERSHIP_LOG"
 PROBED_EXITS_ENV = "LEANC_OWNERSHIP_CHECKS"
 LSAN_OPTIONS = "LSAN_OPTIONS"
 REPORT_OBJECTS_OPTION = "report_objects=1"
-MAX_LOG_BYTES = 8 * 1024 * 1024
+MAX_LOG_BYTES = 32 * 1024 * 1024
+ASAN_OPTIONS = "ASAN_OPTIONS"
+COMPACT_REPORT_OPTION = "malloc_context_size=2"
 CASE_STEM_MAX_LENGTH = 60
 DEFAULT_CASE_STEM = "case"
 
@@ -51,6 +53,7 @@ class ReplaySession:
     raw_root: Path
     binary: Path
     invocations: list[ToolInvocation]
+    replays_started: int = 0
 
 
 @dataclass
@@ -94,23 +97,31 @@ def read_trace_log(path: Path) -> _LogRead:
         os.close(fd)
 
 
+def _with_option(env: dict[str, str], name: str, option: str) -> None:
+    env[name] = f"{env[name]}:{option}" if env.get(name) else option
+
+
 def replay_env(inputs: OwnershipInputs, log_path: Path, probed: list[int] | None) -> dict[str, str]:
     env = dict(inputs.env)
-    env[LSAN_OPTIONS] = f"{env[LSAN_OPTIONS]}:{REPORT_OBJECTS_OPTION}" if env.get(LSAN_OPTIONS) else REPORT_OBJECTS_OPTION
+    _with_option(env, LSAN_OPTIONS, REPORT_OBJECTS_OPTION)
+    _with_option(env, LSAN_OPTIONS, COMPACT_REPORT_OPTION)
+    _with_option(env, ASAN_OPTIONS, COMPACT_REPORT_OPTION)
     env[LOG_PATH_ENV] = str(log_path)
     if probed is not None:
         env[PROBED_EXITS_ENV] = ",".join(str(o) for o in probed)
     return env
 
 
-def _stem(index: int, case: TestCase, probed: list[int] | None) -> str:
+def _stem(session: ReplaySession, index: int, case: TestCase, probed: list[int] | None) -> str:
+    session.replays_started += 1
     mode = "probe" if probed is not None else "record"
-    return f"{index:02d}-{safe_name(case.name, CASE_STEM_MAX_LENGTH) or DEFAULT_CASE_STEM}-{mode}"
+    name = safe_name(case.name, CASE_STEM_MAX_LENGTH) or DEFAULT_CASE_STEM
+    return f"{session.replays_started:03d}-{index:02d}-{name}-{mode}"
 
 
 def _run_program(session: ReplaySession, index: int, case: TestCase, probed: list[int] | None):
     ctx = session.inputs.ctx
-    stem = _stem(index, case, probed)
+    stem = _stem(session, index, case, probed)
     case_dir = session.out_root / "cases" / stem
     case_dir.mkdir(parents=True)
     log_path = Path(os.path.realpath(case_dir)) / LOG_FILE

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-MAX_EVENTS = 200_000
+MAX_EVENTS = 1_000_000
 MAX_CHECKS = 256
 MAX_LEAKED_OBJECTS = 4096
 HEX = r"0x[0-9a-f]{1,16}"
@@ -18,6 +18,7 @@ _EVENT_RES = {
     "F": re.compile(rf"^F ({HEX}) ({HEX})$"),
     "E": re.compile(rf"^E ({HEX}) ({HEX})$"),
     "X": re.compile(rf"^X ({DECIMAL}) ({HEX}) ({HEX})$"),
+    "T": re.compile(r"^T$"),
 }
 _CHECK_RE = re.compile(rf"^C ({DECIMAL}) ({PHASE_IN}|{PHASE_AFTER}) ([01])$")
 _CHECK_MARKER_RE = re.compile(rf"^{CHECK_MARKER} ({DECIMAL}) ({PHASE_IN}|{PHASE_AFTER})$")
@@ -33,7 +34,7 @@ class ProbeKey:
     phase: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Event:
     kind: str
     values: tuple[int, ...]

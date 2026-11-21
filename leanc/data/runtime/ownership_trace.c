@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <sanitizer/lsan_interface.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,6 +23,7 @@ void *__real_calloc(size_t count, size_t size);
 void *__real_realloc(void *pointer, size_t size);
 void __real_free(void *pointer);
 extern const char __executable_start;
+extern const char _end;
 
 struct trace_line {
     char text[LINE_CAPACITY];
@@ -35,6 +37,8 @@ static unsigned long next_exit_ordinal = 1;
 static unsigned long probed_exits[MAX_PROBED_EXITS];
 static size_t probed_exit_count;
 static unsigned long pending_after_probe;
+static pthread_t tracing_thread;
+static int tracing_thread_known;
 
 static void NOT_INSTRUMENTED append_char(struct trace_line *line, char c)
 {
@@ -81,7 +85,11 @@ static void NOT_INSTRUMENTED append_decimal(struct trace_line *line, unsigned lo
 
 static uintptr_t NOT_INSTRUMENTED image_offset(const void *address)
 {
-    return (uintptr_t)address - (uintptr_t)&__executable_start;
+    uintptr_t value = (uintptr_t)address;
+    if (value < (uintptr_t)&__executable_start || value >= (uintptr_t)&_end) {
+        return 0;
+    }
+    return value - (uintptr_t)&__executable_start;
 }
 
 static void NOT_INSTRUMENTED emit(int fd, struct trace_line *line)
@@ -157,9 +165,26 @@ static void NOT_INSTRUMENTED probe_reachability(unsigned long ordinal, const cha
     emit(log_fd, &record);
 }
 
+static int NOT_INSTRUMENTED single_threaded(void)
+{
+    if (!tracing_thread_known) {
+        tracing_thread = pthread_self();
+        tracing_thread_known = 1;
+        return 1;
+    }
+    if (pthread_equal(tracing_thread, pthread_self())) {
+        return 1;
+    }
+    struct trace_line line = {.length = 0};
+    append_char(&line, 'T');
+    emit(log_fd, &line);
+    state = TRACE_DISABLED;
+    return 0;
+}
+
 static int NOT_INSTRUMENTED begin_event(void)
 {
-    if (inside_runtime || !tracing_active()) {
+    if (inside_runtime || !tracing_active() || !single_threaded()) {
         return 0;
     }
     inside_runtime = 1;

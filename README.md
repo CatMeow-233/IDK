@@ -160,7 +160,7 @@ Run directory layout:
     build/
 ```
 
-For a LeakSanitizer failure in a C project, `ownership_trace` holds evidence from an instrumented replay of the leaking test case. It is never part of the verdict, and C++ is not traced. It contains:
+For a LeakSanitizer failure in a C project, `ownership_trace` holds evidence from an instrumented replay of the leaking test case. It is never part of the verdict. C++ and multi-threaded test programs are not traced. It contains:
 
 - `allocation`: the allocation site.
 - `released_at`: where allocations from that site are freed on other paths.

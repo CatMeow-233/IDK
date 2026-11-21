@@ -7,11 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from leanc.backends.sanitizer.ownership_analysis import (
+    Allocation,
     OwnershipLossFinding,
     TraceRun,
-    classify_losses,
     leaked_allocations,
-    probe_plan,
     release_summary,
 )
 from leanc.backends.sanitizer.ownership_attach import TraceCandidate, attach_traces
@@ -21,6 +20,14 @@ from leanc.backends.sanitizer.ownership_replay import (
     Replay,
     ReplaySession,
     replay,
+)
+from leanc.backends.sanitizer.ownership_search import (
+    MAX_SEARCH_ROUNDS,
+    classify,
+    narrow,
+    next_probes,
+    replay_matches,
+    start_searches,
 )
 from leanc.backends.sanitizer.ownership_symbols import (
     CodeAddress,
@@ -141,6 +148,27 @@ class _CaseOutcome:
     notes: list[str] = field(default_factory=list)
 
 
+NOT_REPRODUCED = (
+    "the instrumented replay showed no direct leak from this test case "
+    "(instrumentation can keep stale references alive)"
+)
+
+
+def _search_losses(session: _Session, index: int, case: TestCase, record: TraceRun, allocations: list[Allocation]):
+    searches = start_searches(record, allocations)
+    for _ in range(MAX_SEARCH_ROUNDS):
+        probed = next_probes(searches)
+        if not probed or session.out_of_time():
+            break
+        probe = replay(session.replays, index, case, probed)
+        problem = probe.problem or replay_matches(record, probe.run, allocations)
+        if problem:
+            return problem
+        for search in searches:
+            narrow(search, set(probed), probe.probes)
+    return [classify(record, search) for search in searches]
+
+
 def _loss_findings(session: _Session, index: int, case: TestCase, record: Replay) -> _CaseOutcome:
     selection = leaked_allocations(record.run, record.leaked_at_exit.direct, record.leaked_at_exit.indirect)
     outcome = _CaseOutcome()
@@ -149,13 +177,9 @@ def _loss_findings(session: _Session, index: int, case: TestCase, record: Replay
     if selection.dropped:
         outcome.notes.append(f"{selection.dropped} further distinct leak(s) not traced (cap reached)")
     if not selection.allocations:
-        outcome.notes.append("the recording replay did not reproduce a direct leak allocated in instrumented code")
+        outcome.notes.append(NOT_REPRODUCED)
         return outcome
-    probe = replay(session.replays, index, case, probe_plan(record.run, selection.allocations))
-    if probe.problem:
-        outcome.notes.append(probe.problem)
-        return outcome
-    findings = classify_losses(record.run, probe.run, selection.allocations, probe.probes)
+    findings = _search_losses(session, index, case, record.run, selection.allocations)
     if isinstance(findings, str):
         outcome.notes.append(findings)
         return outcome

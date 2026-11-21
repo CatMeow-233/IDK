@@ -160,7 +160,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
     build/
 ```
 
-C 專案出現 LeakSanitizer 失敗時，`ownership_trace` 保存對該洩漏測試案例做插樁重放得到的證據。它不參與判定，C++ 不追蹤。內容如下：
+C 專案出現 LeakSanitizer 失敗時，`ownership_trace` 保存對該洩漏測試案例做插樁重放得到的證據。它不參與判定。C++ 和多執行緒的測試程式不追蹤。內容如下：
 
 - `allocation`：配置點。
 - `released_at`：同一配置點的記憶體在其他路徑上被釋放的位置。
