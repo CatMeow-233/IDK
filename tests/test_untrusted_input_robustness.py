@@ -274,3 +274,25 @@ def test_overlong_path_component_is_spec_error():
 
     with pytest.raises(SpecError, match="path component longer than"):
         parse_spec_text(_spec_json(mutate), source="spec.json")
+
+
+def test_spec_under_non_utf8_directory_name_is_usage_error_on_approve(example_copy, capsys):
+    project = example_copy("safe_array_get")
+    (project / "leanc.yaml").write_text("provider: mock\n")
+    nested = project / "d\udcff"
+    nested.mkdir()
+    (project / "spec.yaml").rename(nested / "spec.yaml")
+    rc = main(["spec", "approve", str(nested / "spec.yaml"), "--project-root", str(project), "--by", "alice", "--yes"])
+    assert rc == 2
+    assert "valid Unicode" in capsys.readouterr().err
+
+
+def test_spec_draft_with_non_utf8_requirement_and_title_does_not_crash(tmp_path, capsys):
+    rc = main(
+        [
+            "spec", "draft", "--id", "x", "--requirement", "r\udcff", "--title", "t\udcff", "--provider", "mock",
+            "--project-root", str(tmp_path), "--mock-dir", str(REPO / "examples/safe_array_get/mock"),
+        ]
+    )
+    assert rc in (2, 40)
+    assert "lone UTF-16 surrogate" in capsys.readouterr().out + (tmp_path / "drafts/x/NOTES.md").read_text()
