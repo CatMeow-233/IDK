@@ -47,6 +47,11 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 - success only if every required gate ran and passed. timeout/unparsable/skipped/tool error != success.
 - VERIFIED_BOUNDED never -> PROVED. PROVED only from required wp gate PASS on approved ACSL contract.
 - protected files (spec, harness, tests driver, headers, lean spec/vectors) never written by generation/repair.
+- integrity non-PASS -> sanitizer cbmc wp lean SKIPPED (rejected code never executed/model-checked/proved); repair_loop counts integrity non-PASS -> PASS as progress.
+- cbmc: body-less callee outside bodiless.MODELLED_BODILESS_* -> gate never PASS; violation whose trace touches it -> diagnostic, never counterexample.
+- integrity macro check: gcc dumps mirror each verifier's own preprocessing (backends/verifier_macros.py); change together with cbmc/compile_flags.py and wp/argv.py.
+- every instrumented build (sanitizer test, ownership trace project+driver, lean vectors) uses build.instrumented_compile_flags: BUILD_FIDELITY_FLAGS after compile.flags.
+- compile.flags MUST NOT carry -fsanitize*/-fno-sanitize* (spec validator); cbmc checks = spec.effective_cbmc_checks() (contract.safety included).
 
 ## check
 - `python -m scripts.constraints` MUST exit 0 (run from repo root; rules from constraints.toml; `--fix` removes comments/docstrings only when the AST is unchanged and no encoding cookie, rewrites the layer block; `--json`).

@@ -23,9 +23,11 @@ from leanc.toolchain.framac import INSTALL_HINT as WP_HINT
 from leanc.toolchain.framac import find_framac
 from leanc.toolchain.lean import INSTALL_HINT as LEAN_HINT
 from leanc.toolchain.lean import find_lean
-from leanc.toolchain.tools import find_cbmc, find_clang, tool_version
+from leanc.toolchain.tools import find_cbmc, find_clang, find_tool, tool_version
 
-APT_HINT = "sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap   (Ubuntu 24.04 / Debian)"
+APT_HINT = "sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap   (Ubuntu 24.04 / Debian)"
+GCC = "gcc"
+GCC_PURPOSE = "CBMC, Frama-C and the integrity gate's predefined-macro check preprocess with gcc"
 MIN_PYTHON = (3, 11)
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
@@ -154,6 +156,13 @@ def _sanitizer_check(clang: str, workdir: Path, sandbox: Sandbox) -> Check:
     return Check("sanitizers", ok, True, "ASan+UBSan build ok" + run_detail, "" if ok else "install libclang-rt-18-dev")
 
 
+def _gcc_check() -> Check:
+    gcc = find_tool(GCC)
+    if not gcc:
+        return Check(GCC, False, True, "not found", f"install gcc ({APT_HINT}); {GCC_PURPOSE}")
+    return Check(GCC, True, True, f"{gcc}: {tool_version(gcc)}")
+
+
 def _cbmc_check(cbmc: str | None, workdir: Path) -> Check:
     if not cbmc:
         return Check("cbmc", False, True, "not found", f"install CBMC ({APT_HINT}) or set LEANC_CBMC")
@@ -212,6 +221,7 @@ def _toolchain_checks(clang: str | None, cbmc: str | None, sandbox: Sandbox, san
             checks.append(_sanitizer_check(clang, workdir, sandbox))
         else:
             checks.extend(_missing_clang_checks())
+        checks.append(_gcc_check())
         checks.append(_cbmc_check(cbmc, workdir))
         checks.append(_sandbox_check(sandbox_preference, sandbox, workdir))
     return checks

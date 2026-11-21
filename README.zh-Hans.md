@@ -13,7 +13,7 @@
   -> 反例 -> AI 修复（策略检查，最多 N 轮）-> 重新验证 -> JSON / Markdown 报告
 ```
 
-目录：[安装](#安装) · [快速开始](#快速开始) · [概念](#概念) · [命令](#命令) · [状态与退出码](#状态与退出码) · [机器接口（AI agent / CI）](#机器接口ai-agent--ci) · [LLM provider](#llm-provider) · [配置](#配置) · [V2 工具](#v2-可选工具) · [示例](#示例) · [开发 Lean C](#开发-lean-c) · [限制](#限制)
+目录：[安装](#安装) · [快速开始](#快速开始) · [概念](#概念) · [命令](#命令) · [状态与退出码](#状态与退出码) · [关卡规则](#关卡规则) · [机器接口（AI agent / CI）](#机器接口ai-agent--ci) · [LLM provider](#llm-provider) · [配置](#配置) · [V2 工具](#v2-可选工具) · [示例](#示例) · [开发 Lean C](#开发-lean-c) · [限制](#限制)
 
 ---
 
@@ -22,9 +22,9 @@
 需要 Linux 或 WSL2（以下命令以 Ubuntu 24.04 为例），以及 Python 3.11 以上。
 
 ```bash
-sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap
+sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap
 pip install -e ".[dev]"          # 运行依赖：pydantic、PyYAML；开发：pytest
-leanc doctor                     # 实测 clang、分析器、sanitizers、CBMC、bwrap 沙箱与网络隔离、LLM 配置
+leanc doctor                     # 实测 clang、分析器、sanitizers、gcc、CBMC、bwrap 沙箱与网络隔离、LLM 配置
 ```
 
 `leanc doctor` 会实际运行每个工具，并为每项失败的检查给出修复方法。加上 `--json` 可获得机器可读输出（`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`）。如果 bubblewrap 沙箱不可用，sanitizer 测试会被跳过，整体状态最多只能是 `UNKNOWN`（见 [安全性](docs/security.md)）。
@@ -121,6 +121,22 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 70 | — | 内部错误（traceback 写到 stderr） |
 
 “没找到反例”不等于成功。超时、工具错误、无法解析的结果、被跳过的关卡，都不算成功。汇总规则见 [docs/status-semantics.md](docs/status-semantics.md)。
+
+## 关卡规则
+
+这些规则堵住了“关卡通过、但代码其实没被真正检查”的漏洞。它们都不会把失败变成成功。
+
+| 规则 | 行为 |
+|---|---|
+| 完整性未通过 | `sanitizer`、`cbmc`、`wp`、`lean` 一律 `SKIPPED`（“含禁止构造的代码绝不执行、绝不做模型检查、绝不证明”）；`static_analysis` 照常运行；状态取自完整性关卡（`STATIC_ANALYSIS_WARNING`）。修复循环中，让完整性通过的候选算作进展，即使随后解锁的关卡找到反例 |
+| 栈帧大小 | 完整性关卡以 `-Wframe-larger-than=1048576` 编译每个可编辑文件（带上去掉警告控制后的 `compile.flags`）：超过 1 MiB 的栈帧为 `STACK_FRAME_TOO_LARGE` |
+| 预定义宏 | 仅适用于含 `cbmc` 或 `wp` 的规格。把 clang 在编译关卡选项（`-std`、`compile.flags`、`compile.defines`）下的预定义宏，与 gcc 在各验证器预处理方式下的预定义宏比较。CBMC：`-D__CPROVER__ -std=gnuNN`，加上 `-funsigned-char` 和它收到的 `-D`/`-U`。Frama-C：`-D__FRAMAC__ -std=c11` 加上 `compile.defines`，这是对其 machdep 的近似。可编辑代码中用到取值不同的宏即为 `TOOL_DIVERGENCE`。需要 `gcc`；缺少时完整性关卡为 `ERROR` |
+| `compile.flags` | 拒绝 `-fsanitize*` / `-fno-sanitize*`；sanitizer 由 `tests.sanitizers` 决定。静态分析会收到这些参数。CBMC 按顺序收到 `-D`/`-U`，以及 `-I`、`-std=`、`-funsigned-char`/`-fsigned-char`，但绝不会收到 `NDEBUG`。其余参数（例如 `-O2 -ffast-math -mavx2`）列在一条假设中，即“compile.flags not applied by CBMC”，判定不变 |
+| 无函数体的函数（CBMC） | 允许：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他无函数体的被调函数（例如 `<immintrin.h>` 背后的 SIMD builtin）会使 `cbmc` 无法通过。路径经过这类函数的违规是 `unmodelled-callee` 诊断，不是反例；除非有反例避开这类函数，否则关卡为 `INCONCLUSIVE` |
+| CBMC 内部错误 | 不变式违规报告为 `TOOL_ERROR`（“CBMC internal error”），并附带 File/Condition/Reason 摘录，而不是内存不足提示 |
+| 契约安全检查 | `contract.safety` 中的检查会加入 CBMC 的属性检查；规格哈希不变 |
+| sanitizer 构建 | 测试、所有权追踪和 Lean 向量的构建都在 `compile.flags` 之后加上 `-fno-builtin -fno-optimize-sibling-calls`，这样 clang `-O1` 无法删除未使用的分配（`malloc`、`strdup`、`aligned_alloc`、C++ `new`），也无法删除包装函数的栈帧 |
+| 内存检查的局限 | `limitations` 列出泄漏检查看不到的部分。LeakSanitizer 只报告不可达的块。未启用 CBMC `memory-leak` 检查时，只在测试路径上检查泄漏。CBMC 不检查对齐、严格别名、`restrict`，也不检查同一分配内子对象之间的溢出 |
 
 ## 机器接口（AI agent / CI）
 
@@ -332,6 +348,7 @@ python -m scripts.merge_gate                        # 创建或合并 PR 之前�
 
 - `VERIFIED_BOUNDED` 受限于已批准的 harness；harness 是否忠实表达需求，仍需由人判断。
 - sanitizer 只覆盖可信测试实际执行到的路径。
+- CBMC 不对无函数体的函数（如 SIMD intrinsic）建模，也无法套用部分参数（如 `-ffast-math`、`-O2`、`-m*`）：前者使结果不确定，后者作为假设披露。
 - `PROVED` 只相对于已批准的 ACSL 契约成立，且以 WP 的内存与机器模型为前提。
 - 修复策略是纵深防御（文本规则）；真正的防线是受保护的 harness 加上独立验证器。
 - C++20 没有形式化关卡（CBMC 无法解析现代 C++，ESBMC 尚未集成），因此 C++ 的最佳结果是 `UNKNOWN`。

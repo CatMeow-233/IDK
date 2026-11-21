@@ -13,7 +13,7 @@ requirement -> spec draft (untrusted) -> human approval (hash-locked, HMAC-signe
   -> counterexample -> AI repair (policy-checked, max N rounds) -> re-verify -> JSON / Markdown report
 ```
 
-Contents: [Install](#install) · [Quick start](#quick-start) · [Concepts](#concepts) · [Commands](#commands) · [Statuses and exit codes](#statuses-and-exit-codes) · [Machine interface (AI agents / CI)](#machine-interface-ai-agents--ci) · [LLM providers](#llm-providers) · [Configuration](#configuration) · [V2 tools](#v2-optional-tools) · [Examples](#examples) · [Developing Lean C](#developing-lean-c) · [Limitations](#limitations)
+Contents: [Install](#install) · [Quick start](#quick-start) · [Concepts](#concepts) · [Commands](#commands) · [Statuses and exit codes](#statuses-and-exit-codes) · [Gate rules](#gate-rules) · [Machine interface (AI agents / CI)](#machine-interface-ai-agents--ci) · [LLM providers](#llm-providers) · [Configuration](#configuration) · [V2 tools](#v2-optional-tools) · [Examples](#examples) · [Developing Lean C](#developing-lean-c) · [Limitations](#limitations)
 
 ---
 
@@ -22,9 +22,9 @@ Contents: [Install](#install) · [Quick start](#quick-start) · [Concepts](#conc
 You need Linux or WSL2 (the commands below are for Ubuntu 24.04) and Python 3.11 or newer.
 
 ```bash
-sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap
+sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap
 pip install -e ".[dev]"          # runtime deps: pydantic, PyYAML; dev: pytest
-leanc doctor                     # probes clang, analyzer, sanitizers, CBMC, bwrap sandbox + network isolation, LLM config
+leanc doctor                     # probes clang, analyzer, sanitizers, gcc, CBMC, bwrap sandbox + network isolation, LLM config
 ```
 
 `leanc doctor` runs every tool for real and prints a fix for each failed check. Add `--json` for machine-readable output (`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`). If the bubblewrap sandbox is unavailable, sanitizer tests are skipped and the overall status can be at most `UNKNOWN` (see [Security](docs/security.md)).
@@ -121,6 +121,22 @@ Common options:
 | 70 | — | internal error (traceback on stderr) |
 
 "No counterexample found" is not success. A timeout, a tool error, an unparsable result or a skipped gate never counts as success. The aggregation rules are in [docs/status-semantics.md](docs/status-semantics.md).
+
+## Gate rules
+
+These rules close ways in which a gate could pass code that was not really checked. None of them can turn a failure into a success.
+
+| Rule | Behaviour |
+|---|---|
+| integrity failure | `sanitizer`, `cbmc`, `wp` and `lean` are `SKIPPED` ("code with forbidden constructs is never executed, model-checked or proved"); `static_analysis` still runs; the status comes from integrity (`STATIC_ANALYSIS_WARNING`). In the repair loop, a candidate that makes integrity pass counts as progress even when the gates it unblocks then find counterexamples |
+| stack frames | integrity compiles each editable file with `-Wframe-larger-than=1048576` (with `compile.flags` minus warning controls): a frame larger than 1 MiB is `STACK_FRAME_TOO_LARGE` |
+| predefined macros | only for specs with `cbmc` or `wp`. Clang's predefined macros under the compile gate's options (`-std`, `compile.flags`, `compile.defines`) are compared with gcc's under each verifier's preprocessing. CBMC: `-D__CPROVER__ -std=gnuNN`, plus `-funsigned-char` and the `-D`/`-U` it receives. Frama-C: `-D__FRAMAC__ -std=c11` plus `compile.defines`, an approximation of its machdep. A use of a differing macro in editable code is `TOOL_DIVERGENCE`. Needs `gcc`; if it is missing, integrity is `ERROR` |
+| `compile.flags` | `-fsanitize*` / `-fno-sanitize*` are rejected; sanitizers come from `tests.sanitizers`. Static analysis receives the flags. CBMC receives `-D`/`-U` in order, `-I`, `-std=`, `-funsigned-char`/`-fsigned-char`, and never `NDEBUG`. Every other flag (for example `-O2 -ffast-math -mavx2`) is listed in one assumption line, "compile.flags not applied by CBMC", and the verdict is kept |
+| body-less functions (CBMC) | allowed: `nondet_*`, `__CPROVER*`, `__builtin_prefetch`, `__builtin_expect`. Any other body-less callee, for example the SIMD builtins behind `<immintrin.h>`, keeps `cbmc` from passing. A violation whose trace passes through such a callee is an `unmodelled-callee` diagnostic, not a counterexample, and the gate is `INCONCLUSIVE` unless a counterexample avoids it |
+| CBMC internal error | an invariant-violation report is `TOOL_ERROR` ("CBMC internal error") with the File/Condition/Reason excerpt, not an out-of-memory hint |
+| contract safety checks | the checks in `contract.safety` are added to CBMC's property checks; the spec hash is unchanged |
+| sanitizer builds | the test, ownership-trace and Lean vector builds add `-fno-builtin -fno-optimize-sibling-calls` after `compile.flags`, so clang `-O1` cannot delete unused allocations (`malloc`, `strdup`, `aligned_alloc`, C++ `new`) or the frames of wrapper functions |
+| memory limitations | `limitations` lists what the leak checks could not see. LeakSanitizer reports only unreachable blocks. Without the CBMC `memory-leak` check, leaks are checked only on the test paths. CBMC does not check alignment, strict aliasing, `restrict` or overflows between sub-objects of one allocation |
 
 ## Machine interface (AI agents / CI)
 
@@ -332,6 +348,7 @@ The full suite needs clang-18, CBMC and bwrap. WP tests need Frama-C >= 27 and L
 
 - `VERIFIED_BOUNDED` is bounded to the approved harness. A human still has to judge whether the harness captures the requirement.
 - Sanitizers only cover the paths that the trusted tests execute.
+- CBMC does not model body-less functions (such as SIMD intrinsics) or flags it cannot apply (such as `-ffast-math`, `-O2`, `-m*`): the first make the result inconclusive, the second are disclosed as assumptions.
 - `PROVED` holds only relative to the approved ACSL contract, under WP's memory and machine model.
 - The repair policy is defense in depth (textual rules). The real defense is the protected harness plus independent verifiers.
 - C++20 has no formal gate (CBMC cannot parse modern C++, and ESBMC is not integrated), so the best C++ result is `UNKNOWN`.
