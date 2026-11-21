@@ -20,9 +20,6 @@ MAX_LEAN_OUTPUT_BYTES = 4 * 1024 * 1024
 LEAN_MAX_FILE_MB = 256
 MAX_EXCERPT_CHARS = 400
 ELLIPSIS = "..."
-SIGNAL_EXIT_CODE_BASE = 128
-MAX_SIGNAL_NUMBER = 64
-NO_SANDBOX = "none"
 STDERR_SEPARATOR = "\n--- stderr ---\n"
 MAX_STEP_NAME_CHARS = 60
 MAX_UNEXPECTED_LISTED = 10
@@ -46,19 +43,6 @@ def excerpt(text: str, limit: int = MAX_EXCERPT_CHARS) -> str:
     return redacted if len(redacted) <= limit else redacted[: limit - len(ELLIPSIS)] + ELLIPSIS
 
 
-def _signal_reported_by_sandbox(proc: ProcResult) -> int | None:
-    exit_code = proc.exit_code
-    if proc.sandbox == NO_SANDBOX or exit_code is None:
-        return None
-    if SIGNAL_EXIT_CODE_BASE < exit_code <= SIGNAL_EXIT_CODE_BASE + MAX_SIGNAL_NUMBER:
-        return exit_code - SIGNAL_EXIT_CODE_BASE
-    return None
-
-
-def signal_of(proc: ProcResult) -> int | None:
-    if proc.signal is not None:
-        return proc.signal
-    return _signal_reported_by_sandbox(proc)
 
 
 def module_olean_path(module: str) -> str:

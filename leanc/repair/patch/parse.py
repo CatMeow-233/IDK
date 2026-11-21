@@ -4,7 +4,14 @@ import re
 from dataclasses import dataclass
 
 from leanc.foundation.errors import PatchError
-from leanc.repair.patch.model import ADDED, CONTEXT, REMOVED, FilePatch, Hunk, split_lines
+from leanc.repair.patch.model import (
+    ADDED,
+    CONTEXT,
+    REMOVED,
+    FilePatch,
+    Hunk,
+    split_lines,
+)
 from leanc.repair.patch.paths import (
     git_header_paths,
     header_path,

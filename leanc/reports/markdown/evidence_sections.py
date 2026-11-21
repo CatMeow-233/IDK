@@ -3,7 +3,14 @@ from __future__ import annotations
 from enum import Enum
 from typing import Iterable, NamedTuple
 
-from leanc.foundation.models import Diagnostic, FailureReport, Location, StageResult, TraceStep, VerificationResult
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    StageResult,
+    TraceStep,
+    VerificationResult,
+)
 from leanc.reports.json_report import detecting_tools, is_finding, sort_tools
 from leanc.reports.markdown.markup import (
     LIMITS,

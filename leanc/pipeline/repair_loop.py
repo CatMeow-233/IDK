@@ -19,11 +19,24 @@ from leanc.foundation.models import (
     VerificationResult,
 )
 from leanc.foundation.redact import redact
-from leanc.foundation.status import DEFINITE_FAILURES, REPAIRABLE, Outcome, Status, is_success, rank
+from leanc.foundation.status import (
+    DEFINITE_FAILURES,
+    REPAIRABLE,
+    Outcome,
+    Status,
+    is_success,
+    rank,
+)
 from leanc.foundation.workspace import Workspace
 from leanc.llm.base import RepairProposal, RepairRequest
 from leanc.pipeline.controller import verify
-from leanc.repair.patch import candidate_hash, changed_paths, diff_stats, make_unified_diff, proposal_to_contents
+from leanc.repair.patch import (
+    candidate_hash,
+    changed_paths,
+    diff_stats,
+    make_unified_diff,
+    proposal_to_contents,
+)
 from leanc.repair.policy import check_candidate
 from leanc.specs.loader import spec_to_yaml
 from leanc.specs.model import Spec

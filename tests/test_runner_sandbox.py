@@ -14,7 +14,12 @@ import pytest
 
 from leanc.foundation import runner
 from leanc.foundation.runner import Limits, minimal_env, run_command
-from leanc.foundation.sandbox import NetworkIsolation, SandboxMounts, detect_sandbox, network_probe_blocked
+from leanc.foundation.sandbox import (
+    NetworkIsolation,
+    SandboxMounts,
+    detect_sandbox,
+    network_probe_blocked,
+)
 
 SH = shutil.which("sh") or "/bin/sh"
 CAT = shutil.which("cat") or "/bin/cat"

@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 from leanc.llm.base import SpecDraftRequest
-from leanc.llm.prompts.few_shot import FEW_SHOT_HARNESS_C, FEW_SHOT_HEADER_H, FEW_SHOT_SPEC_YAML, FEW_SHOT_TESTS_C
+from leanc.llm.prompts.few_shot import (
+    FEW_SHOT_HARNESS_C,
+    FEW_SHOT_HEADER_H,
+    FEW_SHOT_SPEC_YAML,
+    FEW_SHOT_TESTS_C,
+)
 from leanc.llm.prompts.schema import spec_schema_summary
-from leanc.llm.prompts.text import DEFAULT_LIMITS, Prompt, PromptLimits, fence, finish_prompt, truncate
+from leanc.llm.prompts.text import (
+    DEFAULT_LIMITS,
+    Prompt,
+    PromptLimits,
+    fence,
+    finish_prompt,
+    truncate,
+)
 
 UNTITLED_PLACEHOLDER = "(choose a short descriptive title)"
 

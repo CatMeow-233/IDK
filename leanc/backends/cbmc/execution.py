@@ -9,6 +9,7 @@ from typing import Literal, NamedTuple
 from leanc.backends.cbmc.argv import Mode, build_cbmc_argv
 from leanc.backends.cbmc.output import CbmcOutput, interpret_output
 from leanc.backends.counterexample.locations import location_from_cbmc
+from leanc.backends.termination import terminating_signal
 from leanc.foundation.models import Diagnostic, ToolInvocation
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome
@@ -19,8 +20,6 @@ STAGE = "cbmc"
 TOOL = "cbmc"
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_LISTED_ITEMS = 3
-SIGNAL_EXIT_STATUS_BASE = 128
-MAX_SIGNAL_NUMBER = 64
 OUT_OF_MEMORY_MARKERS = ("out of memory", "bad_alloc", "cannot allocate memory", "memory exhausted")
 SIGNALS_HINTING_OUT_OF_MEMORY = (signal.SIGKILL, signal.SIGABRT, signal.SIGSEGV)
 
@@ -135,13 +134,6 @@ def ran_out_of_memory(run: CbmcRun) -> bool:
     return any(marker in texts for marker in OUT_OF_MEMORY_MARKERS)
 
 
-def _terminating_signal(proc: ProcResult) -> int | None:
-    if proc.signal is not None:
-        return proc.signal
-    exit_code = proc.exit_code
-    if exit_code is not None and SIGNAL_EXIT_STATUS_BASE < exit_code <= SIGNAL_EXIT_STATUS_BASE + MAX_SIGNAL_NUMBER:
-        return exit_code - SIGNAL_EXIT_STATUS_BASE
-    return None
 
 
 def _killed_problem(
@@ -200,7 +192,7 @@ def tool_problem(run: CbmcRun, limits: Limits, ctx: BackendContext, *, expect: E
             "the result cannot be interpreted",
         )
     out_of_memory = ran_out_of_memory(run)
-    signal_number = _terminating_signal(proc)
+    signal_number = terminating_signal(proc)
     if signal_number is not None:
         return _killed_problem(what, signal_number, out_of_memory, verification, output)
     section = output.results if expect == "result" else output.goals

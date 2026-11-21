@@ -10,9 +10,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from leanc.backends.clang import MISSING_SOURCE_RULE, safe_name, unique_id
-from leanc.backends.sanitizer.build import build_command, compiler_crash_reported, parse_build_diagnostics
-from leanc.backends.sanitizer.control_scan import POLICY_TOOL, SANITIZER_CONTROL_RULE, scan_sanitizer_control
-from leanc.backends.sanitizer.judge import CaseStatus, CaseVerdict, ExecutedCase, judge_case
+from leanc.backends.sanitizer.build import (
+    build_command,
+    compiler_crash_reported,
+    parse_build_diagnostics,
+)
+from leanc.backends.sanitizer.control_scan import (
+    POLICY_TOOL,
+    SANITIZER_CONTROL_RULE,
+    scan_sanitizer_control,
+)
+from leanc.backends.sanitizer.judge import (
+    CaseStatus,
+    CaseVerdict,
+    ExecutedCase,
+    judge_case,
+)
 from leanc.backends.sanitizer.plan import (
     SanitizerPlan,
     exit_code_details,
@@ -22,7 +35,14 @@ from leanc.backends.sanitizer.plan import (
 )
 from leanc.backends.sanitizer.runtime_reports import parse_sanitizer_findings
 from leanc.backends.termination import signal_from_exit_status, signal_name
-from leanc.foundation.models import CounterexampleInput, Diagnostic, FailureReport, Location, StageResult, ToolInvocation
+from leanc.foundation.models import (
+    CounterexampleInput,
+    Diagnostic,
+    FailureReport,
+    Location,
+    StageResult,
+    ToolInvocation,
+)
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.sandbox import SandboxMounts

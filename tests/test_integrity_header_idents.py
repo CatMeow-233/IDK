@@ -29,3 +29,9 @@ def test_redefining_an_interface_macro_is_rejected():
 
 def test_shipped_source_is_clean():
     assert _check((EX / "src/safe_array.c").read_text()) == []
+
+
+def test_include_naming_no_file_is_a_violation_not_a_crash():
+    for spelling in ('#include "./"\n', "#include <./>\n", '#include "."\n'):
+        violations = _check(spelling + (EX / "src/safe_array.c").read_text())
+        assert any(v.rule == "INCLUDE_ESCAPE" for v in violations), spelling

@@ -4,7 +4,12 @@ import difflib
 
 from leanc.foundation.hashing import canonical_hash
 from leanc.repair.patch.model import ADDED, CONTEXT, REMOVED, split_lines
-from leanc.repair.patch.paths import DEV_NULL, GIT_NEW_PREFIX, GIT_OLD_PREFIX, quote_path
+from leanc.repair.patch.paths import (
+    DEV_NULL,
+    GIT_NEW_PREFIX,
+    GIT_OLD_PREFIX,
+    quote_path,
+)
 
 NO_NEWLINE_MARKER = "\\ No newline at end of file"
 DEFAULT_CONTEXT_LINES = 3

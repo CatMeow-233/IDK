@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import json
 
-from leanc.foundation.models import Diagnostic, FailureReport, Location, VerificationResult
-from leanc.llm.prompts.text import DEFAULT_LIMITS, PromptLimits, numbered_excerpt, truncate
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    VerificationResult,
+)
+from leanc.llm.prompts.text import (
+    DEFAULT_LIMITS,
+    PromptLimits,
+    numbered_excerpt,
+    truncate,
+)
 from leanc.specs.model import Spec
 
 MAX_DIAGNOSTIC_PATH_STEPS = 10

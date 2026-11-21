@@ -26,7 +26,6 @@ from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
 from leanc.toolchain.context import VerifyOptions, make_context
 
-
 HEADER = "#ifndef F_H\n#define F_H\nint f(int n);\n#endif\n"
 
 DRIVER = textwrap.dedent(

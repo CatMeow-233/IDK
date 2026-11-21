@@ -1,4 +1,9 @@
-from leanc.backends.sanitizer.build import BASE_FLAGS, DIAGNOSTIC_FLAGS, build_command, parse_build_diagnostics
+from leanc.backends.sanitizer.build import (
+    BASE_FLAGS,
+    DIAGNOSTIC_FLAGS,
+    build_command,
+    parse_build_diagnostics,
+)
 from leanc.backends.sanitizer.control_scan import scan_sanitizer_control
 from leanc.backends.sanitizer.frames import StackFrame
 from leanc.backends.sanitizer.gate import LIMITATION, STAGE, run_sanitizer_tests

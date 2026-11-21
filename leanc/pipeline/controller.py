@@ -14,7 +14,12 @@ from leanc.backends.lean import run_lean
 from leanc.backends.sanitizer import run_sanitizer_tests
 from leanc.backends.wp import run_wp
 from leanc.foundation.errors import LeanCError, WorkspaceError
-from leanc.foundation.models import ApprovalCheck, StageResult, VerificationResult, utcnow
+from leanc.foundation.models import (
+    ApprovalCheck,
+    StageResult,
+    VerificationResult,
+    utcnow,
+)
 from leanc.foundation.status import Outcome, Status, outcome_to_status, worst
 from leanc.foundation.workspace import Workspace, normalize_relpath
 from leanc.reports.json_report import write_json

@@ -3,7 +3,15 @@ from __future__ import annotations
 from leanc.llm.base import CodeGenRequest
 from leanc.llm.cpp_prompts import cpp_system
 from leanc.llm.prompts.rendering import interface_summary
-from leanc.llm.prompts.text import DEFAULT_LIMITS, Prompt, PromptLimits, fence, finish_prompt, render_files, truncate
+from leanc.llm.prompts.text import (
+    DEFAULT_LIMITS,
+    Prompt,
+    PromptLimits,
+    fence,
+    finish_prompt,
+    render_files,
+    truncate,
+)
 
 CODEGEN_SYSTEM = """\
 You are the code generator of Lean C, a spec-first pipeline for C17. Your output is NOT trusted: it will be \

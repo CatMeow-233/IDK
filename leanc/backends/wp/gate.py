@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from leanc.backends.termination import signal_name, terminating_signal
 from leanc.backends.wp.argv import (
     MACHDEP,
     RTE_CLASSES,
@@ -79,10 +80,7 @@ MEMORY_MODEL = "Typed (WP default)"
 MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 MAX_FILE_MB = 1024
 WHY3_DETECT_TIMEOUT_S = 60.0
-SIGNAL_EXIT_CODE_BASE = 128
-MAX_SIGNAL_NUMBER = 64
 OUT_OF_MEMORY_SIGNALS = frozenset({_signal.SIGKILL, _signal.SIGABRT, _signal.SIGSEGV})
-SIGNAL_NAMES = {sig.value: sig.name for sig in _signal.Signals}
 MAX_RECORDED_WARNINGS = 100
 MAX_NOTED_ACSL_VIOLATIONS = 10
 MAX_MERGE_RECORD_CHARS = 300
@@ -130,20 +128,6 @@ def _initial_details(ctx: BackendContext) -> dict[str, Any]:
     }
 
 
-def _signal_from_sandbox_exit_code(exit_code: int | None) -> int | None:
-    if exit_code is not None and SIGNAL_EXIT_CODE_BASE < exit_code <= SIGNAL_EXIT_CODE_BASE + MAX_SIGNAL_NUMBER:
-        return exit_code - SIGNAL_EXIT_CODE_BASE
-    return None
-
-
-def _terminating_signal(proc: ProcResult) -> int | None:
-    if proc.signal is not None:
-        return proc.signal
-    return _signal_from_sandbox_exit_code(proc.exit_code)
-
-
-def _signal_name(sig: int) -> str:
-    return SIGNAL_NAMES.get(sig, f"signal {sig}")
 
 
 def _untrusted_acsl(ctx: BackendContext, snapshot: Path, headers: dict[str, str]) -> list[str]:
@@ -450,11 +434,11 @@ class _WpRun:
 
     def _check_framac_exit(self) -> Verdict | None:
         proc = self.proc
-        sig = _terminating_signal(proc)
+        sig = terminating_signal(proc)
         if sig is not None:
             possibly_oom = sig in OUT_OF_MEMORY_SIGNALS
             hint = f" (possibly out of memory: wp.memory_mb={self.wp.memory_mb})" if possibly_oom else ""
-            return Verdict(Outcome.ERROR, f"Frama-C was killed by {_signal_name(sig)}{hint}")
+            return Verdict(Outcome.ERROR, f"Frama-C was killed by {signal_name(sig)}{hint}")
         if self.console.errors or proc.exit_code != 0:
             shown = excerpt(self.console.errors) or redact(self._console_text().strip())[-MAX_CONSOLE_TAIL:]
             return Verdict(

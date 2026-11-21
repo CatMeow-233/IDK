@@ -9,7 +9,13 @@ import pytest
 
 from leanc.foundation.errors import ApprovalError, SpecError, WorkspaceError
 from leanc.foundation.workspace import Workspace, normalize_relpath, safe_rmtree
-from leanc.specs.approval import approvals_dir, approve_spec, check_approval, leanc_home, load_key
+from leanc.specs.approval import (
+    approvals_dir,
+    approve_spec,
+    check_approval,
+    leanc_home,
+    load_key,
+)
 from leanc.specs.loader import load_spec, parse_spec_text, spec_hash
 from leanc.specs.model import MANDATORY_CHECKS
 

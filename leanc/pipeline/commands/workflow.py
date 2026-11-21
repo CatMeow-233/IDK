@@ -18,7 +18,11 @@ from leanc.pipeline.commands.session import (
     verify_options,
 )
 from leanc.pipeline.controller import verify
-from leanc.pipeline.generation import SPEC_UNAPPROVED_PREFIX, GenerationRejected, generate_sources
+from leanc.pipeline.generation import (
+    SPEC_UNAPPROVED_PREFIX,
+    GenerationRejected,
+    generate_sources,
+)
 from leanc.pipeline.repair_loop import proof_repairable, repair_loop
 from leanc.specs.approval import check_approval
 from leanc.specs.loader import load_spec

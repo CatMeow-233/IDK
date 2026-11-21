@@ -7,9 +7,18 @@ from itertools import zip_longest
 
 from leanc.backends.clang import unique_id
 from leanc.backends.sanitizer.plan import SANITIZER_EXIT_CODES
-from leanc.backends.sanitizer.runtime_reports import TOOL_TITLES, SanitizerFinding, runtime_internal_error_line
+from leanc.backends.sanitizer.runtime_reports import (
+    TOOL_TITLES,
+    SanitizerFinding,
+    runtime_internal_error_line,
+)
 from leanc.backends.termination import signal_name
-from leanc.foundation.models import CounterexampleInput, Diagnostic, FailureKind, FailureReport
+from leanc.foundation.models import (
+    CounterexampleInput,
+    Diagnostic,
+    FailureKind,
+    FailureReport,
+)
 from leanc.foundation.runner import ProcResult
 from leanc.specs.model import TestCase
 

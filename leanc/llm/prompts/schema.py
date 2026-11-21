@@ -10,7 +10,7 @@ from typing import Any, Literal, get_args, get_origin
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
-from leanc.specs.model import ALL_GATES, MANDATORY_CHECKS, SPEC_ID_RE, Spec
+from leanc.specs.model import DEFAULT_V1_GATES, MANDATORY_CHECKS, SPEC_ID_RE, Spec
 
 MAX_SHOWN_DEFAULT_CHARS = 80
 
@@ -28,7 +28,7 @@ SCHEMA_RULES: tuple[str, ...] = (
     "verification.unwind must exceed the largest loop iteration count the harness allows (unwinding assertions "
     "are checked: an insufficient bound yields UNKNOWN, never success); unwindset keys look like 'function.N'.",
     "verification.input_bounds documents the bounds the harness enforces with LEANC_ASSUME.",
-    f"gates is a subset of {list(ALL_GATES)}; the 'sanitizer' gate requires tests.driver and at least one "
+    f"gates is a subset of {list(DEFAULT_V1_GATES)}; the 'sanitizer' gate requires tests.driver and at least one "
     "tests.cases entry.",
     "tests.cases: each case runs the test driver (built with ASan/UBSan/LSan) with `args` and expects exit "
     "status expect_exit (and exact stdout if expect_stdout is set).",

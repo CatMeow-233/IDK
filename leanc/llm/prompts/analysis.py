@@ -2,8 +2,18 @@ from __future__ import annotations
 
 from leanc.foundation.models import FailureReport, VerificationResult
 from leanc.llm.cpp_prompts import cpp_system
-from leanc.llm.prompts.rendering import interface_summary, render_failure, render_verification
-from leanc.llm.prompts.text import DEFAULT_LIMITS, Prompt, PromptLimits, finish_prompt, render_files
+from leanc.llm.prompts.rendering import (
+    interface_summary,
+    render_failure,
+    render_verification,
+)
+from leanc.llm.prompts.text import (
+    DEFAULT_LIMITS,
+    Prompt,
+    PromptLimits,
+    finish_prompt,
+    render_files,
+)
 from leanc.specs.model import Spec
 
 ANALYZE_SYSTEM = """\

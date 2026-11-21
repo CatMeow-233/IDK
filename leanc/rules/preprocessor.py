@@ -217,6 +217,8 @@ def include_path_problem(spec: Spec, name: str, quoted: bool) -> str | None:
     if "\\" in name or name.startswith("/") or _DRIVE_LETTER_RE.match(name):
         return f"absolute or backslash header path {name!r}"
     parts = _header_path_parts(name)
+    if not parts:
+        return f"header path {name!r} names no file"
     if ".." in parts:
         return f"'..' in header path {name!r}"
     norm = "/".join(parts)

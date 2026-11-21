@@ -17,7 +17,12 @@ from typing import Any, Literal
 
 from leanc import __version__
 from leanc.foundation.errors import ProviderError
-from leanc.foundation.models import FailureReport, ProviderInfo, VerificationResult, utcnow
+from leanc.foundation.models import (
+    FailureReport,
+    ProviderInfo,
+    VerificationResult,
+    utcnow,
+)
 from leanc.foundation.redact import REDACTED, redact
 from leanc.llm.base import (
     CodeGenRequest,
@@ -28,7 +33,12 @@ from leanc.llm.base import (
     SpecDraft,
     SpecDraftRequest,
 )
-from leanc.llm.parsing import excerpt, parse_code_response, parse_repair_response, parse_spec_draft_response
+from leanc.llm.parsing import (
+    excerpt,
+    parse_code_response,
+    parse_repair_response,
+    parse_spec_draft_response,
+)
 from leanc.llm.prompts.analysis import build_analyze_prompt, build_explain_prompt
 from leanc.llm.prompts.codegen import build_codegen_prompt
 from leanc.llm.prompts.repair import build_repair_prompt

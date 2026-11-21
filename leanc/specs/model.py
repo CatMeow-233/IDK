@@ -43,7 +43,6 @@ MANDATORY_CHECKS: tuple[str, ...] = (
 GateName = Literal["compile", "static_analysis", "sanitizer", "cbmc", "wp", "lean"]
 DEFAULT_V1_GATES: tuple[str, ...] = ("compile", "static_analysis", "sanitizer", "cbmc")
 OPT_IN_V2_GATES: tuple[str, ...] = ("wp", "lean")
-ALL_GATES = DEFAULT_V1_GATES
 GATE_ORDER: tuple[str, ...] = DEFAULT_V1_GATES + OPT_IN_V2_GATES
 C_SUFFIXES = (".c",)
 CPP_SUFFIXES = (".cpp", ".cc", ".cxx")

@@ -9,7 +9,11 @@ from leanc.foundation.hashing import sha256_bytes
 from leanc.foundation.models import RunRecord
 from leanc.foundation.status import Status, exit_code, is_success
 from leanc.foundation.workspace import Workspace
-from leanc.pipeline.commands.session import GENERATION_SUCCEEDED_EXIT_CODE, explicit_root, is_unverified_generation
+from leanc.pipeline.commands.session import (
+    GENERATION_SUCCEEDED_EXIT_CODE,
+    explicit_root,
+    is_unverified_generation,
+)
 from leanc.pipeline.config import CONFIG_FILE
 from leanc.reports.json_report import read_run_record, summary
 from leanc.reports.markdown import render_run_md

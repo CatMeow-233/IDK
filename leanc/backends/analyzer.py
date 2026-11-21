@@ -20,9 +20,19 @@ from leanc.backends.clang import (
     safe_name,
     sandbox_visible_path,
 )
-from leanc.backends.clang_diagnostics import crash_reason, looks_like_crash, parse_clang_diagnostics
+from leanc.backends.clang_diagnostics import (
+    crash_reason,
+    looks_like_crash,
+    parse_clang_diagnostics,
+)
 from leanc.backends.sarif import ANALYZER_TOOL, parse_sarif
-from leanc.foundation.models import Diagnostic, FailureReport, Location, StageResult, ToolInvocation
+from leanc.foundation.models import (
+    Diagnostic,
+    FailureReport,
+    Location,
+    StageResult,
+    ToolInvocation,
+)
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome, outcome_to_status

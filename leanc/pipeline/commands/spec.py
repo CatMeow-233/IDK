@@ -7,10 +7,26 @@ from leanc.foundation.errors import LeanCError
 from leanc.foundation.status import Status, exit_code
 from leanc.foundation.workspace import Workspace
 from leanc.pipeline.commands.console import Console, setup_logging
-from leanc.pipeline.commands.session import explicit_root, make_provider, new_run, spec_and_root
+from leanc.pipeline.commands.session import (
+    explicit_root,
+    make_provider,
+    new_run,
+    spec_and_root,
+)
 from leanc.pipeline.generation import DRAFT_ORIGIN, draft_spec
-from leanc.specs.approval import approve_spec, approved_snapshot, check_approval, protected_file_hashes
-from leanc.specs.loader import diff_spec_dicts, load_spec, spec_canonical_dict, spec_hash, spec_to_yaml
+from leanc.specs.approval import (
+    approve_spec,
+    approved_snapshot,
+    check_approval,
+    protected_file_hashes,
+)
+from leanc.specs.loader import (
+    diff_spec_dicts,
+    load_spec,
+    spec_canonical_dict,
+    spec_hash,
+    spec_to_yaml,
+)
 from leanc.specs.model import Spec
 
 APPROVAL_CONFIRMATION = "approve"

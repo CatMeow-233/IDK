@@ -10,7 +10,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, minimal_env, run_command
-from leanc.foundation.sandbox import NetworkIsolation, Sandbox, SandboxMounts, detect_sandbox, network_probe_blocked
+from leanc.foundation.sandbox import (
+    NetworkIsolation,
+    Sandbox,
+    SandboxMounts,
+    detect_sandbox,
+    network_probe_blocked,
+)
 from leanc.specs.approval import leanc_home
 from leanc.toolchain.cxx import find_clangxx
 from leanc.toolchain.framac import INSTALL_HINT as WP_HINT

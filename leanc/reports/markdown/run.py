@@ -3,9 +3,22 @@ from __future__ import annotations
 import shlex
 from pathlib import PurePosixPath
 
-from leanc.foundation.models import FailureReport, RepairRound, RunRecord, VerificationResult
-from leanc.reports.markdown.closing_sections import limitations_section, reproduce_section
-from leanc.reports.markdown.context_sections import environment_section, scope_section, spec_section, verdict_lines
+from leanc.foundation.models import (
+    FailureReport,
+    RepairRound,
+    RunRecord,
+    VerificationResult,
+)
+from leanc.reports.markdown.closing_sections import (
+    limitations_section,
+    reproduce_section,
+)
+from leanc.reports.markdown.context_sections import (
+    environment_section,
+    scope_section,
+    spec_section,
+    verdict_lines,
+)
 from leanc.reports.markdown.evidence_sections import (
     GATE_TABLE_HEADER,
     counterexamples_section,

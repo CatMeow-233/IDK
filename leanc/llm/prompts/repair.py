@@ -2,8 +2,21 @@ from __future__ import annotations
 
 from leanc.llm.base import RepairRequest
 from leanc.llm.cpp_prompts import cpp_system
-from leanc.llm.prompts.rendering import interface_summary, render_diagnostics, render_failures, render_history
-from leanc.llm.prompts.text import DEFAULT_LIMITS, Prompt, PromptLimits, fence, finish_prompt, render_files, truncate
+from leanc.llm.prompts.rendering import (
+    interface_summary,
+    render_diagnostics,
+    render_failures,
+    render_history,
+)
+from leanc.llm.prompts.text import (
+    DEFAULT_LIMITS,
+    Prompt,
+    PromptLimits,
+    fence,
+    finish_prompt,
+    render_files,
+    truncate,
+)
 from leanc.llm.wp_prompts import wp_repair_note
 from leanc.specs.model import Spec
 

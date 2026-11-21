@@ -4,8 +4,17 @@ import shlex
 from typing import Iterable
 
 from leanc.foundation.models import ToolInvocation, VerificationResult
-from leanc.reports.markdown.markup import LIMITS, code_span, duration, escape_inline, fenced_block
-from leanc.reports.markdown.wording import ALWAYS_LIMITATIONS, restates_always_limitation
+from leanc.reports.markdown.markup import (
+    LIMITS,
+    code_span,
+    duration,
+    escape_inline,
+    fenced_block,
+)
+from leanc.reports.markdown.wording import (
+    ALWAYS_LIMITATIONS,
+    restates_always_limitation,
+)
 
 
 def limitations_section(vr: VerificationResult | None, extra: Iterable[str] = ()) -> list[str]:

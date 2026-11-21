@@ -5,7 +5,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from leanc.backends.clang_diagnostics import crash_reason, looks_like_crash, parse_clang_diagnostics
+from leanc.backends.clang_diagnostics import (
+    crash_reason,
+    looks_like_crash,
+    parse_clang_diagnostics,
+)
 from leanc.foundation.models import (
     Diagnostic,
     FailureKind,

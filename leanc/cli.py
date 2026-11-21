@@ -12,8 +12,18 @@ from leanc.pipeline.commands.console import FILE_ONLY_LEVEL, LOGGER_NAME, setup_
 from leanc.pipeline.commands.report import cmd_report
 from leanc.pipeline.commands.session import record_aborted_run
 from leanc.pipeline.commands.setup import cmd_doctor, cmd_init
-from leanc.pipeline.commands.spec import cmd_spec_approve, cmd_spec_draft, cmd_spec_show, cmd_spec_status
-from leanc.pipeline.commands.workflow import cmd_generate, cmd_repair, cmd_run, cmd_verify
+from leanc.pipeline.commands.spec import (
+    cmd_spec_approve,
+    cmd_spec_draft,
+    cmd_spec_show,
+    cmd_spec_status,
+)
+from leanc.pipeline.commands.workflow import (
+    cmd_generate,
+    cmd_repair,
+    cmd_run,
+    cmd_verify,
+)
 
 log = logging.getLogger(LOGGER_NAME)
 
