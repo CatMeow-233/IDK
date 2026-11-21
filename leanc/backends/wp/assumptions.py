@@ -31,7 +31,8 @@ def _library_scope(generated_clauses: list[str]) -> str:
         if generated_clauses
         else ""
     )
-    return "library calls are justified by Frama-C's libc ACSL specifications, which are assumed, not proved" + generated
+    assumed = "library calls are justified by Frama-C's libc ACSL specifications, which are assumed, not proved"
+    return assumed + generated
 
 
 def wp_assumptions(ctx: BackendContext, details: dict, outcome: Outcome) -> list[str]:

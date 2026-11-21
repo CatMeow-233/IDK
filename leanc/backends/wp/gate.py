@@ -452,7 +452,8 @@ class _WpRun:
         proc = self.proc
         sig = _terminating_signal(proc)
         if sig is not None:
-            hint = f" (possibly out of memory: wp.memory_mb={self.wp.memory_mb})" if sig in OUT_OF_MEMORY_SIGNALS else ""
+            possibly_oom = sig in OUT_OF_MEMORY_SIGNALS
+            hint = f" (possibly out of memory: wp.memory_mb={self.wp.memory_mb})" if possibly_oom else ""
             return Verdict(Outcome.ERROR, f"Frama-C was killed by {_signal_name(sig)}{hint}")
         if self.console.errors or proc.exit_code != 0:
             shown = excerpt(self.console.errors) or redact(self._console_text().strip())[-MAX_CONSOLE_TAIL:]

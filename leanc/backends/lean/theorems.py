@@ -47,8 +47,9 @@ def _settle_checked(theorem: TheoremResult, axioms: list[str], missing: list[str
             f"the proof refers to constants missing from the environment: {missing[:MAX_LISTED_MISSING_CONSTANTS]}"
         )
     elif nonstandard:
+        uses_only_sorry = nonstandard == [SORRY_AXIOM]
         theorem.reason = (
-            f"uses `sorry` ({SORRY_AXIOM})" if nonstandard == [SORRY_AXIOM] else f"depends on non-standard axioms {nonstandard}"
+            f"uses `sorry` ({SORRY_AXIOM})" if uses_only_sorry else f"depends on non-standard axioms {nonstandard}"
         )
     else:
         theorem.proved = True

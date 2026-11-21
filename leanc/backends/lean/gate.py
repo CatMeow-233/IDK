@@ -105,7 +105,11 @@ class _LeanRun:
         self.failures: list[FailureReport] = []
         self.invocations: list[ToolInvocation] = []
         self.steps: list[dict] = []
-        self.details: dict = {"steps": self.steps, "standard_axioms": list(STANDARD_AXIOMS), "sandbox": ctx.sandbox.kind}
+        self.details: dict = {
+            "steps": self.steps,
+            "standard_axioms": list(STANDARD_AXIOMS),
+            "sandbox": ctx.sandbox.kind,
+        }
         self.snapshot = Path(os.path.realpath(ctx.snapshot_dir))
         self.out_root = Path(os.path.realpath(ctx.build_dir)) / "lean"
         self.raw_root = Path(os.path.realpath(ctx.raw_dir)) / "lean"
@@ -480,7 +484,8 @@ class _LeanRun:
         if vector_status == "error":
             return self.result(Outcome.ERROR, f"{vectors.get('summary')}; {theorem_text}")
         if unproved:
-            names = ", ".join(f"{t.name} ({t.reason[:MAX_LISTED_REASON_CHARS]})" for t in unproved[:MAX_LISTED_UNPROVED])
+            listed = unproved[:MAX_LISTED_UNPROVED]
+            names = ", ".join(f"{t.name} ({t.reason[:MAX_LISTED_REASON_CHARS]})" for t in listed)
             return self.result(
                 Outcome.INCONCLUSIVE,
                 f"{len(unproved)} of {len(theorems)} Lean theorem(s) not proved: {names}{vector_text}",

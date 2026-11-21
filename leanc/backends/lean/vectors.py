@@ -66,7 +66,9 @@ def vector_inputs(text: str) -> list[CounterexampleInput]:
     pairs = _KEY_VALUE_RE.findall(text)
     if not pairs:
         return [CounterexampleInput(name="vector", value=text[:MAX_VECTOR_TEXT_CHARS])]
-    return [CounterexampleInput(name=key, value=value[:MAX_INPUT_VALUE_CHARS]) for key, value in pairs[:MAX_VECTOR_INPUTS]]
+    return [
+        CounterexampleInput(name=key, value=value[:MAX_INPUT_VALUE_CHARS]) for key, value in pairs[:MAX_VECTOR_INPUTS]
+    ]
 
 
 def _is_vector_line(line: str) -> bool:
@@ -273,11 +275,17 @@ class VectorCheck:
             stdin_data=self.generated.encode("utf-8"),
             mounts=SandboxMounts(ro=[str(self.bin_dir)], rw=[str(run_dir)]),
         )
-        self.runner.invocations.append(proc.to_invocation("lean-vectors", ctx.run_dir, ctx.log_name(STAGE, "vectors-run")))
+        self.runner.invocations.append(
+            proc.to_invocation("lean-vectors", ctx.run_dir, ctx.log_name(STAGE, "vectors-run"))
+        )
         run_log = self.raw_root / "vectors-run.txt"
         run_log.write_text(redact(proc.stdout + STDERR_SEPARATOR + proc.stderr), encoding="utf-8")
         self.raw_ref = run_relative(ctx, run_log)
-        self.details["run"] = {"exit_code": proc.exit_code, "raw": self.raw_ref, "duration_s": round(proc.duration_s, 3)}
+        self.details["run"] = {
+            "exit_code": proc.exit_code,
+            "raw": self.raw_ref,
+            "duration_s": round(proc.duration_s, 3),
+        }
         self.driver_run = proc
         if proc.error:
             return self._done("error", f"could not run the vector driver: {proc.error}")
@@ -308,7 +316,8 @@ class VectorCheck:
 
     def _report_mismatches(self, mismatches: list[str]) -> None:
         for text in mismatches[:MAX_REPORTED_MISMATCHES]:
-            key = " ".join(f"{name}={value}" for name, value in _KEY_VALUE_RE.findall(text)) or text[:MAX_MISMATCH_KEY_CHARS]
+            pairs = " ".join(f"{name}={value}" for name, value in _KEY_VALUE_RE.findall(text))
+            key = pairs or text[:MAX_MISMATCH_KEY_CHARS]
             self.failures.append(
                 FailureReport(
                     id=f"lean:vectors:mismatch:{key}",
