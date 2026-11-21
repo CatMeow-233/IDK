@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from scripts.constraints import RULES, check, load_constraints
+from scripts.ruleset.config import load_constraints
+from scripts.ruleset.registry import RULES, check
 
-CONSTRAINTS = load_constraints()
+CONSTRAINTS = load_constraints(Path(__file__).resolve().parent.parent)
 MAX_SHOWN = 200
 
 

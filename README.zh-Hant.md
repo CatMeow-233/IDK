@@ -266,7 +266,7 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 
 ## 開發 Lean C
 
-規則宣告在 [`constraints.toml`](constraints.toml) 中。它的作用相當於 yarn 專案裡的 constraints 檔，是唯一的規則來源。`scripts/constraints.py` 檢查這些規則，`tests/test_architecture.py` 執行的是同一個引擎。agent 指令寫在 [`CLAUDE.md`](CLAUDE.md) 中，其中的分層區塊由 `constraints.toml` 自動產生。
+規則宣告在 [`constraints.toml`](constraints.toml) 中。它的作用相當於 yarn 專案裡的 constraints 檔，是唯一的規則來源。`python -m scripts.constraints` 檢查這些規則，`tests/test_architecture.py` 執行的是同一個引擎。agent 指令寫在 [`CLAUDE.md`](CLAUDE.md) 中，其中的分層區塊由 `constraints.toml` 自動產生。
 
 - 嚴格的單向分層、無循環的模組圖，且只允許頂層 import：
   ```
@@ -294,23 +294,24 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 檢查：
 
 ```bash
-python scripts/constraints.py                       # 檢查 constraints.toml 的全部規則；有違規時 exit 1；支援 --json
-python scripts/constraints.py --fix                 # 只在 AST 不變時刪除註解/docstring；重新產生 CLAUDE.md 的分層區塊
+python -m scripts.constraints                       # 檢查 constraints.toml 的全部規則；有違規時 exit 1；支援 --json
+python -m scripts.constraints --fix                 # 只在 AST 不變時刪除註解/docstring；重新產生 CLAUDE.md 的分層區塊
 python scripts/affected_tests.py --run              # 修改後：依 import 圖相對於 HEAD 選出受影響的測試
 python scripts/affected_tests.py --base main --run  # 整個分支
-python scripts/merge_gate.py                        # 建立或合併 PR 之前執行（約 20 分鐘）
+python -m scripts.merge_gate                        # 建立或合併 PR 之前執行（約 20 分鐘）
 ```
 
-`merge_gate.py` 在即將被合併的那個 HEAD 上強制執行「修正 → 測試 → 合併」。它依以下順序執行，第一個失敗就停止，沒有略過選項：
+`python -m scripts.merge_gate` 在即將被合併的那個 HEAD 上強制執行「修正 → 測試 → 合併」。它依以下順序執行，第一個失敗就停止，沒有略過選項：
 
-1. 取得基準分支，要求工作區乾淨且包含基準分支。
-2. 執行 `constraints.py`。
-3. 執行完整測試。
-4. 執行 `run_experiments.py`，必須回報 N/N。
-5. 檢查 `spec_hash` 穩定性：自基準分支以來未改動的規格檔，用基準程式碼和 HEAD 程式碼算出的雜湊必須相同，這樣既有的批准才不會失效。
-6. 確認 HEAD 沒有移動。
+1. 用明確的 refspec 取得基準分支。要求所有改動都已提交、HEAD 與基準不同，且 HEAD 包含基準分支。
+2. 把固定下來的 HEAD 檢出到一個全新的暫存 worktree。之後每一步都在其中執行，並去除所有 `PYTEST_*`/`PYTHON*` 環境變數；閘門會確認 `leanc` 是從這個 worktree 匯入的。
+3. 執行 `python -m scripts.constraints`。
+4. 執行完整測試。junit 報告必須顯示測試數大於 0，且沒有失敗、錯誤或略過；出現略過代表缺少必要的工具。
+5. 執行 `run_experiments.py`，必須回報 N/N 且 N > 0。
+6. 檢查批准相容性：對每個自基準分支以來未改動的範例目錄，用基準程式碼做出的批准，在 HEAD 程式碼下必須仍然有效。
+7. 確認 worktree 仍在固定的 HEAD 上且沒有被改動。
 
-成功時輸出 `MERGE GATE PASS <sha>`。只合併這個 sha（使用 `expectedHeadSha` 和 merge commit）。之後有任何新 commit，都必須重新執行閘門。
+成功時輸出 `MERGE GATE PASS head=<sha> base=<sha>`。合併之前要先取得遠端，確認遠端基準分支仍等於輸出中的 base sha（否則重新執行閘門），然後只合併輸出中的 head sha（使用 `expectedHeadSha` 和 merge commit）。之後有任何新 commit，都必須重新執行閘門。
 
 完整測試需要 clang-18、CBMC 與 bwrap；WP 測試需要 Frama-C >= 27，Lean 測試需要 Lean 4。缺少某個工具時，相關測試會被略過。
 

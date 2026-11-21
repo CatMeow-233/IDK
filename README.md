@@ -266,7 +266,7 @@ The script copies each example to a temporary project and approves it with a tem
 
 ## Developing Lean C
 
-The rules are declared in [`constraints.toml`](constraints.toml). It plays the role a yarn constraints file plays in a yarn project, and it is the single source of truth. `scripts/constraints.py` checks those rules, and `tests/test_architecture.py` runs the same engine. Agent directives are in [`CLAUDE.md`](CLAUDE.md); its layer block is generated from `constraints.toml`.
+The rules are declared in [`constraints.toml`](constraints.toml). It plays the role a yarn constraints file plays in a yarn project, and it is the single source of truth. `python -m scripts.constraints` checks those rules, and `tests/test_architecture.py` runs the same engine. Agent directives are in [`CLAUDE.md`](CLAUDE.md); its layer block is generated from `constraints.toml`.
 
 - Strict one-way layering, an acyclic module graph, and top-level imports only:
   ```
@@ -294,23 +294,24 @@ The rules are declared in [`constraints.toml`](constraints.toml). It plays the r
 Checks:
 
 ```bash
-python scripts/constraints.py                       # all rules from constraints.toml; exit 1 on violations; --json
-python scripts/constraints.py --fix                 # remove comments/docstrings only if the AST stays identical; regenerate the CLAUDE.md layer block
+python -m scripts.constraints                       # all rules from constraints.toml; exit 1 on violations; --json
+python -m scripts.constraints --fix                 # remove comments/docstrings only if the AST stays identical; regenerate the CLAUDE.md layer block
 python scripts/affected_tests.py --run              # after a change: tests selected through the import graph vs HEAD
 python scripts/affected_tests.py --base main --run  # for a whole branch
-python scripts/merge_gate.py                        # before creating or merging a PR (~20 min)
+python -m scripts.merge_gate                        # before creating or merging a PR (~20 min)
 ```
 
-`merge_gate.py` enforces fix → test → merge on the exact HEAD that will be merged. It runs these steps in order and stops at the first failure; there is no skip option:
+`python -m scripts.merge_gate` enforces fix → test → merge on the exact HEAD that will be merged. It runs these steps in order and stops at the first failure; there is no skip option:
 
-1. Fetch the base and require a clean tree that contains the base.
-2. Run `constraints.py`.
-3. Run the full suite.
-4. Run `run_experiments.py`, which must report N/N.
-5. Check `spec_hash` stability: every spec file unchanged since the base must hash identically under the base code and the HEAD code, so existing approvals keep working.
-6. Confirm that HEAD has not moved.
+1. Fetch the base with an explicit refspec. The checkout must be committed, HEAD must differ from the base, and HEAD must contain the base.
+2. Check out the pinned HEAD into a fresh temporary worktree. Every later step runs there, with all `PYTEST_*`/`PYTHON*` variables stripped, and the gate verifies that `leanc` is imported from that worktree.
+3. Run `python -m scripts.constraints`.
+4. Run the full suite. The junit report must show more than 0 tests with no failures, errors or skips; a skip means a required tool is missing.
+5. Run `run_experiments.py`, which must report N/N with N > 0.
+6. Check approval compatibility: for every example directory unchanged since the base, an approval made with the base code must still be valid under the HEAD code.
+7. Confirm the worktree is still at the pinned HEAD and clean.
 
-On success it prints `MERGE GATE PASS <sha>`. Merge only that sha (use `expectedHeadSha` and a merge commit). Any new commit requires running the gate again.
+On success it prints `MERGE GATE PASS head=<sha> base=<sha>`. Right before merging, fetch and confirm that the remote base still equals that base sha (otherwise run the gate again), then merge only that head sha (`expectedHeadSha`, merge commit). Any new commit requires running the gate again.
 
 The full suite needs clang-18, CBMC and bwrap. WP tests need Frama-C >= 27 and Lean tests need Lean 4; when a tool is absent, its tests are skipped.
 
