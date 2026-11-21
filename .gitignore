@@ -11,3 +11,4 @@ dist/
 *.plist
 *.sarif
 a.out
+experiments/results/

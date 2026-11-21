@@ -34,7 +34,7 @@ namespace），Lean C **不會假裝已啟用沙箱**：
 
 ## 已知限制
 
-* bubblewrap 不是虛擬機；核心漏洞可能逃逸。高風險環境請在 Docker/VM 中執行（見 `docker/Dockerfile`），
+* bubblewrap 不是虛擬機；核心漏洞可能逃逸。高風險環境請在獨立的容器或 VM 中執行，
   並維持 bwrap 作為第二層。
 * `RLIMIT_CPU` 以行程為單位；`RLIMIT_NPROC` 在 bwrap 的 user namespace 中不可靠，因此行程數沒有硬上限。
   緩解：完整性關卡在物件層級拒絕 `fork`/`vfork`/`clone`/`posix_spawn`/`exec*`/`system`/`daemon` 匯入

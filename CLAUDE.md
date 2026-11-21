@@ -6,6 +6,7 @@ audience: AI only. optimize for machine efficiency. no human-oriented prose anyw
 - MUST: express intent via names, UPPER_CASE constants, small named functions, Enum/Literal/frozen dataclass.
 - MUST: every .py file in leanc/ tests/ scripts/ <= 600 lines (split by responsibility; shared test helpers -> tests/<area>_support.py).
 - MUST NOT: write human docs/notes; machine-critical constraints -> this file, one line each.
+- exception: README.md (en) README.zh-Hans.md README.zh-Hant.md = developer usage guide; keep the three in sync with CLI behavior and with each other.
 
 ## layers (import only lower; module graph acyclic; leanc imports top-level only)
 foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < pipeline < cli

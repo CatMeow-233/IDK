@@ -1,263 +1,316 @@
 # Lean C
 
-**規格優先、由獨立驗證器裁決的 AI C 程式碼生成研究原型**
-*(Spec-first, verifier-checked AI code generation for C17 / C++20 — research prototype)*
+**English** · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-傳統流程：`需求 → AI 生成程式碼 → 編譯 → 輸出`。Lean C 的流程：
+Spec-first, verifier-checked AI code generation for C17 (plus C++20, Frama-C/WP and Lean 4 in V2). Research prototype.
+
+An AI writes the code. Independent tools decide whether it is correct, and they check it against a spec that a human has approved and hash-locked. Those tools are Clang, the Clang Static Analyzer, ASan/UBSan/LSan, CBMC and, optionally, Frama-C/WP and Lean 4.
 
 ```
-自然語言需求 → 形式化規格草案（不受信任）→ 人工確認（雜湊鎖定 + 簽章）
-  → 程式碼生成 → Clang 編譯 → 原始碼完整性關卡 → Clang Static Analyzer → ASan/UBSan/LSan 可信測試
-  → CBMC 有界模型檢查 →（V2）Frama-C/WP 演繹證明 →（V2，可選）Lean 4 模型證明
-  → 反例分析 → AI 自動修復 / 證明修復（政策檢查）→ 重新驗證
-  → 程式碼 + JSON / Markdown 驗證報告
+requirement -> spec draft (untrusted) -> human approval (hash-locked, HMAC-signed)
+  -> code generation -> compile -> integrity gate -> static analysis -> sanitizer tests
+  -> CBMC -> (V2) Frama-C/WP -> (V2, optional) Lean 4
+  -> counterexample -> AI repair (policy-checked, max N rounds) -> re-verify -> JSON / Markdown report
 ```
 
-核心原則：**程式碼是否正確，不由生成它的 AI 判斷**，而由 Clang、Clang Static Analyzer、
-Sanitizers 與 CBMC 依照人工批准、雜湊鎖定的規格與 harness 判斷。Lean C 不發明 C 語義，
-而是建立在成熟工具之上，並且對結果的範圍誠實：
-
-* `VERIFIED_BOUNDED` 只代表「在已批准的 harness、輸入限制、unwind 界限與檢查類別下沒有找到違反，
-  所有迴圈已完全展開，且 harness 非 vacuous」——CBMC 的結果**永遠不會被升級成 `PROVED`**。
-* `PROVED` 只有一個來源：V2 的 `wp` 關卡（Frama-C/WP）證明了**已批准**的 ACSL 契約與所有執行期錯誤守衛，
-  且 smoke test 沒有發現矛盾的前置條件。它只相對於該契約成立；Lean 4 模型證明也不會讓 C 的判決變成 `PROVED`。
-* 沒有找到反例 ≠ 成功：unwind 不足、vacuous harness、超時、工具錯誤、沒有沙箱而略過的測試，
-  都會得到 `UNKNOWN` / `TIMEOUT` / `TOOL_ERROR`。
-* 沒有已批准的規格時，唯一可能的結果是 `SPEC_UNAPPROVED`。
+Contents: [Install](#install) · [Quick start](#quick-start) · [Concepts](#concepts) · [Commands](#commands) · [Statuses and exit codes](#statuses-and-exit-codes) · [Machine interface (AI agents / CI)](#machine-interface-ai-agents--ci) · [LLM providers](#llm-providers) · [Configuration](#configuration) · [V2 tools](#v2-optional-tools) · [Examples](#examples) · [Developing Lean C](#developing-lean-c) · [Limitations](#limitations)
 
 ---
 
-## 快速開始
+## Install
 
-### 1. 安裝工具鏈（Linux / WSL2；Ubuntu 24.04 為例）
+You need Linux or WSL2 (the commands below are for Ubuntu 24.04) and Python 3.11 or newer.
 
 ```bash
 sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap
-pip install -e ".[dev]"        # Python 3.11+；相依：pydantic、PyYAML
-# V2（可選）：Frama-C/WP + provers、Lean 4
-#   sudo apt-get install -y opam z3 cvc5 && opam init -y && opam install -y frama-c alt-ergo
-#   Lean 4 release toolchain（含 leanchecker）解壓到 /opt/lean/<版本>，或設定 LEANC_LEAN
-leanc doctor                   # 實際測試 clang、分析器、sanitizers、CBMC、沙箱（含網路隔離）
+pip install -e ".[dev]"          # runtime deps: pydantic, PyYAML; dev: pytest
+leanc doctor                     # probes clang, analyzer, sanitizers, CBMC, bwrap sandbox + network isolation, LLM config
 ```
 
-或使用容器：`docker build -t leanc -f docker/Dockerfile .`
+`leanc doctor` runs every tool for real and prints a fix for each failed check. Add `--json` for machine-readable output (`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`). If the bubblewrap sandbox is unavailable, sanitizer tests are skipped and the overall status can be at most `UNKNOWN` (see [Security](docs/security.md)).
 
-### 2. 驗證一個專案（完全離線，不需要 API key）
+## Quick start
+
+All of the following runs offline; no API key is needed.
 
 ```bash
-leanc init demo                                     # 由範本建立：spec.yaml、標頭、harness、測試、src
-leanc spec status demo/spec.yaml                    # => SPEC_UNAPPROVED（exit 40）
-leanc verify demo/spec.yaml                         # => SPEC_UNAPPROVED：沒有可信規格就不宣稱任何結果
-# 審查 spec.yaml、harness/、tests/ 之後：
-leanc spec approve demo/spec.yaml --by alice        # 互動確認；CI 中用 --yes
-leanc verify demo/spec.yaml                         # => VERIFIED_BOUNDED（exit 0）
-leanc report latest --project-root demo             # Markdown 報告；--format json 取得機器可讀結果
+leanc init demo                                   # template: spec.yaml, include/, harness/, tests/, src/, leanc.yaml
+leanc verify demo/spec.yaml                       # SPEC_UNAPPROVED (exit 40): nothing is claimed without an approved spec
+# a human reviews demo/spec.yaml, demo/harness/, demo/tests/, demo/include/, then:
+leanc spec approve demo/spec.yaml --by alice      # interactive confirmation; --yes skips it
+leanc verify demo/spec.yaml                       # VERIFIED_BOUNDED (exit 0)
+leanc report latest --project-root demo           # Markdown; --format json for JSON
 ```
 
-### 3. 完整工作流（生成 → 驗證 → 反例 → 修復 → 再驗證）
+The full loop, using a shipped example with a bug (generate → verify → counterexample → repair → re-verify):
 
 ```bash
 cp -r examples/div_by_zero /tmp/dz
 leanc spec approve /tmp/dz/spec.yaml --by alice --yes
 leanc run /tmp/dz/spec.yaml --provider mock --regenerate
-#   initial   COUNTEREXAMPLE_FOUND          (division by zero; INT_MIN / -1 overflow)
-#   repair round 1: COUNTEREXAMPLE_FOUND  accepted (improvement; continuing)   <- 只修了一半
-#   repair round 2: VERIFIED_BOUNDED  accepted (verified)
-#   note: wrote verified sources back to the workspace: src/safe_ratio.c
-#   STATUS    VERIFIED_BOUNDED
+#   initial         COUNTEREXAMPLE_FOUND  (den == 0; INT_MIN / -1)
+#   repair round 1: COUNTEREXAMPLE_FOUND  accepted (improvement; continuing)
+#   repair round 2: VERIFIED_BOUNDED      accepted (verified)
+#   STATUS          VERIFIED_BOUNDED
 ```
 
-`--provider mock` 使用範例目錄中 `mock/` 的固定輸出（離線、可重現），**它不是 LLM 的表現**，
-報告中會明確標示。自然語言需求 → 規格草案也可以離線示範：
+`--provider mock` replays the fixed fixtures in the example's `mock/` directory. It is deterministic and does not measure an LLM; reports label it as mock output.
 
-```bash
-cd demo && leanc spec draft --id my-get --requirement "實作一個安全的整數陣列讀取函式……" --provider mock
-#   => drafts/my-get/{spec.yaml,harness_draft.c,tests_draft.c,NOTES.md}，標記為 UNTRUSTED / ai-draft，exit 40
-```
+## Concepts
 
-使用真實模型：
-
-```bash
-export LEANC_API_KEY=...            # 或 OPENAI_API_KEY；永遠不會寫入日誌或報告
-export LEANC_MODEL=<model name>     # 任一 OpenAI 相容端點的模型
-export LEANC_BASE_URL=https://api.openai.com/v1   # 可改為任何 OpenAI 相容服務
-leanc spec draft --id my-func --requirement "實作一個……" --provider openai   # 產生「不受信任」草案
-leanc run path/to/spec.yaml --provider openai
-```
-
----
-
-## 指令
-
-| 指令 | 作用 |
+| Term | Meaning |
 |---|---|
-| `leanc doctor` | 檢查 Python、Clang、Static Analyzer（SARIF）、Sanitizers（實際在沙箱中執行）、CBMC、bwrap 網路隔離、LLM 設定，並給出修復建議 |
-| `leanc init [DIR]` | 由範本建立專案與 `leanc.yaml` |
-| `leanc spec draft` | 自然語言需求 → `drafts/<id>/` 下的**不受信任**規格/harness/測試草案 |
-| `leanc spec approve` / `status` / `show` | 批准（雜湊鎖定 + HMAC 簽章）、查看批准狀態與變更、顯示正規化規格與有效檢查 |
-| `leanc generate` | 依**已批准**規格生成 `sources.editable`（經生成政策檢查） |
-| `leanc verify` | spec 檢查 → 編譯 → 完整性關卡（強制）→ 靜態分析 → Sanitizer 測試 → CBMC |
-| `leanc repair` | 驗證後執行反例驅動修復迴圈 |
-| `leanc run` | 規格檢查 → 生成 → 驗證 → 修復 → 再驗證 → 報告 |
-| `leanc report [RUN]` | 顯示某次執行（預設最新）的 Markdown / JSON 報告 |
+| project root | nearest ancestor directory that contains `leanc.yaml`, otherwise the spec's directory; `--project-root` overrides it |
+| spec (`spec.yaml`) | trusted contract: target signature, contract, sources, compile/analysis/test/CBMC settings, required `gates`. Schema: [docs/spec-format.md](docs/spec-format.md) |
+| protected files | the spec, `sources.headers`, `verification.harness`, `tests.driver`, and V2 ACSL headers and Lean spec/vectors. Generation and repair never write them |
+| editable files | `sources.editable`: the only files that generation and repair may write |
+| approval | `leanc spec approve` binds the spec's semantic hash and the SHA-256 of every protected file into a record signed with a key in `LEANC_HOME` (default `~/.config/leanc`). Any change → `SPEC_UNAPPROVED` until re-approved, and `version` must increase. A rollback ledger rejects approvals that have been replaced |
+| spec draft | `leanc spec draft` writes `drafts/<id>/` marked `provenance: ai-draft`. It is never trusted until a human reviews and approves it |
+| gate | one verifier stage: `compile`, `integrity` (mandatory, always runs), `static_analysis`, `sanitizer`, `cbmc`, and in V2 `wp` and `lean`. Success requires every required gate to run and pass |
+| run | every `generate` / `verify` / `repair` / `run` creates `.leanc/runs/<run_id>/` |
 
-每個指令都有 `--help` 與明確的結束代碼；除 `report`（用 `--format json`）外都有 `--json`。
-`generate` / `verify` / `repair` / `run` 會建立 `.leanc/runs/<run_id>/`，內含 `run.json`、`report.md`、
-`leanc.log`；每次驗證的快照、原始工具輸出與工具呼叫日誌在其中的 `verify/`（或 `repair/round-N/verify/`）
-子目錄：`snapshot/`、`raw/`（`cbmc-verify.json`、SARIF…）、`logs/`、`verification.json`、`verification.md`。
-`doctor`、`init`、`spec approve/status/show` 是即時指令，不建立執行紀錄。
-`generate` 成功時 exit 0（但程式碼**尚未驗證**，紀錄中的狀態是 `UNKNOWN`）；`report` 以該次執行的狀態為
-exit code，若成功的執行之後原始碼、受保護檔或規格已被修改則顯示 STALE 並回傳 20。
-驗證相關指令有 `--timeout-scale`、`--gates`、`--fail-fast`、`--no-sandbox`、`--allow-unsandboxed`、
-`--check-unapproved`；LLM 相關有 `--provider`、`--mock-dir`、`--llm-timeout`、`--max-rounds`。
+Rule for any agent: never edit protected files, and never run `spec approve` on a human's behalf. Approval is the trust boundary.
 
-| exit | 狀態 | exit | 狀態 |
-|---|---|---|---|
-| 0 | `VERIFIED_BOUNDED` / `PROVED` | 20 | `UNKNOWN` |
-| 10 | `COMPILE_ERROR` | 21 | `TIMEOUT` |
-| 11 | `STATIC_ANALYSIS_WARNING` | 30 | `TOOL_ERROR` |
-| 12 | `RUNTIME_TEST_FAILED` | 40 | `SPEC_UNAPPROVED` |
-| 13 | `COUNTEREXAMPLE_FOUND` | 50 | `REPAIR_EXHAUSTED` |
-| 2 | 使用/輸入錯誤 | 70 | 內部錯誤 |
+## Commands
 
-狀態定義與彙總規則：[docs/status-semantics.md](docs/status-semantics.md)。
+| Command | Purpose | Creates a run |
+|---|---|---|
+| `leanc doctor` | toolchain, sandbox and LLM configuration check | no |
+| `leanc init [DIR] [--template safe-array-get] [--force]` | new project from a template | no |
+| `leanc spec draft --id ID (--requirement TEXT \| --requirement-file F)` | requirement → untrusted draft in `drafts/<id>/` (exit 40) | no |
+| `leanc spec approve SPEC --by NAME [--note N] [--yes]` | human approval (hash-lock + sign) | no |
+| `leanc spec status SPEC` | approval state, signature validity, changes since approval | no |
+| `leanc spec show SPEC` | normalized spec, hash, effective CBMC checks | no |
+| `leanc generate SPEC [--force]` | write `sources.editable` for an approved spec (exit 0 = generated, **not** verified) | yes |
+| `leanc verify SPEC` | run the verifier gates on the current sources | yes |
+| `leanc repair SPEC [--max-rounds N] [--no-write]` | verify, then a counterexample-driven repair loop | yes |
+| `leanc run SPEC [--regenerate] [--no-repair] [--max-rounds N] [--no-write]` | spec check → generate (if missing) → verify → repair → re-verify → report | yes |
+| `leanc report [RUN\|latest] [--format md\|json]` | show a run's report; exits with that run's status, or 20 (STALE) if files changed after a successful run | no |
 
----
+Common options:
 
-## 範例與預期結果
+| Option | Commands | Effect |
+|---|---|---|
+| `--json` | all except `report` | single JSON object on stdout; logs go to stderr |
+| `-v` | all except `report` | verbose log to stderr |
+| `--project-root DIR` | spec, generate, verify, repair, run, report | override project root |
+| `--gates a,b` | verify, repair, run | run a subset of the spec's gates (result at most `UNKNOWN`) |
+| `--fail-fast` | verify, repair, run | stop after the first gate that does not pass |
+| `--timeout-scale X` | verify, repair, run | multiply every tool timeout |
+| `--no-sandbox` | verify, repair, run | do not use bwrap; dynamic tests are `SKIPPED` → at most `UNKNOWN` |
+| `--allow-unsandboxed` | verify, repair, run | DANGEROUS: run untrusted test programs without a sandbox (only this flag can do it; `leanc.yaml` cannot) |
+| `--check-unapproved` | verify, repair, run | run the gates for information on an unapproved spec; the status stays `SPEC_UNAPPROVED` |
+| `--provider mock\|openai`, `--mock-dir D`, `--llm-timeout S` | spec draft, generate, repair, run | LLM selection |
 
-| 範例 | 對應測試 | 附帶的程式碼 | `leanc verify` | 偵測工具 | `leanc run --provider mock` |
-|---|---|---|---|---|---|
-| [`safe_array_get`](examples/safe_array_get) | Test 1 正確程式 | 正確 | `VERIFIED_BOUNDED` | — | `VERIFIED_BOUNDED` |
-| [`array_oob`](examples/array_oob) | Test 2 陣列越界 | `index <= count` | `COUNTEREXAMPLE_FOUND`（反例 `count=6, index=6`） | cbmc, asan | 1 回合 → `VERIFIED_BOUNDED` |
-| [`div_by_zero`](examples/div_by_zero) | Test 3 除以零 | 未檢查 `den` | `COUNTEREXAMPLE_FOUND`（`den=0`；`INT_MIN/-1`） | cbmc, ubsan | 2 回合（第 1 回合只修一半）→ `VERIFIED_BOUNDED` |
-| [`int_overflow`](examples/int_overflow) | Test 4 整數溢位 | 先加再檢查 | `COUNTEREXAMPLE_FOUND`（強制 `signed-overflow`） | cbmc, ubsan | 1 回合 → `VERIFIED_BOUNDED` |
-| [`null_deref`](examples/null_deref) | Test 5 指標安全 | 檢查 NULL 但未返回 | `COUNTEREXAMPLE_FOUND` | clang-static-analyzer, cbmc, ubsan | 1 回合 → `VERIFIED_BOUNDED` |
-| [`loop_unwind`](examples/loop_unwind) | Test 6 迴圈展開不足 | 正確，但 unwind 5（n ≤ 16 需要 17） | `UNKNOWN`（unwinding assertion 失敗） | cbmc | `UNKNOWN`（不嘗試「修復」）；變體 unwind 17 → `VERIFIED_BOUNDED` |
-| [`vacuous_harness`](examples/vacuous_harness) | vacuity | 有 off-by-one，harness assume 互相矛盾 | `UNKNOWN`（純 CBMC 會說 SUCCESSFUL） | cbmc（探針） | `UNKNOWN`；修正 harness 的變體 → `COUNTEREXAMPLE_FOUND` |
-| [`runtime_memory`](examples/runtime_memory) | 執行期記憶體 | 錯誤路徑洩漏 | `RUNTIME_TEST_FAILED` | lsan | 1 回合 → `VERIFIED_BOUNDED` |
-| [`ring_buffer`](examples/ring_buffer) | 多檔案專案 | 正確（2 個 .c） | `VERIFIED_BOUNDED` | — | `VERIFIED_BOUNDED` |
-| [`cheating_repair`](examples/cheating_repair) | 修復作弊 | off-by-one | `COUNTEREXAMPLE_FOUND` | cbmc, asan | 第 1–4 回合被政策拒絕（`__CPROVER_assume`、改 harness、掏空函式、刪 assert + `#pragma`），第 5 回合 → `VERIFIED_BOUNDED` |
-| [`repair_exhausted`](examples/repair_exhausted) | 修復耗盡 | `(a+b)/2` 溢位 | `COUNTEREXAMPLE_FOUND` | cbmc, ubsan | `REPAIR_EXHAUSTED`（還原、循環偵測、無提案；工作區不變） |
-| [`cbmc_timeout`](examples/cbmc_timeout) | 超時 | 正確，但 64 位元乘法等價性很難 | `TIMEOUT`（3 s） | — | `TIMEOUT` |
+## Statuses and exit codes
 
-### V2 範例（Frama-C/WP、Lean 4、C++20）
+| exit | status | meaning |
+|---|---|---|
+| 0 | `PROVED` | required `wp` gate proved the approved ACSL contract and all RTE guards (smoke tests clean). Only source of `PROVED` |
+| 0 | `VERIFIED_BOUNDED` | no violation within the approved harness, input bounds and unwind bound; all loops fully unwound; harness non-vacuous. **Never promoted to `PROVED`** |
+| 10 | `COMPILE_ERROR` | compiler errors (or warnings with `warnings_policy: block`) |
+| 11 | `STATIC_ANALYSIS_WARNING` | analyzer finding with `policy: block`, or an integrity-gate violation |
+| 12 | `RUNTIME_TEST_FAILED` | sanitizer report, a wrong exit code or output, or a Lean test-vector mismatch |
+| 13 | `COUNTEREXAMPLE_FOUND` | CBMC found a concrete counterexample (a real execution path, valid even with an insufficient unwind) |
+| 20 | `UNKNOWN` | inconclusive: unwind too small, vacuous harness, skipped gate, gate subset, no formal gate (C++), unproved goals |
+| 21 | `TIMEOUT` | a required tool timed out |
+| 30 | `TOOL_ERROR` | a tool crashed or produced unparsable output |
+| 40 | `SPEC_UNAPPROVED` | no valid approval for the current spec and protected files |
+| 50 | `REPAIR_EXHAUSTED` | repair loop ended without success; the workspace is restored |
+| 2 | — | usage or input error |
+| 70 | — | internal error (traceback on stderr) |
 
-| 範例 | 內容 | `leanc verify` | `leanc run --provider mock` |
-|---|---|---|---|
-| [`wp_safe_array_get`](examples/wp_safe_array_get) | ACSL 契約在受保護標頭；正確程式 | `PROVED`（36/36 目標 + 7 smoke test，含 termination） | `PROVED` |
-| [`wp_proof_repair`](examples/wp_proof_repair) | 正確但沒有 loop invariant | `UNKNOWN`（9 個 WP 目標未證明；其他關卡全 PASS） | 證明修復 2 回合（9 → 3 → 0）→ `PROVED` |
-| [`wp_contract_violation`](examples/wp_contract_violation) | 違反後置條件的 off-by-one | `COUNTEREXAMPLE_FOUND`（CBMC；WP 4 個目標未證明） | 1 回合 → `PROVED` |
-| [`lean_clamp`](examples/lean_clamp) | Lean 模型 + 6 個定理（證明為 `sorry`）+ 1331 個差分測試向量 | `UNKNOWN`（Lean 定理未證明） | 證明修復 2 回合 → `VERIFIED_BOUNDED`（Lean 是模型層級，不會變成 `PROVED`） |
-| [`cpp_ring_buffer`](examples/cpp_ring_buffer) | C++20 class template | `UNKNOWN`（全部關卡 PASS，但沒有可用的 C++ 形式化關卡） | `UNKNOWN` |
-| [`cpp_bounds_bug`](examples/cpp_bounds_bug) | C++ 成員函式 off-by-one | `RUNTIME_TEST_FAILED`（asan） | 1 回合修復並寫回 → `UNKNOWN`（未形式化驗證） |
+"No counterexample found" is not success. A timeout, a tool error, an unparsable result or a skipped gate never counts as success. The aggregation rules are in [docs/status-semantics.md](docs/status-semantics.md).
 
-V2 工具是可選的：`leanc doctor` 會報告 clang++、Frama-C（需 ≥ 27，含 WP；Ubuntu 的 `frama-c-base` 套件不含 WP，
-請用 `opam install frama-c alt-ergo`）與 Lean 4（含 `leanchecker`）。缺少時，對應範例的測試會被略過而不是失敗。
+## Machine interface (AI agents / CI)
 
-規格竄改（修改 harness / 規格 / 批准紀錄 → `SPEC_UNAPPROVED`）、無沙箱（sanitizer `SKIPPED` → `UNKNOWN`）、
-`--gates` 子集（→ `UNKNOWN`）等情境由 `tests/` 中的測試涵蓋。
+Use `--json` and branch on the exit code or on `status`. `leanc verify SPEC --json` prints:
 
-每個範例目錄都有 `expected.yaml`；`tests/test_examples_e2e.py` 與 `scripts/run_experiments.py`
-會檢查實際狀態與預期一致。
+```json
+{
+  "command": "verify", "status": "COUNTEREXAMPLE_FOUND", "exit_code": 13,
+  "run_id": "verify-20261121T034210Z-7c8afd", "run_dir": ".../.leanc/runs/verify-...",
+  "provider": null, "report": ".../report.md", "messages": ["..."],
+  "verification": {
+    "status": "...", "success": false, "spec_id": "...", "spec_version": 1, "spec_hash": "...",
+    "approval": {"...": "..."},
+    "stages": [{"stage": "cbmc", "outcome": "FAIL", "status": "...", "required": true, "invoked": true,
+                "duration_s": 1.2, "summary": "...", "tools": [], "failures": []}],
+    "detected_by": ["asan", "cbmc"], "reasons": ["..."], "assumptions": ["..."], "limitations": ["..."],
+    "failures": [{
+      "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
+      "kind": "...", "property_id": "...", "location": {"file": "src/array_lookup.c", "line": 9, "column": 16, "function": "array_lookup"},
+      "inputs": [{"name": "argv", "value": "index_equals_count", "type": null}],
+      "description": "...", "raw_ref": "raw/..."
+    }]
+  }
+}
+```
 
-## 可重現實驗
+Run directory layout:
+
+```
+.leanc/runs/<run_id>/
+  run.json  report.md  leanc.log
+  verify/                         (repair rounds: repair/round-N/verify/)
+    verification.json  verification.md
+    snapshot/   exact sources that were verified
+    raw/        raw tool output: cbmc-verify.json, compile/, integrity/, static_analysis/ (SARIF), sanitizer/, wp/, lean/
+    logs/       stdout / stderr of every tool call, numbered in execution order
+    build/
+```
+
+There are two ways for an agent to fix code:
+
+1. **External agent loop.** Run `leanc verify SPEC --json`. Read `verification.failures` (location, inputs, property) and `raw_ref`. Edit only the files listed in `sources.editable`, then verify again. Stop on exit 0, or on 40 (needs a human), 20/21/30 (not a code bug: inspect `reasons`).
+2. **Built-in loop.** Run `leanc run SPEC --provider openai --json` (or `repair`). Lean C calls the model, policy-checks every patch and writes back only a verified candidate (`--no-write` keeps the workspace unchanged).
+
+Repair policy rejects these patches: writes outside `sources.editable`, `__CPROVER_*` / `LEANC_*` / `__builtin_assume`, deleting `assert`, suppressing warnings or sanitizers, `#include` escapes, `system`/`exec`/`fork`/`socket`, inline asm, hollowing out the target function, and oversized patches. Repeated patches are detected as cycles. A change toward `UNKNOWN`/`TIMEOUT` is not an improvement.
+
+## LLM providers
+
+**mock** (the default when `leanc.yaml` sets no provider). It reads fixtures from `<project>/mock/` (override with `--mock-dir`):
+
+```
+mock/
+  spec_draft.yaml, harness_draft.c, tests_draft.c    returned by `spec draft`
+  generate/<editable paths>        e.g. generate/src/safe_ratio.c
+  repair/round-<N>.json            {"root_cause": "...", "rationale": "...", "files": {"src/x.c": "<full content>"}}
+                                   or "patch": "<unified diff>" instead of "files"; a missing round = no proposal
+```
+
+**openai** (any OpenAI-compatible chat-completions endpoint):
+
+| Variable | Meaning |
+|---|---|
+| `LEANC_API_KEY` (or `OPENAI_API_KEY`) | API key. Redacted from logs, reports and transcripts; never passed to subprocesses. It may be empty for a local server set through `LEANC_BASE_URL` |
+| `LEANC_MODEL` | model name (required) |
+| `LEANC_BASE_URL` | default `https://api.openai.com/v1` |
+| `LEANC_LLM_TIMEOUT` | request timeout in seconds |
+| `LEANC_LLM_MAX_RETRIES` | retries for transient errors |
+| `LEANC_LLM_MAX_TOKENS` | max completion tokens (raise it if you see `finish_reason=length`) |
+| `LEANC_LLM_TEMPERATURE` | number or `default` |
+| `LEANC_LLM_JSON_MODE=1` | send `response_format: json_object` |
+| `LEANC_LLM_PROXY` | `env` (use `HTTPS_PROXY`) or `none` |
 
 ```bash
-python scripts/run_experiments.py        # 結果寫入 experiments/results/results.{json,md}
+export LEANC_API_KEY=... LEANC_MODEL=<model>
+leanc spec draft --id my-func --requirement "Implement ..." --provider openai   # untrusted draft -> review -> approve
+leanc run path/to/spec.yaml --provider openai --json
 ```
 
-最近一次執行（2026-11-20T10:17:47Z，Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)，Python 3.13.18，`run` 使用 **mock** provider——固定 fixture，**不是** LLM 表現）：
+Prompts are in `leanc/llm/prompts/`. Record the model, temperature and prompt version yourself when you evaluate a model.
 
-| example | verify (expected) | detected by | run --provider mock (expected) | rounds | rejected rounds | match |
-|---|---|---|---|---|---|---|
-| array_oob | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | asan, cbmc | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| cbmc_timeout | TIMEOUT (TIMEOUT) | - | TIMEOUT (TIMEOUT) | 0 | - | yes |
-| cheating_repair | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | asan, cbmc | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 5 | 1, 2, 3, 4 | yes |
-| cpp_bounds_bug | RUNTIME_TEST_FAILED (RUNTIME_TEST_FAILED) | asan | UNKNOWN (UNKNOWN) | 1 | - | yes |
-| cpp_ring_buffer | UNKNOWN (UNKNOWN) | - | UNKNOWN (UNKNOWN) | 0 | - | yes |
-| div_by_zero | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 2 | - | yes |
-| int_overflow | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| lean_clamp | UNKNOWN (UNKNOWN) | lean | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 2 | - | yes |
-| loop_unwind | UNKNOWN (UNKNOWN) | cbmc | UNKNOWN (UNKNOWN) | 0 | - | yes |
-| ↳ loop_unwind/spec_full_unwind.yaml | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | | | | | |
-| null_deref | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, clang-static-analyzer, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| repair_exhausted | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | REPAIR_EXHAUSTED (REPAIR_EXHAUSTED) | 5 | - | yes |
-| ring_buffer | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | - | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 0 | - | yes |
-| runtime_memory | RUNTIME_TEST_FAILED (RUNTIME_TEST_FAILED) | lsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| safe_array_get | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | - | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 0 | - | yes |
-| vacuous_harness | UNKNOWN (UNKNOWN) | cbmc | UNKNOWN (UNKNOWN) | 0 | - | yes |
-| ↳ vacuous_harness/spec_fixed_harness.yaml | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | | | | | |
-| wp_contract_violation | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, frama-c-wp | PROVED (PROVED) | 1 | - | yes |
-| wp_proof_repair | UNKNOWN (UNKNOWN) | frama-c-wp | PROVED (PROVED) | 2 | - | yes |
-| wp_safe_array_get | PROVED (PROVED) | - | PROVED (PROVED) | 0 | - | yes |
+## Configuration
 
-**18/18 範例符合預期。** 全部 `verify` 合計 79 s、全部 `run` 合計 133 s（4 核心容器）。
-原始資料：[`experiments/results/results.json`](experiments/results/results.json)。
+Optional `leanc.yaml` at the project root:
 
-另外，`tests/test_attacks_e2e.py` 收錄了兩輪對抗式審查中發現的 20 種「讓錯誤程式得到 `VERIFIED_BOUNDED`」的攻擊
-（覆寫 `__assert_fail` / `nondet_*`、巨集組出的 `_Pragma(CPROVER check disable)`、`#ifdef __clang__`、
-`exit`/`abort`/`atexit(_exit)`、linemarker、弱引用 `__VERIFIER_assume`、依輸入大小的 VLA / `alloca`…），現在每一種都會被強制的完整性關卡
-擋下，且不會被執行。
-
-詳見 [docs/experiments.md](docs/experiments.md)。
-
----
-
-## 信任邊界與安全性（摘要）
-
-* **規格與 harness 是可信任的，AI 產物不是。** 批准紀錄綁定規格語意雜湊、harness/測試/標頭的 SHA-256，
-  並以存放於工作區外的金鑰做 HMAC 簽章；任何修改都使結果變成 `SPEC_UNAPPROVED`。
-* **強制的原始碼完整性關卡**（每次 verify 都執行，不能從規格移除）：以 `llvm-nm`/`llvm-readelf` 檢查編譯後
-  的物件檔——只能定義介面標頭宣告的外部符號（不能覆寫 `__assert_fail`、`nondet_*`、`main`、libc 名稱）、
-  只能匯入 CBMC 能忠實建模的 libc 函式（禁止 `exit`/`abort`/`atexit`/`fork`/`exec`/弱引用…）、不能有
-  constructor/destructor；並在前處理層級拒絕依工具而異的條件編譯（`#ifdef __clang__`、`__OPTIMIZE__`、
-  `__CPROVER__`…）、`#pragma`/`_Pragma`、`#line`/linemarker、`__VERIFIER_*`。未通過時不執行任何測試。
-* **修復代理只能修改 `sources.editable`**，且不能加入 `__CPROVER_*`/`LEANC_*`/`__builtin_assume`、
-  不能刪除 `assert`、不能抑制警告或 sanitizer、不能 `#include` 工作區外檔案、不能新增
-  `system`/`exec`/`fork`/`socket` 等呼叫、不能把目標函式改成固定回傳值；重複補丁被偵測為循環；
-  讓結果變成 `UNKNOWN`/`TIMEOUT` 不算改善。
-* **不可信程式只在 bubblewrap 沙箱中執行**（無網路、丟棄 capabilities、uid nobody、唯讀系統目錄、
-  容量受限的私有 `/tmp`、CPU/記憶體/時間/輸出/檔案大小限制）；沒有可用沙箱時拒絕執行並回報 `UNKNOWN`，
-  不會假裝已隔離。只有 CLI 旗標 `--allow-unsandboxed` 能放寬（專案設定檔不能）。
-* **批准在驗證過程中被重新檢查**（CBMC 之前與所有關卡之後），且以工作區外的簽章帳本防止回滾到舊版本。
-* 不使用 `shell=True`；子行程使用最小環境；日誌、報告與 LLM transcript 都經過憑證遮蔽。
-
-詳見 [docs/trust-model.md](docs/trust-model.md) 與 [docs/security.md](docs/security.md)。
-
-## 專案結構
-
-```
-leanc/                   嚴格分層、無循環（見 docs/architecture.md；由 tests/test_architecture.py 強制）
-  foundation/            L0 狀態、資料模型、錯誤、雜湊、憑證遮蔽、工作區、沙箱、安全執行
-  specs/                 L1 規格 schema、載入/雜湊、批准（信任邊界）
-  lang/                  L1 詞法分析：C、C++、Lean
-  rules/                 L2 純函式信任規則：C / C++ / ACSL / Lean 完整性規則、函式定義（關卡與修復政策共用）
-  toolchain/             L2 工具探測（clang、clang++、CBMC、Frama-C、Lean）、BackendContext
-  reports/               L2 JSON 與 Markdown 報告
-  llm/                   L2 Provider 抽象、OpenAI 相容 provider、Mock provider、prompts
-  backends/              L3 clang、analyzer（SARIF）、sanitizer、cbmc、counterexample、integrity、wp（Frama-C）、lean
-  repair/                L3 補丁、修復 / 生成政策
-  pipeline/              L4 驗證控制器、生成、修復迴圈、doctor、設定
-  cli.py                 L5 CLI（argparse）
-  data/include/leanc.h   harness 巨集（LEANC_ASSUME / LEANC_REACH / nondet_*）
-  data/templates/        `leanc init` 範本
-examples/                可驗證的範例專案（含 mock 固定輸出與 expected.yaml）
-tests/                   pytest：單元測試 + 實際工具整合測試 + 範例端到端測試
-scripts/run_experiments.py
-docs/                    架構、規格格式、信任模型、狀態語意、安全性、實驗、roadmap
-docker/Dockerfile        可重現環境
+```yaml
+provider: mock        # default provider: mock | openai
+mock_dir: mock
+sandbox: auto         # auto | none
 ```
 
-## 限制
+The project config cannot weaken checks, bounds, gates, approval or isolation. If it sets `allow_unsandboxed`, that value is ignored with a warning.
 
-* `VERIFIED_BOUNDED` 是有界結果；harness 是否忠實表達需求，仍需人工審查。
-* Sanitizer 只涵蓋可信測試實際執行到的路徑。
-* 修復政策是縱深防禦（文字規則），真正的防線是受保護的 harness 與獨立驗證器。
-* `PROVED` 只相對於已批准的 ACSL 契約（弱契約證明的東西很少），且在 WP 的記憶體/機器模型與 Frama-C libc 規格之下。
-* C++20 沒有可用的形式化關卡（CBMC 無法解析現代 C++；執行下載的 ESBMC 在本環境中未獲許可），最佳狀態為 `UNKNOWN`。
-* Lean 4 證明的是模型；模型與 C 程式碼之間只以差分測試向量連結。見 [docs/roadmap.md](docs/roadmap.md)。
+| Variable | Meaning |
+|---|---|
+| `LEANC_HOME` | approval key and ledger directory (default `~/.config/leanc`); keep it outside the workspace |
+| `LEANC_CLANG`, `LEANC_CLANGXX`, `LEANC_CBMC` | tool paths |
+| `LEANC_FRAMAC` | `frama-c` (>= 27, with WP); otherwise `PATH` and `/opt/opam/*/bin` are searched |
+| `LEANC_LEAN` | `lean` (toolchain with `leanchecker`); otherwise `PATH` and `/opt/lean/*/bin` are searched |
 
-## 授權
+## V2 optional tools
 
-Apache-2.0，見 [LICENSE](LICENSE)。
+| Feature | Install | Spec | Status effect |
+|---|---|---|---|
+| Frama-C/WP + ACSL | `sudo apt-get install -y opam z3 cvc5 && opam init -y && opam install -y frama-c alt-ergo` (Ubuntu's `frama-c-base` has no WP) | ACSL contract in a protected header, gate `wp` | only route to `PROVED`; proof repair lets the AI add loop invariants |
+| Lean 4 | release toolchain unpacked to `/opt/lean/<version>` or via elan | protected model and theorem statements; the AI writes proofs; kernel + `leanchecker`; standard axioms only; differential test vectors | model level: unproved → `UNKNOWN`, vector mismatch → `RUNTIME_TEST_FAILED`; never `PROVED` |
+| C++20 | `clang++` (part of clang-18) | `language: {name: cpp, standard: c++20}` | no C++ model checker is available, so the best result is `UNKNOWN` |
+
+`leanc doctor` reports each of these tools. When a tool is missing, its tests are skipped rather than failed.
+
+## Examples
+
+Every `examples/<name>/` contains `spec.yaml`, protected `include/`, `harness/` and `tests/`, shipped (usually buggy) `src/`, `mock/` fixtures, and `expected.yaml`.
+
+| Example | Shipped code | `verify` | `run --provider mock` |
+|---|---|---|---|
+| `safe_array_get` | correct | `VERIFIED_BOUNDED` | `VERIFIED_BOUNDED` |
+| `array_oob` | `index <= count` | `COUNTEREXAMPLE_FOUND` (cbmc, asan) | 1 round → `VERIFIED_BOUNDED` |
+| `div_by_zero` | unchecked `den` | `COUNTEREXAMPLE_FOUND` (cbmc, ubsan) | 2 rounds → `VERIFIED_BOUNDED` |
+| `int_overflow` | add, then check | `COUNTEREXAMPLE_FOUND` | 1 round → `VERIFIED_BOUNDED` |
+| `null_deref` | NULL check without return | `COUNTEREXAMPLE_FOUND` (analyzer, cbmc, ubsan) | 1 round → `VERIFIED_BOUNDED` |
+| `loop_unwind` | correct, unwind too small | `UNKNOWN` | `UNKNOWN` (not "repaired"); variant `spec_full_unwind.yaml` → `VERIFIED_BOUNDED` |
+| `vacuous_harness` | contradictory assumes | `UNKNOWN` (plain CBMC says SUCCESSFUL) | `UNKNOWN` |
+| `runtime_memory` | leak on error path | `RUNTIME_TEST_FAILED` (lsan) | 1 round → `VERIFIED_BOUNDED` |
+| `ring_buffer` | two `.c` files, correct | `VERIFIED_BOUNDED` | `VERIFIED_BOUNDED` |
+| `cheating_repair` | off-by-one | `COUNTEREXAMPLE_FOUND` | rounds 1–4 rejected by policy, round 5 → `VERIFIED_BOUNDED` |
+| `repair_exhausted` | `(a+b)/2` overflow | `COUNTEREXAMPLE_FOUND` | `REPAIR_EXHAUSTED`, workspace unchanged |
+| `cbmc_timeout` | hard 64-bit equivalence | `TIMEOUT` | `TIMEOUT` |
+| `wp_safe_array_get` | ACSL contract, correct | `PROVED` | `PROVED` |
+| `wp_proof_repair` | correct, no loop invariant | `UNKNOWN` | 2 proof-repair rounds → `PROVED` |
+| `wp_contract_violation` | violates postcondition | `COUNTEREXAMPLE_FOUND` | 1 round → `PROVED` |
+| `lean_clamp` | Lean theorems left as `sorry` | `UNKNOWN` | 2 rounds → `VERIFIED_BOUNDED` |
+| `cpp_ring_buffer` | C++20 class template | `UNKNOWN` | `UNKNOWN` |
+| `cpp_bounds_bug` | C++ off-by-one | `RUNTIME_TEST_FAILED` (asan) | 1 round → `UNKNOWN` |
+
+Reproduce all of them:
+
+```bash
+python scripts/run_experiments.py                       # every example; expect N/N matches
+python scripts/run_experiments.py --only array_oob div_by_zero
+```
+
+The script copies each example to a temporary project and approves it with a temporary `LEANC_HOME`. It then runs `verify` and `run --provider mock --regenerate` through the real CLI and compares the outcome with `expected.yaml`. Output goes to `experiments/results/` (local, gitignored). Details: [docs/experiments.md](docs/experiments.md).
+
+## Developing Lean C
+
+Agent directives are in [`CLAUDE.md`](CLAUDE.md), and `tests/test_architecture.py` enforces them:
+
+- Strict one-way layering, an acyclic module graph, and top-level imports only:
+  ```
+  foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < pipeline < cli
+  ```
+  Shared code moves down. A package `__init__` may re-export only its own submodules.
+- No comments or docstrings in `leanc/`, `tests/` or `scripts/`. Express intent through names, constants, Enums and frozen dataclasses.
+- No bare/`Exception`/`BaseException` handlers (the only exception is `leanc/cli.py` `main()`, which exits 70) and no swallowed exceptions.
+- Every `.py` file has at most 600 lines.
+
+| Package | Role |
+|---|---|
+| `foundation` | statuses, models, errors, hashing, redaction, workspace (path/symlink safety), sandbox, `run_command` (argv only, limits) |
+| `specs` | spec schema, loading, hashing, approval and ledger |
+| `lang` | C / C++ / Lean lexers |
+| `rules` | pure trust rules shared by gates and repair policy (C, C++, ACSL, Lean, preprocessor) |
+| `toolchain` | tool discovery, `BackendContext` |
+| `reports` | JSON / Markdown rendering |
+| `llm` | provider interface, mock, OpenAI-compatible, prompts, response parsing |
+| `backends` | gates: clang, analyzer, integrity, sanitizer, cbmc, counterexample, wp, lean |
+| `repair` | patch application (fuzz 0), generation and repair policy |
+| `pipeline` | verification controller, generation, repair loop, doctor, config, command bodies |
+| `cli.py` | argparse + `main` only |
+
+Checks:
+
+```bash
+python scripts/affected_tests.py --run              # after a change: tests selected through the import graph vs HEAD
+python scripts/affected_tests.py --base main --run  # for a whole branch
+python -m pytest tests/test_architecture.py -q      # layering, cycles, comments, docstrings, handlers, file size
+python -m pytest -q                                 # full suite (~9 min), before merge/release
+python scripts/run_experiments.py                   # must report N/N
+```
+
+The full suite needs clang-18, CBMC and bwrap. WP tests need Frama-C >= 27 and Lean tests need Lean 4; when a tool is absent, its tests are skipped.
+
+## Limitations
+
+- `VERIFIED_BOUNDED` is bounded to the approved harness. A human still has to judge whether the harness captures the requirement.
+- Sanitizers only cover the paths that the trusted tests execute.
+- `PROVED` holds only relative to the approved ACSL contract, under WP's memory and machine model.
+- The repair policy is defense in depth (textual rules). The real defense is the protected harness plus independent verifiers.
+- C++20 has no formal gate (CBMC cannot parse modern C++, and ESBMC is not integrated), so the best C++ result is `UNKNOWN`.
+- Lean proves a model, linked to the C code only through differential test vectors.
+- bubblewrap is not a VM. Run high-risk workloads inside a separate container or VM.
+
+Further documentation (Traditional Chinese): [architecture](docs/architecture.md) · [spec format](docs/spec-format.md) · [status semantics](docs/status-semantics.md) · [trust model](docs/trust-model.md) · [security](docs/security.md) · [experiments](docs/experiments.md) · [roadmap](docs/roadmap.md)

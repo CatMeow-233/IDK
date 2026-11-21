@@ -15,8 +15,8 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 5. 驗證 `expected.yaml` 中列出的規格變體（例如 `loop_unwind/spec_full_unwind.yaml`）；
 6. 比對狀態、偵測工具（`detected_by`）與被政策拒絕的修復回合（`rejected_rounds`）。
 
-輸出：`experiments/results/results.json`（含每個關卡的結果、耗時、工具版本、平台）與
-`experiments/results/results.md`（表格）。所有指令都透過真正的 `leanc` CLI（`python -m leanc ... --json`）執行。
+輸出寫到 `experiments/results/results.json`（每個關卡的結果、耗時、工具版本、平台）與
+`experiments/results/results.md`（表格）；這是本機產生的結果，不提交進 repo（已列入 `.gitignore`）。所有指令都透過真正的 `leanc` CLI（`python -m leanc ... --json`）執行。
 
 ## 這些實驗量測什麼
 
@@ -46,38 +46,3 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 | 求解器超時 | `cbmc_timeout` | `TIMEOUT` |
 | 規格竄改 | `tests/test_cli.py`、`tests/test_spec_and_approval.py` | 改 harness / 規格 / 批准紀錄 → `SPEC_UNAPPROVED` |
 | 無沙箱 | `tests/test_cli.py::test_no_sandbox_blocks_dynamic_execution` | sanitizer `SKIPPED` → `UNKNOWN` |
-
-## 最近一次結果
-
-最近一次執行（2026-11-20T10:17:47Z，Ubuntu clang version 18.1.3 (1ubuntu1); cbmc 5.95.1 (cbmc-5.95.1)，Python 3.13.18，`run` 使用 **mock** provider——固定 fixture，**不是** LLM 表現）：
-
-| example | verify (expected) | detected by | run --provider mock (expected) | rounds | rejected rounds | match |
-|---|---|---|---|---|---|---|
-| array_oob | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | asan, cbmc | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| cbmc_timeout | TIMEOUT (TIMEOUT) | - | TIMEOUT (TIMEOUT) | 0 | - | yes |
-| cheating_repair | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | asan, cbmc | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 5 | 1, 2, 3, 4 | yes |
-| cpp_bounds_bug | RUNTIME_TEST_FAILED (RUNTIME_TEST_FAILED) | asan | UNKNOWN (UNKNOWN) | 1 | - | yes |
-| cpp_ring_buffer | UNKNOWN (UNKNOWN) | - | UNKNOWN (UNKNOWN) | 0 | - | yes |
-| div_by_zero | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 2 | - | yes |
-| int_overflow | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| lean_clamp | UNKNOWN (UNKNOWN) | lean | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 2 | - | yes |
-| loop_unwind | UNKNOWN (UNKNOWN) | cbmc | UNKNOWN (UNKNOWN) | 0 | - | yes |
-| ↳ loop_unwind/spec_full_unwind.yaml | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | | | | | |
-| null_deref | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, clang-static-analyzer, ubsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| repair_exhausted | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, ubsan | REPAIR_EXHAUSTED (REPAIR_EXHAUSTED) | 5 | - | yes |
-| ring_buffer | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | - | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 0 | - | yes |
-| runtime_memory | RUNTIME_TEST_FAILED (RUNTIME_TEST_FAILED) | lsan | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 1 | - | yes |
-| safe_array_get | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | - | VERIFIED_BOUNDED (VERIFIED_BOUNDED) | 0 | - | yes |
-| vacuous_harness | UNKNOWN (UNKNOWN) | cbmc | UNKNOWN (UNKNOWN) | 0 | - | yes |
-| ↳ vacuous_harness/spec_fixed_harness.yaml | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | | | | | |
-| wp_contract_violation | COUNTEREXAMPLE_FOUND (COUNTEREXAMPLE_FOUND) | cbmc, frama-c-wp | PROVED (PROVED) | 1 | - | yes |
-| wp_proof_repair | UNKNOWN (UNKNOWN) | frama-c-wp | PROVED (PROVED) | 2 | - | yes |
-| wp_safe_array_get | PROVED (PROVED) | - | PROVED (PROVED) | 0 | - | yes |
-
-**18/18 範例符合預期。** 全部 `verify` 合計 79 s、全部 `run` 合計 133 s（4 核心容器）。
-原始資料：[`experiments/results/results.json`](../experiments/results/results.json)。
-
-另外，`tests/test_attacks_e2e.py` 收錄了兩輪對抗式審查中發現的 20 種「讓錯誤程式得到 `VERIFIED_BOUNDED`」的攻擊
-（覆寫 `__assert_fail` / `nondet_*`、巨集組出的 `_Pragma(CPROVER check disable)`、`#ifdef __clang__`、
-`exit`/`abort`/`atexit(_exit)`、linemarker、弱引用 `__VERIFIER_assume`、依輸入大小的 VLA / `alloca`…），現在每一種都會被強制的完整性關卡
-擋下，且不會被執行。
