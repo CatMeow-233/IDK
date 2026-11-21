@@ -8,8 +8,9 @@ from typing import Any
 
 import yaml
 
-from leanc.foundation.errors import ProviderError, WorkspaceError
+from leanc.foundation.errors import JSON_LOAD_ERRORS, ProviderError, WorkspaceError
 from leanc.foundation.redact import redact
+from leanc.foundation.text import lone_surrogate_paths
 from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import GeneratedCode, RepairProposal, SpecDraft
 
@@ -35,7 +36,7 @@ def excerpt(text: str, limit: int = 300) -> str:
 def _decode_document(candidate: str) -> Any:
     try:
         return _DECODER_TOLERATING_RAW_CONTROL_CHARS.decode(candidate)
-    except ValueError:
+    except JSON_LOAD_ERRORS:
         return _Decoding.NOT_JSON
 
 
@@ -65,7 +66,7 @@ def _embedded_top_level_objects(text: str) -> Iterator[dict]:
         attempts += 1
         try:
             obj, object_end = _DECODER_TOLERATING_RAW_CONTROL_CHARS.raw_decode(text, brace)
-        except ValueError:
+        except JSON_LOAD_ERRORS:
             pos = brace + 1
             continue
         if isinstance(obj, dict):
@@ -219,8 +220,15 @@ def _with_ignored_keys_note(notes: str, unknown: list[str]) -> str:
     return (notes + "\n" if notes else "") + f"(ignored unexpected keys: {', '.join(unknown)})"
 
 
+def require_valid_unicode(obj: Any, where: str) -> None:
+    invalid = list(lone_surrogate_paths(obj))
+    if invalid:
+        raise ProviderError(f"{where}: invalid Unicode (lone UTF-16 surrogate) at {', '.join(invalid[:5])}")
+
+
 def generated_code_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> GeneratedCode:
     where = "code generation response"
+    require_valid_unicode(obj, where)
     unknown = check_keys(obj, required=CODEGEN_KEYS, optional=CODEGEN_OPTIONAL, strict=strict, where=where)
     files = expect_files(obj, "files", required=True, clean=not strict, where=where) or {}
     notes = _with_ignored_keys_note(expect_str(obj, "notes", required=False, where=where), unknown)
@@ -233,6 +241,7 @@ def _model_sent_spec_as_mapping(spec_value: Any, strict: bool) -> bool:
 
 def spec_draft_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> SpecDraft:
     where = "spec draft response"
+    require_valid_unicode(obj, where)
     unknown = check_keys(obj, required=SPEC_DRAFT_KEYS, optional=SPEC_DRAFT_OPTIONAL, strict=strict, where=where)
     spec_value = obj.get("spec_yaml")
     if _model_sent_spec_as_mapping(spec_value, strict):
@@ -256,6 +265,7 @@ def spec_draft_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str =
 
 def repair_proposal_from_obj(obj: dict[str, Any], *, strict: bool = False, raw: str = "") -> RepairProposal:
     where = "repair response"
+    require_valid_unicode(obj, where)
     if strict:
         check_keys(obj, required=REPAIR_KEYS, optional=REPAIR_OPTIONAL, strict=True, where=where)
     else:
@@ -305,6 +315,7 @@ __all__ = [
     "parse_repair_response",
     "parse_spec_draft_response",
     "repair_proposal_from_obj",
+    "require_valid_unicode",
     "spec_draft_from_obj",
     "strip_code_fence",
 ]

@@ -11,11 +11,13 @@ from typing import Literal
 from leanc.foundation.hashing import sha256_bytes
 from leanc.foundation.runner import Limits, ProcResult, minimal_env, run_command
 from leanc.foundation.sandbox import Sandbox, SandboxMounts, detect_sandbox
+from leanc.foundation.text import safe_name
 from leanc.foundation.workspace import Workspace
 from leanc.specs.model import Spec
 from leanc.toolchain.environment import Toolchain, toolchain
 
 PROJECT_MARKER = "leanc.yaml"
+LOG_NAME_MAX_LENGTH = 60
 
 SandboxPreference = Literal["auto", "none"]
 
@@ -80,7 +82,7 @@ class BackendContext:
 
     def log_name(self, stage: str, what: str) -> str:
         self._counter += 1
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in what)[:60]
+        safe = safe_name(what, LOG_NAME_MAX_LENGTH)
         return f"{self._counter:02d}-{stage}-{safe}"
 
     def mounts(self, extra_ro: list[str] | None = None) -> SandboxMounts:

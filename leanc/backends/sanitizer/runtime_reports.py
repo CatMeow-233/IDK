@@ -8,6 +8,7 @@ from typing import Literal
 
 from leanc.backends.sanitizer.frames import (
     CALL_STACK_MAX_FRAMES,
+    REPORT_NUMBER,
     StackFrame,
     display_path,
     frame_path_steps,
@@ -46,7 +47,9 @@ _RSS_LIMIT_HEADER_RE = re.compile(
     r"^==\d+==\s*(?P<tool>AddressSanitizer|LeakSanitizer|UndefinedBehaviorSanitizer): "
     r"hard rss limit exhausted\s*(?P<rest>.*?)\s*$"
 )
-_UBSAN_LOCATED_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+): runtime error: (?P<msg>.*?)\s*$")
+_UBSAN_LOCATED_RE = re.compile(
+    rf"^(?P<file>.+?):(?P<line>{REPORT_NUMBER}):(?P<col>{REPORT_NUMBER}): runtime error: (?P<msg>.*?)\s*$"
+)
 _UBSAN_UNLOCATED_RE = re.compile(
     r"^(?P<file><unknown>|\S+\.(?:c|h|cc|cpp|cxx|hpp|inc)|\([^()]*\+0x[0-9a-fA-F]+\)): runtime error: (?P<msg>.*?)\s*$"
 )
@@ -55,7 +58,7 @@ _SUMMARY_RE = re.compile(
     r"(?P<kind>\S+)(?:\s+(?P<rest>.*?))?\s*$"
 )
 _LEAK_RECORD_RE = re.compile(
-    r"^(?P<kind>Direct|Indirect) leak of (?P<bytes>\d+) byte\(s\) in (?P<objs>\d+) object\(s\) allocated from:"
+    rf"^(?P<kind>Direct|Indirect) leak of (?P<bytes>{REPORT_NUMBER}) byte\(s\) in (?P<objs>{REPORT_NUMBER}) object\(s\) allocated from:"
 )
 _ACCESS_RE = re.compile(r"^(?P<acc>READ|WRITE) of size (?P<size>\d+) at ")
 _LOCATED_RE = re.compile(r"\bis located (?P<what>.+?)\s*$")

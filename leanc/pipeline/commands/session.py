@@ -15,7 +15,7 @@ from leanc.llm.factory import get_provider
 from leanc.pipeline.commands.console import LOGGER_NAME, Console, print_run_summary
 from leanc.pipeline.config import load_config
 from leanc.pipeline.controller import ensure_runs_dir
-from leanc.reports.json_report import summary, write_json
+from leanc.reports.json_report import atomic_write_text, summary, write_json
 from leanc.reports.markdown import render_run_md
 from leanc.toolchain.context import VerifyOptions, find_project_root, new_run_id
 
@@ -127,7 +127,7 @@ def record_aborted_run(message: str) -> None:
         finished_at=utcnow(),
     )
     write_json(record, run.run_dir / "run.json")
-    (run.run_dir / "report.md").write_text(render_run_md(record), encoding="utf-8")
+    atomic_write_text(run.run_dir / "report.md", render_run_md(record))
 
 
 def _round_summary(round_: RepairRound) -> dict:
@@ -167,7 +167,7 @@ def finish_run(record: RunRecord, run_dir: Path, console: Console, *, exit_overr
     record.artifacts.setdefault("report_md", "report.md")
     record.artifacts.setdefault("log", "leanc.log")
     write_json(record, run_dir / "run.json")
-    (run_dir / "report.md").write_text(render_run_md(record), encoding="utf-8")
+    atomic_write_text(run_dir / "report.md", render_run_md(record))
     exit_status = exit_override if exit_override is not None else exit_code(record.status)
     console.emit(_payload(record, run_dir, exit_status))
     if not console.as_json:

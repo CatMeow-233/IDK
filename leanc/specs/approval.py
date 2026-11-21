@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from leanc import __version__
-from leanc.foundation.errors import ApprovalError, WorkspaceError
+from leanc.foundation.errors import JSON_LOAD_ERRORS, ApprovalError, WorkspaceError
 from leanc.foundation.hashing import canonical_json, sha256_bytes
 from leanc.foundation.models import ApprovalCheck, utcnow
 from leanc.foundation.workspace import Workspace
@@ -144,7 +144,7 @@ def _load_ledger(key: bytes) -> _LedgerRead:
         return _LedgerRead({}, None)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, *JSON_LOAD_ERRORS):
         return _LedgerRead({}, LEDGER_CORRUPT)
     if not isinstance(data, dict):
         return _LedgerRead({}, LEDGER_CORRUPT)
@@ -223,7 +223,7 @@ def _read_store(root: Path, spec_id: str) -> _StoreRead:
         return _StoreRead(None, f"approval record must not be a symlink: {p}")
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, *JSON_LOAD_ERRORS) as exc:
         return _StoreRead(None, f"corrupt approval record {p}: {exc}")
     if not isinstance(data, dict) or "current" not in data:
         return _StoreRead(None, f"corrupt approval record {p}")

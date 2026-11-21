@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from leanc.foundation.errors import WorkspaceError
+from leanc.foundation.text import NUL, has_lone_surrogate
 from leanc.foundation.workspace import normalize_relpath
 
 SPEC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -46,6 +47,43 @@ OPT_IN_V2_GATES: tuple[str, ...] = ("wp", "lean")
 GATE_ORDER: tuple[str, ...] = DEFAULT_V1_GATES + OPT_IN_V2_GATES
 C_SUFFIXES = (".c",)
 CPP_SUFFIXES = (".cpp", ".cc", ".cxx")
+
+
+NUL_ALLOWED_FIELDS = frozenset({("TestCase", "stdin"), ("TestCase", "expect_stdout")})
+
+
+def _text_problem(text: str, nul_allowed: bool) -> str | None:
+    if NUL in text and not nul_allowed:
+        return "NUL character"
+    if has_lone_surrogate(text):
+        return "lone UTF-16 surrogate (invalid Unicode)"
+    return None
+
+
+def _value_text_problems(value: object, path: str, nul_allowed: bool = False) -> list[str]:
+    if isinstance(value, BaseModel):
+        return _model_text_problems(value, path + ".")
+    if isinstance(value, str):
+        problem = _text_problem(value, nul_allowed)
+        return [f"{path}: {problem}"] if problem else []
+    if isinstance(value, list):
+        return [p for i, item in enumerate(value) for p in _value_text_problems(item, f"{path}[{i}]")]
+    if isinstance(value, dict):
+        return [
+            p
+            for key, item in value.items()
+            for p in _value_text_problems(key, f"{path} key") + _value_text_problems(item, f"{path}.{key!r}")
+        ]
+    return []
+
+
+def _model_text_problems(model: BaseModel, prefix: str) -> list[str]:
+    owner = type(model).__name__
+    return [
+        p
+        for name in type(model).model_fields
+        for p in _value_text_problems(getattr(model, name), prefix + name, (owner, name) in NUL_ALLOWED_FIELDS)
+    ]
 
 
 def _validated_relpath(path: str) -> str:
@@ -295,6 +333,7 @@ class Spec(_M):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> "Spec":
+        self._reject_unusable_text()
         self._normalise_source_paths()
         self._reject_duplicate_source_paths()
         self._normalise_trusted_and_lean_paths()
@@ -305,6 +344,11 @@ class Spec(_M):
         self._require_sanitizer_inputs()
         self._reject_duplicate_test_case_names()
         return self
+
+    def _reject_unusable_text(self) -> None:
+        problems = _model_text_problems(self, "")
+        if problems:
+            raise ValueError("text not allowed in a spec: " + "; ".join(problems[:5]))
 
     def _normalise_source_paths(self) -> None:
         self.sources.editable = [_validated_relpath(p) for p in self.sources.editable]

@@ -45,7 +45,7 @@ def setup_logging(log_file: Path | None, verbose: bool) -> None:
         root.removeHandler(handler)
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler = logging.FileHandler(log_file, encoding="utf-8", errors="backslashreplace")
         file_handler.setFormatter(logging.Formatter(LOG_FILE_FORMAT))
         root.addHandler(file_handler)
     stderr_handler = logging.StreamHandler(sys.stderr)

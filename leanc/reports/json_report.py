@@ -22,6 +22,7 @@ from leanc.foundation.models import (
     VerificationResult,
 )
 from leanc.foundation.redact import REDACTED, redact
+from leanc.foundation.text import utf8_safe
 from leanc.foundation.status import exit_code, is_success
 
 log = logging.getLogger("leanc.reports")
@@ -170,7 +171,7 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     replaced = False
     try:
-        _write_synced(fd, text)
+        _write_synced(fd, utf8_safe(text))
         os.chmod(tmp, REPORT_FILE_MODE)
         os.replace(tmp, path)
         replaced = True

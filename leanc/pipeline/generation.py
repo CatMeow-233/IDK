@@ -6,13 +6,14 @@ from pathlib import Path
 
 import yaml
 
-from leanc.foundation.errors import LeanCError, ProviderError, SpecError
+from leanc.foundation.errors import YAML_LOAD_ERRORS, LeanCError, ProviderError, SpecError
 from leanc.foundation.hashing import sha256_text
 from leanc.foundation.models import GenerationRecord, PolicyDecision
 from leanc.foundation.redact import redact
 from leanc.foundation.workspace import Workspace
 from leanc.lang.c_lexer import CSource
 from leanc.llm.base import CodeGenRequest, SpecDraftRequest
+from leanc.llm.parsing import require_valid_unicode
 from leanc.repair.policy import check_generated
 from leanc.rules.definitions import find_function_definitions
 from leanc.specs.approval import check_approval
@@ -140,10 +141,11 @@ def generate_sources(
 def _untrusted_draft_data(draft_yaml: str, requirement: str, spec_id: str, provider) -> dict:
     try:
         data = yaml.safe_load(draft_yaml)
-    except yaml.YAMLError as exc:
+    except YAML_LOAD_ERRORS as exc:
         raise ProviderError(f"provider returned unparsable spec YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise ProviderError("provider returned a spec that is not a mapping")
+    require_valid_unicode(data, "provider spec YAML")
     data["spec_id"] = spec_id
     data.setdefault("version", 1)
     data["requirement"] = requirement

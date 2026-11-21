@@ -19,6 +19,7 @@ from leanc.foundation.models import (
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits
 from leanc.foundation.status import Outcome, Status, outcome_to_status
+from leanc.foundation.text import safe_name
 from leanc.lang.c_lexer import CSource
 from leanc.lang.cpp_lexer import CppSource
 from leanc.rules.c_names import ALLOWED_IMPORTS
@@ -158,6 +159,7 @@ class _IntegrityGate(ABC):
         self.invocations: list[ToolInvocation] = []
         self.problems: list[str] = []
         self.timeouts: list[str] = []
+        self.raw_indices: dict[str, int] = {}
         self.violations: list[PolicyViolation] = []
         self.raw_refs: dict[tuple[str, str], str] = {}
         self.headers: dict[str, str] = {}
@@ -208,7 +210,7 @@ class _IntegrityGate(ABC):
     def run_tool(self, tool: str, argv: list[str], rel: str, what: str, stdin: bytes | None = None) -> str | None:
         proc = self.ctx.run(argv, limits=self.limits, cwd=self.snapshot, stdin_data=stdin)
         self.invocations.append(proc.to_invocation(tool, self.ctx.run_dir, self.ctx.log_name(STAGE, f"{what}-{rel}")))
-        raw = self.raw_root / f"{what}-{rel.replace('/', '_')}.txt"
+        raw = self.raw_root / f"{what}-{self.raw_indices.setdefault(rel, len(self.raw_indices)):02d}-{safe_name(rel)}.txt"
         raw.write_text(redact(proc.stdout + (STDERR_SEPARATOR + proc.stderr if proc.stderr else "")), encoding="utf-8")
         self.raw_refs[(rel, what)] = self.ctx.relrun(raw)
         if proc.timed_out:

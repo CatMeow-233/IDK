@@ -6,7 +6,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from leanc.foundation.errors import ConfigError
+from leanc.foundation.errors import YAML_LOAD_ERRORS, ConfigError
 
 CONFIG_FILE = "leanc.yaml"
 
@@ -28,7 +28,7 @@ def load_config(root: Path) -> ProjectConfig:
         raise ConfigError(f"{path}: must not be a symbolic link")
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
-    except yaml.YAMLError as exc:
+    except YAML_LOAD_ERRORS as exc:
         raise ConfigError(f"{path}: cannot parse: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise ConfigError(f"{path}: not valid UTF-8 (byte offset {exc.start})") from None

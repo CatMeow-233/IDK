@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Hashable
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import ValidationError
 
-from leanc.foundation.errors import SpecError
+from leanc.foundation.errors import JSON_LOAD_ERRORS, YAML_LOAD_ERRORS, SpecError
 from leanc.foundation.hashing import canonical_hash, canonical_json
 from leanc.specs.model import Spec
 
@@ -23,6 +24,8 @@ def _construct_mapping_rejecting_duplicate_keys(loader: yaml.SafeLoader, node: y
     seen: set[Any] = set()
     for key_node, _ in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, Hashable):
+            raise yaml.constructor.ConstructorError(None, None, f"unhashable mapping key {key!r}", key_node.start_mark)
         if key in seen:
             raise yaml.constructor.ConstructorError(
                 None, None, f"duplicate key {key!r}", key_node.start_mark
@@ -52,7 +55,7 @@ def parse_spec_text(text: str, *, source: str = "<spec>") -> Spec:
             data = json.loads(text)
         else:
             data = yaml.load(text, Loader=_DuplicateKeyRejectingSafeLoader)
-    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+    except YAML_LOAD_ERRORS + JSON_LOAD_ERRORS as exc:
         raise SpecError(f"{source}: cannot parse: {exc}") from exc
     if not isinstance(data, dict):
         raise SpecError(f"{source}: top level must be a mapping")

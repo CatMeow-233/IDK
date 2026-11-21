@@ -58,6 +58,7 @@ MAX_GENERATOR_FAILURE_CHARS = 300
 VectorStatus = Literal["pass", "fail", "timeout", "error", "skipped"]
 
 _MISMATCH_RE = re.compile(rf"^\s*{VECTOR_MISMATCH_TAG}\b(.*)$", re.MULTILINE)
+MAX_VECTOR_COUNT_DIGITS = 18
 _CHECKED_RE = re.compile(rf"^\s*{VECTOR_CHECKED_TAG}\s+(\S+)\s*$", re.MULTILINE)
 _KEY_VALUE_RE = re.compile(r"([A-Za-z_][\w.\-]*)=(\S*)")
 
@@ -74,6 +75,10 @@ def vector_inputs(text: str) -> list[CounterexampleInput]:
 def _is_vector_line(line: str) -> bool:
     return bool(line.strip()) and not line.lstrip().startswith(VECTOR_COMMENT_PREFIX)
 
+
+
+def _is_vector_count(token: str) -> bool:
+    return token.isascii() and token.isdigit() and len(token) <= MAX_VECTOR_COUNT_DIGITS
 
 class VectorCheck:
     def __init__(
@@ -398,7 +403,7 @@ class VectorCheck:
 
     def _judge_vector_count(self, proc: ProcResult) -> dict:
         checked = _CHECKED_RE.findall(proc.stdout)
-        if len(checked) != 1 or not checked[0].isdigit():
+        if len(checked) != 1 or not _is_vector_count(checked[0]):
             return self._done(
                 "error",
                 f"the vector driver must print exactly one '{VECTOR_CHECKED_TAG} <n>' line "

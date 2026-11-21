@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import sys
 import traceback
@@ -202,7 +203,17 @@ def _run_command(argv: list[str] | None) -> int:
         return EXIT_INTERRUPTED
 
 
+UNENCODABLE_OUTPUT_ERRORS = "backslashreplace"
+
+
+def _tolerate_unencodable_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors=UNENCODABLE_OUTPUT_ERRORS)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _tolerate_unencodable_output()
     try:
         return _run_command(argv)
     except Exception as exc:

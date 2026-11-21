@@ -22,7 +22,7 @@ from leanc.foundation.models import (
 )
 from leanc.foundation.status import Outcome, Status, outcome_to_status, worst
 from leanc.foundation.workspace import Workspace, normalize_relpath
-from leanc.reports.json_report import write_json
+from leanc.reports.json_report import atomic_write_text, write_json
 from leanc.reports.markdown import render_verification_md
 from leanc.specs.approval import check_approval
 from leanc.specs.loader import load_spec
@@ -364,4 +364,4 @@ def verify(
 
 def write_verification_artifacts(result: VerificationResult, run_dir: Path) -> None:
     write_json(result, Path(run_dir) / "verification.json")
-    (Path(run_dir) / "verification.md").write_text(render_verification_md(result), encoding="utf-8")
+    atomic_write_text(Path(run_dir) / "verification.md", render_verification_md(result))

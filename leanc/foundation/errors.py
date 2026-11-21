@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import yaml
+
+
 class LeanCError(Exception):
     pass
 
@@ -24,3 +29,13 @@ class PatchError(LeanCError):
 
 class ConfigError(LeanCError):
     pass
+
+
+YAML_LOAD_ERRORS: tuple[type[BaseException], ...] = (
+    yaml.YAMLError,
+    ValueError,
+    KeyError,
+    AttributeError,
+    RecursionError,
+)
+JSON_LOAD_ERRORS: tuple[type[BaseException], ...] = (ValueError, RecursionError)

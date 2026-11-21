@@ -22,6 +22,7 @@ from leanc.foundation.models import (
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome, outcome_to_status
+from leanc.foundation.text import safe_name
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
 
@@ -29,7 +30,6 @@ STAGE = "compile"
 TOOL = "clang"
 MISSING_SOURCE_RULE = "missing-source"
 BLOCKING_POLICY = "block"
-SAFE_NAME_MAX_LENGTH = 80
 
 DIAGNOSTIC_FLAGS: tuple[str, ...] = (
     "-fno-color-diagnostics",
@@ -63,10 +63,6 @@ def compile_command(ctx: BackendContext, source_rel: str, obj_path: Path) -> lis
         "-o",
         sandbox_visible_path(obj_path),
     ]
-
-
-def safe_name(rel: str, max_length: int = SAFE_NAME_MAX_LENGTH) -> str:
-    return "".join(c if c.isalnum() or c in "-_." else "_" for c in rel)[:max_length]
 
 
 def unique_id(base: str, seen: set[str]) -> str:

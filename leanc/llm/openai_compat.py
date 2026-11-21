@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from leanc import __version__
-from leanc.foundation.errors import ProviderError
+from leanc.foundation.errors import JSON_LOAD_ERRORS, ProviderError
 from leanc.foundation.models import (
     FailureReport,
     ProviderInfo,
@@ -24,6 +24,7 @@ from leanc.foundation.models import (
     utcnow,
 )
 from leanc.foundation.redact import REDACTED, redact
+from leanc.foundation.text import utf8_safe
 from leanc.llm.base import (
     CodeGenRequest,
     GeneratedCode,
@@ -119,7 +120,7 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
 def _error_message(body: str) -> str:
     try:
         data = json.loads(body)
-    except ValueError:
+    except JSON_LOAD_ERRORS:
         return body
     if not isinstance(data, dict):
         return body
@@ -310,7 +311,7 @@ class OpenAICompatProvider(LLMProvider):
     def _write_transcript(self, purpose: str, record: dict[str, Any]) -> None:
         if self.transcript_dir is None:
             return
-        text = self._redact(json.dumps(record, indent=2, ensure_ascii=False, default=str)) + "\n"
+        text = utf8_safe(self._redact(json.dumps(record, indent=2, ensure_ascii=False, default=str))) + "\n"
         try:
             self.transcript_dir.mkdir(parents=True, exist_ok=True)
             path = self._next_transcript_path(purpose)
@@ -454,7 +455,7 @@ class OpenAICompatProvider(LLMProvider):
     def _extract_content(self, text: str) -> tuple[str, str | None]:
         try:
             payload = json.loads(text)
-        except ValueError:
+        except JSON_LOAD_ERRORS:
             raise ProviderError(f"LLM endpoint returned a non-JSON body: {excerpt(self._redact(text))!r}") from None
         if not isinstance(payload, dict):
             raise ProviderError("LLM endpoint returned JSON that is not an object")

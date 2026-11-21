@@ -17,7 +17,6 @@ from leanc.backends.clang import (
     define_args,
     failure_from_diagnostic,
     problem_tail,
-    safe_name,
     sandbox_visible_path,
 )
 from leanc.backends.clang_diagnostics import (
@@ -36,6 +35,7 @@ from leanc.foundation.models import (
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome, outcome_to_status
+from leanc.foundation.text import safe_name
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
 

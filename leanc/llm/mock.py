@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from leanc.foundation.errors import ProviderError, WorkspaceError
+from leanc.foundation.errors import JSON_LOAD_ERRORS, YAML_LOAD_ERRORS, ProviderError, WorkspaceError
 from leanc.foundation.models import FailureReport, ProviderInfo, VerificationResult
 from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import (
@@ -78,7 +78,7 @@ class MockProvider(LLMProvider):
             )
         try:
             data = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
+        except YAML_LOAD_ERRORS as exc:
             raise ProviderError(f"mock: spec_draft.yaml is not valid YAML: {exc}") from None
         if not isinstance(data, dict):
             raise ProviderError("mock: spec_draft.yaml must contain a YAML mapping")
@@ -116,7 +116,7 @@ class MockProvider(LLMProvider):
             return RepairProposal(root_cause="", rationale="", note=f"mock: no fixture for round {req.round}")
         try:
             obj = json.loads(text)
-        except ValueError as exc:
+        except JSON_LOAD_ERRORS as exc:
             raise ProviderError(f"mock: {self._where(rel)} is not valid JSON: {exc}") from None
         if not isinstance(obj, dict):
             raise ProviderError(f"mock: {self._where(rel)} must contain a JSON object")

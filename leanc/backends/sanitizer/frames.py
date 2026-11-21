@@ -13,12 +13,16 @@ SYSTEM_PATH_PREFIXES = ("/usr/", "/lib/", "/lib32/", "/lib64/", "/libx32/", "/op
 LIBC_BUILD_DIRS = ("csu/", "sysdeps/", "nptl/", "stdlib/", "string/", "libio/", "malloc/", "elf/", "posix/", "misc/")
 UNKNOWN_PATHS = frozenset({"??", "?"})
 
-_FRAME_RE = re.compile(r"^\s*#(?P<n>\d+)\s+0x[0-9a-fA-F]+\s*(?P<rest>.*?)\s*$")
+MAX_REPORT_NUMBER_DIGITS = 18
+REPORT_NUMBER = rf"\d{{1,{MAX_REPORT_NUMBER_DIGITS}}}(?!\d)"
+_FRAME_RE = re.compile(rf"^\s*#(?P<n>{REPORT_NUMBER})\s+0x[0-9a-fA-F]+\s*(?P<rest>.*?)\s*$")
 _BUILD_ID_SUFFIX_RE = re.compile(r"\s*\(BuildId: [0-9a-fA-F]+\)\s*$")
-_FILE_POSITION_RE = re.compile(r"^(?P<file>[^\s]+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
+_FILE_POSITION_RE = re.compile(rf"^(?P<file>[^\s]+?):(?P<line>{REPORT_NUMBER})(?::(?P<col>{REPORT_NUMBER}))?$")
 _MODULE_OFFSET_RE = re.compile(r"^(?P<func>.+?)\s+\((?P<module>[^()]*)\)$")
 _SOURCE_FILE_WITHOUT_LINE_RE = re.compile(r"^(?:/\S+|\S+\.(?:c|h|cc|cpp|cxx|hpp|inc|S|s))$")
-_SUMMARY_TAIL_LOCATION_RE = re.compile(r"^(?P<file>\S+?):(?P<line>\d+)(?::(?P<col>\d+))?(?:\s+in\s+(?P<func>\S+))?")
+_SUMMARY_TAIL_LOCATION_RE = re.compile(
+    rf"^(?P<file>\S+?):(?P<line>{REPORT_NUMBER})(?::(?P<col>{REPORT_NUMBER}))?(?:\s+in\s+(?P<func>\S+))?"
+)
 
 
 @dataclass
