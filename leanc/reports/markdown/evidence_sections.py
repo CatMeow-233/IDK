@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Iterable, NamedTuple
 
 from leanc.foundation.models import (
+    OWNERSHIP_TRACE_LABEL,
     Diagnostic,
     FailureReport,
     Location,
@@ -191,6 +192,8 @@ def _counterexample(n: int, stage: StageResult, f: FailureReport) -> list[str]:
         out += _trace_excerpt(f)
     if f.explanation:
         out += [f"Explanation: {escape_inline(f.explanation, LIMITS.explanation_chars)}", ""]
+    if f.ownership_trace is not None:
+        out += [f"{OWNERSHIP_TRACE_LABEL}: {escape_inline(f.ownership_trace.describe(), LIMITS.explanation_chars)}", ""]
     out += [f"Raw tool output: {code_span(f.raw_ref) if f.raw_ref else 'not recorded'}", ""]
     return out
 

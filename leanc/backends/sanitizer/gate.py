@@ -26,6 +26,8 @@ from leanc.backends.sanitizer.judge import (
     ExecutedCase,
     judge_case,
 )
+from leanc.backends.sanitizer.ownership import attach_ownership_traces
+from leanc.backends.sanitizer.ownership_replay import OwnershipInputs
 from leanc.backends.sanitizer.plan import (
     SanitizerPlan,
     exit_code_details,
@@ -46,8 +48,8 @@ from leanc.foundation.models import (
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.sandbox import SandboxMounts
-from leanc.foundation.text import safe_name
 from leanc.foundation.status import Outcome, Status, outcome_to_status
+from leanc.foundation.text import safe_name
 from leanc.specs.model import TestCase, TestsConfig
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
@@ -446,6 +448,16 @@ def _final_result(run: _SanitizerRun) -> StageResult:
     return run.result(Outcome.PASS, f"{total}/{total} test case(s) passed under {sanitizers} sanitizer(s) ({where})")
 
 
+def _attach_ownership_evidence(run: _SanitizerRun, layout: _Layout, env: dict[str, str]) -> None:
+    ctx, tests = run.ctx, run.ctx.spec.tests
+
+    def limits_for(case: TestCase) -> Limits:
+        return _case_limits(ctx.timeout(case.timeout_s or tests.timeout_s), run.plan, tests)
+
+    inputs = OwnershipInputs(ctx=ctx, plan=run.plan, env=env, project_files=set(layout.project_files), case_limits=limits_for)
+    attach_ownership_traces(inputs, run.failures, run.invocations, run.details)
+
+
 def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
     plan = sanitizer_plan(ctx.spec.tests.sanitizers)
     run = _SanitizerRun(ctx=ctx, plan=plan, details=_initial_details(ctx, plan))
@@ -476,4 +488,5 @@ def run_sanitizer_tests(ctx: BackendContext) -> StageResult:
     _fresh_directory(layout.cases_root)
     for index, case in enumerate(tests.cases):
         _run_case(run, layout, env, index, case)
+    _attach_ownership_evidence(run, layout, env)
     return _final_result(run)

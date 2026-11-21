@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.gate.approvals import APPROVE, _probe, approval_compatibility, examples_unchanged_since
+from scripts.gate.approvals import (
+    APPROVE,
+    _probe,
+    approval_compatibility,
+    examples_unchanged_since,
+)
 from scripts.gate.environment import command_env, judge_leanc_origin
 from scripts.gate.git import Git
 from scripts.gate.junit import JunitCounts, judge_junit, read_junit

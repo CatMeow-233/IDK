@@ -36,6 +36,7 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 - lean checker template axiom whitelist == backends.lean STANDARD_AXIOMS.
 - toolchain.cxx.find_clangxx: return clang++ path unresolved (realpath of /usr/bin/clang++ is clang).
 - MUST NOT set Limits.memory_mb (RLIMIT_AS) for ASan/LSan-instrumented programs; cap via ASan hard_rss_limit_mb.
+- ownership trace (backends/sanitizer/ownership*, data/runtime/ownership_trace.c): evidence only. MUST NOT add failures/diagnostics, touch tally/outcome/status, or edit id/description/location of failures; every trace failure is a value in details["ownership_trace"]. reads its log with O_NOFOLLOW + regular-file + size cap. C only.
 
 ## errors
 - MUST NOT: bare except, except Exception, except BaseException. sole exception: leanc/cli.py main() -> print traceback, return 70.

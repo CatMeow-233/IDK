@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from leanc.foundation.models import (
+    OWNERSHIP_TRACE_LABEL,
     Diagnostic,
     FailureReport,
     Location,
@@ -85,6 +86,9 @@ def render_failure(
         lines.extend(_trace_lines(f, limits))
     if f.explanation:
         lines.append(f"  explanation: {truncate(f.explanation, limits.max_item_chars, label='explanation')}")
+    if f.ownership_trace is not None:
+        evidence = truncate(f.ownership_trace.describe(), limits.max_item_chars, label="ownership trace")
+        lines.append(f"  {OWNERSHIP_TRACE_LABEL}: {evidence}")
     lines.extend(_code_excerpt_lines(f, sources))
     return "\n".join(lines)
 

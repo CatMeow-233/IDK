@@ -6,7 +6,12 @@ from pathlib import Path
 
 import yaml
 
-from leanc.foundation.errors import JSON_LOAD_ERRORS, YAML_LOAD_ERRORS, ProviderError, WorkspaceError
+from leanc.foundation.errors import (
+    JSON_LOAD_ERRORS,
+    YAML_LOAD_ERRORS,
+    ProviderError,
+    WorkspaceError,
+)
 from leanc.foundation.models import FailureReport, ProviderInfo, VerificationResult
 from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import (

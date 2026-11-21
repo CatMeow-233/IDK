@@ -97,6 +97,43 @@ FailureKind = Literal[
 ]
 
 
+OwnershipLoss = Literal["lost-during-call", "unreachable-by-return", "unreachable-by-next-event", "not-localised"]
+OWNERSHIP_TRACE_LABEL = (
+    "memory ownership trace (from an instrumented replay of the untrusted program; evidence, not a verdict)"
+)
+OWNERSHIP_LOSS_TEXT: dict[str, str] = {
+    "lost-during-call": (
+        "it was allocated during the call to {function} and was already unreachable before {function} returned, "
+        "so it was lost in {function} or in a function it called"
+    ),
+    "unreachable-by-return": "no reference to it remained by the time {function} was about to return",
+    "unreachable-by-next-event": (
+        "it was lost in {function} or in its caller before the first traced event after {function} returned{returned_to}"
+    ),
+    "not-localised": "no probe before the program exited found it unreachable, so the loss is not localised",
+}
+
+
+class MemoryOwnershipTrace(_Model):
+    test_case: str
+    allocation: Location
+    released_at: list[Location] = Field(default_factory=list)
+    loss: OwnershipLoss
+    function: Location | None = None
+    returned_to: Location | None = None
+
+    def describe(self) -> str:
+        function = (self.function.function or self.function.short()) if self.function else "?"
+        returned_to = f" (to {self.returned_to.short()})" if self.returned_to else ""
+        released = (
+            "allocations from this site are released at " + ", ".join(loc.short() for loc in self.released_at)
+            if self.released_at
+            else "no traced run released an allocation from this site"
+        )
+        loss = OWNERSHIP_LOSS_TEXT[self.loss].format(function=function, returned_to=returned_to)
+        return f"allocated at {self.allocation.short()}; {released}; in test case {self.test_case!r} {loss}"
+
+
 class FailureReport(_Model):
     id: StableFailureId
     kind: FailureKind
@@ -109,6 +146,7 @@ class FailureReport(_Model):
     trace: list[TraceStep] = Field(default_factory=list)
     explanation: str = ""
     raw_ref: str | None = None
+    ownership_trace: MemoryOwnershipTrace | None = None
 
 
 class StageResult(_Model):

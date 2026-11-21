@@ -141,7 +141,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
       "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
       "kind": "...", "property_id": "...", "location": {"file": "src/array_lookup.c", "line": 9, "column": 16, "function": "array_lookup"},
       "inputs": [{"name": "argv", "value": "index_equals_count", "type": null}],
-      "description": "...", "raw_ref": "raw/..."
+      "description": "...", "raw_ref": "raw/...", "ownership_trace": null
     }]
   }
 }
@@ -159,6 +159,19 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
     logs/       每次工具调用的 stdout / stderr，按执行顺序编号
     build/
 ```
+
+C 项目出现 LeakSanitizer 失败时，`ownership_trace` 保存对该泄漏测试用例做插桩重放得到的证据。它不参与判定。C++ 和多线程的测试程序不追踪。内容如下：
+
+- `allocation`：配置点。
+- `released_at`：同一配置点的内存在其他路径上被释放的位置。
+- `loss` 与 `function`：最后一个引用消失时间的上界。只有在某次检查中被列为 Direct 泄漏才算证据；LeakSanitizer 的扫描是保守的，扫描中仍找到看似指针的值并不能证明任何事。`loss` 是以下之一：
+  - `lost-during-call`：该内存在调用 `function` 期间分配，且在 `function` 返回前已不可达，所以是在 `function` 或其被调用者中遗失的。这是唯一的强结论。
+  - `unreachable-by-return`：`function` 不在分配时的调用栈上，到它即将返回时已没有任何引用。这不说明是在哪里遗失的。
+  - `unreachable-by-next-event`：在 `function` 返回后的第一个被追踪事件之前，于 `function` 或其调用者中遗失。
+  - `not-localised`：程序结束前没有任何检查发现它不可达。仍会报告 `released_at`。
+- `returned_to`：`function` 返回到的调用点；被内联的函数不提供。
+
+修复 prompt 会以明确标签显示同样的证据。它不会指出执行的是哪一行 `return`。
 
 agent 修正代码有两种方式：
 

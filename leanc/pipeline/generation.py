@@ -6,7 +6,12 @@ from pathlib import Path
 
 import yaml
 
-from leanc.foundation.errors import YAML_LOAD_ERRORS, LeanCError, ProviderError, SpecError
+from leanc.foundation.errors import (
+    YAML_LOAD_ERRORS,
+    LeanCError,
+    ProviderError,
+    SpecError,
+)
 from leanc.foundation.hashing import sha256_text
 from leanc.foundation.models import GenerationRecord, PolicyDecision
 from leanc.foundation.redact import redact

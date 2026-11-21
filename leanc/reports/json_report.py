@@ -22,8 +22,8 @@ from leanc.foundation.models import (
     VerificationResult,
 )
 from leanc.foundation.redact import REDACTED, redact
-from leanc.foundation.text import utf8_safe
 from leanc.foundation.status import exit_code, is_success
+from leanc.foundation.text import utf8_safe
 
 log = logging.getLogger("leanc.reports")
 
@@ -231,6 +231,7 @@ def _failure_entry(stage: str, f: FailureReport) -> dict[str, Any]:
         "location": f.location.model_dump(mode="json") if f.location else None,
         "inputs": [i.model_dump(mode="json") for i in f.inputs],
         "raw_ref": f.raw_ref,
+        "ownership_trace": f.ownership_trace.model_dump(mode="json") if f.ownership_trace else None,
     }
 
 
