@@ -88,6 +88,24 @@ def _changed_package_modules(changed_files: list[str], modules: dict[str, Path])
     return {by_path[f] for f in changed_files if f in by_path}
 
 
+def _local_test_imports(path: Path) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add(node.module)
+        elif isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+    return {name for name in names if (TEST_DIR / f"{name}.py").is_file()}
+
+
+def _changed_test_support(changed_files: list[str]) -> set[str]:
+    return {
+        Path(f).stem
+        for f in changed_files
+        if f.startswith("tests/") and f.endswith(".py") and not Path(f).name.startswith("test_")
+    }
+
+
 def _uses_example_projects(path: Path) -> bool:
     return "examples" in path.read_text(encoding="utf-8")
 
@@ -99,11 +117,18 @@ def select_tests(changed_files: list[str]) -> list[str]:
     modules = _package_modules()
     impacted = _impacted_modules(_changed_package_modules(changed_files, modules), _reverse_dependencies(modules))
     examples_changed = any(f.startswith(("examples/", "leanc/data/")) for f in changed_files)
+    support_changed = _changed_test_support(changed_files)
     selected = set(ALWAYS_RUN)
     for test in test_files:
         rel = test.relative_to(REPO).as_posix()
         targets = {_resolve(name, modules) for name in _imported_modules(test)}
-        if rel in changed_files or targets & impacted or (examples_changed and _uses_example_projects(test)):
+        uses_changed_support = bool(_local_test_imports(test) & support_changed)
+        if (
+            rel in changed_files
+            or targets & impacted
+            or uses_changed_support
+            or (examples_changed and _uses_example_projects(test))
+        ):
             selected.add(rel)
     return sorted(selected)
 

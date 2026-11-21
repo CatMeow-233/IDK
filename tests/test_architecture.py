@@ -9,6 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PACKAGE = REPO / "leanc"
 CHECKED_TREES = (PACKAGE, REPO / "tests", REPO / "scripts")
+MAX_FILE_LINES = 600
 
 ALLOWED_DEPENDENCIES: dict[str, frozenset[str]] = {
     "foundation": frozenset(),
@@ -150,6 +151,16 @@ def test_no_comments_in_python_sources():
                 if token.type == tokenize.COMMENT and not (token.start[0] == 1 and token.string.startswith("#!")):
                     offenders.append(f"{path.relative_to(REPO)}:{token.start[0]}: {token.string[:60]}")
     assert not offenders, f"{len(offenders)} comment(s) found:\n" + "\n".join(offenders[:200])
+
+
+def test_modules_and_tests_stay_small():
+    oversized = []
+    for tree in CHECKED_TREES:
+        for path in _python_files(tree):
+            line_count = len(path.read_text(encoding="utf-8").splitlines())
+            if line_count > MAX_FILE_LINES:
+                oversized.append(f"{path.relative_to(REPO)}: {line_count} lines")
+    assert not oversized, f"split by responsibility (> {MAX_FILE_LINES} lines):\n" + "\n".join(oversized)
 
 
 def test_no_docstrings():

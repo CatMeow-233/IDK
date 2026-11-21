@@ -4,7 +4,7 @@ Usage (from the repository root, with CBMC installed)::
 
     python tests/fixtures/cbmc/capture_json.py
 
-Each scenario is assembled exactly like ``tests/test_backend_cbmc.py`` does
+Each scenario is assembled exactly like ``tests/cbmc_support.py`` does
 (``src/impl.c`` + ``harness/h.c``) and run through the real gate; the raw
 ``--json-ui`` output it saved is copied here.  The only edits are cosmetic:
 ``workingDirectory`` (an absolute temporary path) is replaced by
@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
 sys.path.insert(0, str(REPO / "tests"))
 
-from test_backend_cbmc import make_cbmc_project
+from cbmc_support import make_cbmc_project
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
 from leanc.foundation.runner import Limits

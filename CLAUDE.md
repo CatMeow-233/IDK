@@ -4,7 +4,7 @@ audience: AI only. optimize for machine efficiency. no human-oriented prose anyw
 ## code
 - MUST NOT: `#` comments, docstrings (module/class/function), `# noqa`, `# type: ignore`, pragmas. scope: leanc/ tests/ scripts/.
 - MUST: express intent via names, UPPER_CASE constants, small named functions, Enum/Literal/frozen dataclass.
-- MUST: split modules > 600 lines by responsibility.
+- MUST: every .py file in leanc/ tests/ scripts/ <= 600 lines (split by responsibility; shared test helpers -> tests/<area>_support.py).
 - MUST NOT: write human docs/notes; machine-critical constraints -> this file, one line each.
 
 ## layers (import only lower; module graph acyclic; leanc imports top-level only)
