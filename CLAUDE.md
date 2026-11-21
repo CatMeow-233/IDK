@@ -21,6 +21,7 @@ foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < p
 - backends: read only ctx.snapshot_dir; write only build/raw/logs; run tools only via ctx.run (sandboxed).
 - lean checker template axiom whitelist == backends.lean STANDARD_AXIOMS.
 - toolchain.cxx.find_clangxx: return clang++ path unresolved (realpath of /usr/bin/clang++ is clang).
+- MUST NOT set Limits.memory_mb (RLIMIT_AS) for ASan/LSan-instrumented programs; cap via ASan hard_rss_limit_mb.
 
 ## errors
 - MUST NOT: bare except, except Exception, except BaseException. sole exception: leanc/cli.py main() -> print traceback, return 70.
