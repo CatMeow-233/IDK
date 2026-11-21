@@ -34,7 +34,7 @@ from leanc.backends.sanitizer.plan import (
     sanitizer_plan,
 )
 from leanc.backends.sanitizer.runtime_reports import parse_sanitizer_findings
-from leanc.backends.termination import signal_from_exit_status, signal_name
+from leanc.backends.termination import signal_name, untrusted_program_terminating_signal
 from leanc.foundation.models import (
     CounterexampleInput,
     Diagnostic,
@@ -79,14 +79,6 @@ def _run_relative(ctx: BackendContext, path: Path) -> str:
 
 def _case_stem(index: int, case: TestCase) -> str:
     return f"{index:02d}-{safe_name(case.name, CASE_NAME_MAX_LENGTH) or DEFAULT_CASE_STEM}"
-
-
-def _terminating_signal(proc: ProcResult) -> int | None:
-    if proc.signal is not None:
-        return proc.signal
-    if proc.sandbox != "none":
-        return signal_from_exit_status(proc.exit_code)
-    return None
 
 
 def _address_space_limit_mb(plan: SanitizerPlan, tests: TestsConfig) -> int | None:
@@ -277,7 +269,7 @@ def _build_test_binary(run: _SanitizerRun, layout: _Layout) -> StageResult | Non
     if proc.timed_out:
         return run.result(Outcome.TIMEOUT, f"sanitizer build timed out after {timeout_s:g}s")
     build_diagnostics = parse_build_diagnostics(proc.stderr, base_dir=str(layout.snapshot))
-    crash_signal = _terminating_signal(proc)
+    crash_signal = untrusted_program_terminating_signal(proc)
     if crash_signal is not None or compiler_crash_reported(proc.stderr):
         why = f"terminated by {signal_name(crash_signal)}" if crash_signal is not None else "compiler crash reported"
         return run.result(Outcome.ERROR, f"clang crashed while building the sanitizer test binary ({why})")
@@ -376,7 +368,7 @@ def _run_case(run: _SanitizerRun, layout: _Layout, env: dict[str, str], index: i
     out_raw = layout.raw_root / f"{stem}.stdout.txt"
     err_raw.write_text(redact(proc.stderr), encoding="utf-8")
     out_raw.write_text(redact(proc.stdout), encoding="utf-8")
-    terminating_signal = _terminating_signal(proc)
+    terminating_signal = untrusted_program_terminating_signal(proc)
     cpu_limited = terminating_signal == signal.SIGXCPU
     executed = ExecutedCase(
         case=case,

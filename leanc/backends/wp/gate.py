@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from leanc.backends.termination import signal_name, terminating_signal
+from leanc.backends.termination import signal_name, trusted_tool_terminating_signal
 from leanc.backends.wp.argv import (
     MACHDEP,
     RTE_CLASSES,
@@ -434,7 +434,7 @@ class _WpRun:
 
     def _check_framac_exit(self) -> Verdict | None:
         proc = self.proc
-        sig = terminating_signal(proc)
+        sig = trusted_tool_terminating_signal(proc)
         if sig is not None:
             possibly_oom = sig in OUT_OF_MEMORY_SIGNALS
             hint = f" (possibly out of memory: wp.memory_mb={self.wp.memory_mb})" if possibly_oom else ""

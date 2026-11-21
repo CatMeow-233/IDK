@@ -852,3 +852,16 @@ def test_details_are_json_serialisable(tmp_path):
     res = run_cbmc(ctx)
     json.dumps(res.model_dump(mode="json"))
     assert dataclasses.is_dataclass(ctx)
+
+
+def test_unsandboxed_exit_status_128_plus_n_counts_as_killed():
+    from leanc.backends.termination import (
+        trusted_tool_terminating_signal,
+        untrusted_program_terminating_signal,
+    )
+    from leanc.foundation.runner import ProcResult
+
+    killed = ProcResult(argv=["cbmc"], cwd="/", exit_code=137, signal=None, timed_out=False,
+                        output_truncated=False, duration_s=0.0, stdout="", stderr="", sandbox="none")
+    assert trusted_tool_terminating_signal(killed) == 9
+    assert untrusted_program_terminating_signal(killed) is None

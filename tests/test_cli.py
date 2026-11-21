@@ -282,3 +282,19 @@ def test_input_error_after_run_dir_creation_still_records_the_run(capsys, exampl
     assert rc == 2 and err.count("error:") == 1
     runs = list((proj / ".leanc/runs").iterdir())
     assert len(runs) == 1 and (runs[0] / "run.json").exists() and (runs[0] / "report.md").exists()
+
+
+def test_failed_abort_record_does_not_hide_the_user_error(capsys, example_copy, monkeypatch):
+    def unwritable(_message):
+        raise PermissionError("read-only run directory")
+
+    proj = example_copy("safe_array_get")
+    spec = str(proj / "spec.yaml")
+    main(["spec", "approve", spec, "--by", "t", "--yes"])
+    capsys.readouterr()
+    monkeypatch.delenv("LEANC_MODEL", raising=False)
+    monkeypatch.setattr("leanc.cli.record_aborted_run", unwritable)
+    assert main(["generate", spec, "--provider", "openai"]) == 2
+    err = capsys.readouterr().err
+    assert "leanc: error:" in err
+    assert "could not write the aborted-run record: read-only run directory" in err

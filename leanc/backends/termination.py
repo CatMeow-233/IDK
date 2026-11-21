@@ -23,7 +23,13 @@ def signal_name(number: int) -> str:
     return _SIGNAL_NAMES.get(number, f"signal {number}")
 
 
-def terminating_signal(proc: ProcResult) -> int | None:
+def trusted_tool_terminating_signal(proc: ProcResult) -> int | None:
+    if proc.signal is not None:
+        return proc.signal
+    return signal_from_exit_status(proc.exit_code)
+
+
+def untrusted_program_terminating_signal(proc: ProcResult) -> int | None:
     if proc.signal is not None:
         return proc.signal
     if proc.sandbox == UNSANDBOXED:

@@ -28,7 +28,7 @@ from leanc.backends.sanitizer import (
     sanitizer_plan,
     scan_sanitizer_control,
 )
-from leanc.backends.termination import terminating_signal
+from leanc.backends.termination import untrusted_program_terminating_signal
 from leanc.foundation.models import CounterexampleInput, Diagnostic, FailureReport
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
@@ -351,7 +351,7 @@ class VectorCheck:
     def _judge_driver_run(self) -> dict:
         proc = self.driver_run
         spec = self.spec
-        sig = terminating_signal(proc)
+        sig = untrusted_program_terminating_signal(proc)
         project_files = {*spec.sources.editable, *spec.sources.headers, self.vectors.driver}
         findings = parse_sanitizer_findings(proc.stderr, project_files=project_files, base_dir=str(self.snapshot))
         mismatches = [match.group(1).strip() for match in _MISMATCH_RE.finditer(proc.stdout + "\n" + proc.stderr)]

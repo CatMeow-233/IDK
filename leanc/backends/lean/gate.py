@@ -32,7 +32,7 @@ from leanc.backends.lean.theorems import (
     unproved_theorem_failure,
 )
 from leanc.backends.lean.vectors import VectorCheck
-from leanc.backends.termination import terminating_signal
+from leanc.backends.termination import untrusted_program_terminating_signal
 from leanc.foundation.models import (
     Diagnostic,
     FailureReport,
@@ -90,8 +90,8 @@ def _is_import_error(message: dict) -> bool:
 def _compile_failure_reason(proc, errors: list[dict]) -> str:
     if errors:
         return excerpt(str(errors[0].get("data")))
-    if terminating_signal(proc):
-        return f"terminated by signal {terminating_signal(proc)}"
+    if untrusted_program_terminating_signal(proc):
+        return f"terminated by signal {untrusted_program_terminating_signal(proc)}"
     return f"exit code {proc.exit_code}: {excerpt(proc.stderr or proc.stdout)}"
 
 
@@ -313,7 +313,7 @@ class _LeanRun:
         messages, _ = parse_lean_messages(proc.stdout)
         self.diagnostics.extend(message_diagnostic(m) for m in messages if m.get("severity") in DIAGNOSED_SEVERITIES)
         errors = errors_of(messages)
-        sig = terminating_signal(proc)
+        sig = untrusted_program_terminating_signal(proc)
         if proc.output_truncated:
             raise GateAbort(Outcome.ERROR, f"Lean output for {rel} exceeded {MAX_LEAN_OUTPUT_BYTES} bytes")
         if sig is not None or (proc.exit_code != 0 and not errors):
@@ -381,7 +381,7 @@ class _LeanRun:
                 replay["modules"][proof.module] = REPLAY_OK
                 kept.append(proof)
                 continue
-            if terminating_signal(proc) is not None:
+            if untrusted_program_terminating_signal(proc) is not None:
                 raise GateAbort(Outcome.ERROR, f"leanchecker crashed on {proof.module}: {excerpt(proc.stderr)}")
             replay["modules"][proof.module] = REPLAY_REJECTED
             self._report_replay_rejection(proof, proc, raw)

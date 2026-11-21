@@ -171,6 +171,13 @@ def _out_of_range_option(args) -> str | None:
     return None
 
 
+def _record_aborted_run_or_report(message: str) -> None:
+    try:
+        record_aborted_run(message)
+    except OSError as exc:
+        print(f"leanc: warning: could not write the aborted-run record: {exc}", file=sys.stderr)
+
+
 def _run_command(argv: list[str] | None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -187,8 +194,8 @@ def _run_command(argv: list[str] | None) -> int:
         return int(args.func(args))
     except LeanCError as exc:
         log.log(FILE_ONLY_LEVEL, "error: %s", exc)
-        record_aborted_run(str(exc))
         print(f"leanc: error: {exc}", file=sys.stderr)
+        _record_aborted_run_or_report(str(exc))
         return EXIT_USAGE
     except KeyboardInterrupt:
         print("leanc: interrupted", file=sys.stderr)

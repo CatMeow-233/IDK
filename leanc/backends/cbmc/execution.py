@@ -9,7 +9,7 @@ from typing import Literal, NamedTuple
 from leanc.backends.cbmc.argv import Mode, build_cbmc_argv
 from leanc.backends.cbmc.output import CbmcOutput, interpret_output
 from leanc.backends.counterexample.locations import location_from_cbmc
-from leanc.backends.termination import terminating_signal
+from leanc.backends.termination import trusted_tool_terminating_signal
 from leanc.foundation.models import Diagnostic, ToolInvocation
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome
@@ -192,7 +192,7 @@ def tool_problem(run: CbmcRun, limits: Limits, ctx: BackendContext, *, expect: E
             "the result cannot be interpreted",
         )
     out_of_memory = ran_out_of_memory(run)
-    signal_number = terminating_signal(proc)
+    signal_number = trusted_tool_terminating_signal(proc)
     if signal_number is not None:
         return _killed_problem(what, signal_number, out_of_memory, verification, output)
     section = output.results if expect == "result" else output.goals
