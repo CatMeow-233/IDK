@@ -58,6 +58,12 @@ def test_compile_flags_cannot_control_sanitizers(flag):
         ["--gcc-install-dir=/opt/other/lib/gcc/13"],
         ["-nodefaultlibs"],
         ["-nostartfiles"],
+        ["--for-linker", "--wrap=malloc"],
+        ["--for-linker=--wrap=malloc"],
+        ["--prefix=/opt/other/bin/"],
+        ["--no-standard-libraries"],
+        ["--ld-path=/opt/other/ld"],
+        ["-fuse-ld=/opt/other/ld"],
     ],
     ids=" ".join,
 )
@@ -71,7 +77,7 @@ def test_compile_flags_cannot_control_internal_tools(flags):
 
 def test_ordinary_compile_flags_are_accepted():
     def mutate(data):
-        data["compile"]["flags"] = ["-Wall", "-O2", "-march=native", "-ffast-math", "-flto", "-DX=1", "-Iinc", "-g"]
+        data["compile"]["flags"] = ["-Wall", "-O2", "-march=native", "-ffast-math", "-flto", "-DX=1", "-Iinc", "-g", "-fuse-ld=lld"]
 
     assert parse_spec_text(_spec(mutate), source="spec.json").compile.flags[1] == "-O2"
 

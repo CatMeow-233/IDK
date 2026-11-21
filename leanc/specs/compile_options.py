@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 SANITIZER_FLAG_PREFIXES = ("-fsanitize", "-fno-sanitize")
-TOOL_PASS_THROUGH_PREFIXES = ("-X", "-mllvm", "-Wp,", "-Wa,", "-Wl,")
+TOOL_PASS_THROUGH_PREFIXES = ("-X", "-mllvm", "-Wp,", "-Wa,", "-Wl,", "--for-linker")
 ANALYZER_MODE_PREFIXES = ("--analyze",)
 INDIRECTION_PREFIXES = ("@", "--config")
 CODE_LOADING_PREFIXES = ("-fplugin", "-fpass-plugin")
 TOOLCHAIN_REPLACEMENT_PREFIXES = (
     "-B",
+    "--prefix",
+    "--ld-path",
     "-ccc-",
     "-resource-dir",
     "--resource-dir",
@@ -15,9 +17,12 @@ TOOLCHAIN_REPLACEMENT_PREFIXES = (
     "--gcc-toolchain",
     "--gcc-install-dir",
     "-nostdlib",
+    "--no-standard-libraries",
     "-nodefaultlibs",
     "-nostartfiles",
 )
+LINKER_SELECTION_PREFIX = "-fuse-ld="
+PATH_SEPARATOR = "/"
 TOOL_CONTROL_PREFIXES = (
     *TOOL_PASS_THROUGH_PREFIXES,
     *ANALYZER_MODE_PREFIXES,
@@ -50,8 +55,12 @@ def non_option_entries(flags: list[str]) -> list[str]:
     return [flag for flag in flags if not flag.startswith(OPTION_PREFIX) or flag in NON_OPTION_ENTRIES]
 
 
+def selects_linker_by_path(flag: str) -> bool:
+    return flag.startswith(LINKER_SELECTION_PREFIX) and PATH_SEPARATOR in flag
+
+
 def tool_control_flags(flags: list[str]) -> list[str]:
-    return [flag for flag in flags if flag.startswith(TOOL_CONTROL_PREFIXES)]
+    return [flag for flag in flags if flag.startswith(TOOL_CONTROL_PREFIXES) or selects_linker_by_path(flag)]
 
 
 def is_diagnostic_option(flag: str) -> bool:
