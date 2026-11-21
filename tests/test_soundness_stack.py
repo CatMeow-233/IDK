@@ -24,7 +24,8 @@ VLA_UNDER_FLAG_READ = (
     "#else\n    *out = arr[idx];\n#endif"
 )
 STACK_USAGE = "src/a.c:3:big\t16777240\tstatic\nsrc/a.c:7:other\t2097168\tdynamic,bounded\nsrc/a.c:9:small\t64\tstatic\n"
-CPP_STACK_USAGE = "src/a.cpp:2:_Z3bigi\t1999896\tstatic\n"
+CPP_STACK_USAGE = "src/a.cpp:2:_Z3bigi\t1999896\tstatic\nsrc/a.cpp:__clang_call_terminate\t8\tstatic\n"
+GENERATED_HUGE_FRAME = "src/a.cpp:__generated_thunk\t2000000\tstatic\n"
 FLAGS_THAT_HID_THE_FRAME_DIAGNOSTIC = [
     ["-w", "-Wno-frame-larger-than"],
     ["-fno-show-column"],
@@ -57,9 +58,16 @@ def test_stack_usage_rows_above_the_limit_become_violations_with_function_and_si
     assert "'other'" in usage.violations[1].message and "2097168" in usage.violations[1].message
 
 
-def test_cpp_stack_usage_names_the_symbol():
-    [found] = stack_usage_findings("src/a.cpp", CPP_STACK_USAGE).violations
+def test_cpp_stack_usage_names_the_symbol_and_accepts_rows_without_a_line():
+    usage = stack_usage_findings("src/a.cpp", CPP_STACK_USAGE)
+    assert usage.unparsed == []
+    [found] = usage.violations
     assert "'_Z3bigi'" in found.message and found.line == 2
+
+
+def test_huge_frame_of_a_generated_function_has_no_line():
+    [found] = stack_usage_findings("src/a.cpp", GENERATED_HUGE_FRAME).violations
+    assert "'__generated_thunk'" in found.message and found.line is None
 
 
 def test_frame_in_another_file_is_reported_without_a_foreign_line():

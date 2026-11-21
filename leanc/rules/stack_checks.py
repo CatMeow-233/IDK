@@ -54,7 +54,9 @@ _STACK_DIAG_RE = re.compile(
     r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
     re.MULTILINE,
 )
-_STACK_USAGE_ROW_RE = re.compile(r"^(?P<file>.+):(?P<line>\d+):(?P<function>[^\t:]+)\t(?P<size>\d+)\t\S+$")
+_STACK_USAGE_ROW_RE = re.compile(
+    r"^(?P<file>.+?)(?::(?P<line>\d+))?:(?P<function>[^\t:]+)\t(?P<size>\d+)\t\S+$"
+)
 
 
 @dataclass(frozen=True)
@@ -71,8 +73,9 @@ def stack_usage_path(assembly: Path) -> Path:
     return assembly.with_suffix(STACK_USAGE_SUFFIX)
 
 
-def _line_in(rel: str, file: str, line: str) -> int | None:
-    return int(line) if posixpath.normpath(file) == posixpath.normpath(rel) else None
+def _line_in(rel: str, file: str, line: str | None) -> int | None:
+    same_file = posixpath.normpath(file) == posixpath.normpath(rel)
+    return int(line) if line is not None and same_file else None
 
 
 def unbounded_stack_violations(rel: str, stderr: str, reason: str) -> list[PolicyViolation]:
