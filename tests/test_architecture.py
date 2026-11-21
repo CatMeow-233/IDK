@@ -1,5 +1,3 @@
-"""Architecture rules: strict layering, no import cycles, no comments, one-line docstrings, no bug-masking handlers."""
-
 from __future__ import annotations
 
 import ast
@@ -154,17 +152,15 @@ def test_no_comments_in_python_sources():
     assert not offenders, f"{len(offenders)} comment(s) found:\n" + "\n".join(offenders[:200])
 
 
-def test_docstrings_are_single_line():
+def test_no_docstrings():
     offenders = []
     for tree in CHECKED_TREES:
         for path in _python_files(tree):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                doc = ast.get_docstring(node, clean=True)
-                if doc is not None and "\n" in doc.strip():
-                    offenders.append(f"{path.relative_to(REPO)}:{getattr(node, 'lineno', 1)}")
-    assert not offenders, f"{len(offenders)} multi-line docstring(s):\n" + "\n".join(offenders[:200])
+                if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if ast.get_docstring(node, clean=False) is not None:
+                        offenders.append(f"{path.relative_to(REPO)}:{getattr(node, 'lineno', 1)}")
+    assert not offenders, f"{len(offenders)} docstring(s):\n" + "\n".join(offenders[:200])
 
 
 CATCH_ALL_TYPES = frozenset({"Exception", "BaseException"})
