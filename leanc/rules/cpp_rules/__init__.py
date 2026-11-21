@@ -9,6 +9,7 @@ from leanc.rules.cpp_rules.demangle import DemangledName, parse_demangled
 from leanc.rules.cpp_rules.headers import HeaderFacts, header_facts
 from leanc.rules.cpp_rules.object_rules import (
     CPP_ALLOWED_RUNTIME_IMPORTS,
+    CPP_RUNTIME_IMPORT_FAMILIES,
     check_cpp_object_symbols,
     defines_target,
 )
@@ -22,6 +23,7 @@ from leanc.rules.cpp_rules.source_rules import (
 __all__ = [
     "CPP_ALLOWED_RUNTIME_IMPORTS",
     "CPP_KEYWORDS",
+    "CPP_RUNTIME_IMPORT_FAMILIES",
     "CPP_RULES",
     "CPP_STD_HEADERS",
     "CppDefinition",

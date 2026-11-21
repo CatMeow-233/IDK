@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
-import re
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -35,15 +36,38 @@ from leanc.rules.c_rules import (
 from leanc.rules.cpp_rules import (
     CPP_ALLOWED_RUNTIME_IMPORTS,
     CPP_RULES,
+    CPP_RUNTIME_IMPORT_FAMILIES,
     check_cpp_object_symbols,
     cpp_preprocessed_violations,
     cpp_source_violations,
     defines_target,
     header_facts,
 )
-from leanc.rules.findings import violation
+from leanc.rules.findings import dedupe_key, unique_id, violation
+from leanc.rules.predefined_macros import (
+    GCC_MISSING,
+    GCC_PREPROCESSED_GATES,
+    NO_GCC_PREPROCESSED_GATE,
+    PREDEFINED_MACRO_DUMP_ARGS,
+    MacroDefinition,
+    divergent_macro_use_violations,
+    divergent_macros,
+    parse_predefined_macros,
+)
 from leanc.rules.source import source_violations
-from leanc.rules.symbol_types import STRONG_TEXT_TYPE, UNDEFINED_TYPES
+from leanc.rules.stack_checks import (
+    STACK_FRAME_CHECK_FLAGS,
+    UNBOUNDED_STACK_CHECK_FLAGS,
+    codegen_flags,
+    stack_frame_violations,
+    unbounded_stack_violations,
+)
+from leanc.rules.symbol_types import (
+    STRONG_TEXT_TYPE,
+    UNDEFINED_TYPES,
+    defined_elsewhere,
+    is_defined_global,
+)
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler
 from leanc.toolchain.tools import find_tool
@@ -57,37 +81,15 @@ MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_STDERR_EXCERPT_CHARS = 300
 UNRANKED_RULE = 99
 STDERR_SEPARATOR = "\n--- stderr ---\n"
-UNDEFINED_SYMBOL = "U"
 NULL_SECTION = "NULL"
 
 NM_CANDIDATES = ("llvm-nm-18", "llvm-nm", "nm")
 READELF_CANDIDATES = ("llvm-readelf-18", "llvm-readelf", "readelf")
 DEMANGLER_CANDIDATES = ("llvm-cxxfilt-18", "llvm-cxxfilt", "c++filt")
-UNBOUNDED_STACK_CHECK_FLAGS = (
-    "-fsyntax-only",
-    "-fno-color-diagnostics",
-    "-fno-caret-diagnostics",
-    "-Wno-everything",
-    "-Wvla",
-    "-Walloca",
-    "-Werror=vla",
-    "-Werror=alloca",
-)
+GCC_CANDIDATES = ("gcc",)
+PREDEFINED_MACROS_STEP = "predefined-macros"
 C_SYMBOL_EVIDENCE_RULES = frozenset({"SYMBOL_OVERRIDE", "DANGEROUS_IMPORT"})
 CPP_SYMBOL_EVIDENCE_RULES = frozenset({"SYMBOL_OVERRIDE", "DANGEROUS_IMPORT", "EXCEPTIONS", "CPP_RUNTIME", "TERMINATION"})
-CPP_RUNTIME_IMPORT_FAMILIES = (
-    "global operator new/delete",
-    "std::nothrow",
-    "std::__throw_*",
-    "std::__glibcxx_assert_fail",
-    "vtable for __cxxabiv1::__*class_type_info",
-    "std::terminate/__cxa_begin_catch (from __clang_call_terminate)",
-)
-
-_STACK_DIAG_RE = re.compile(
-    r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
-    re.MULTILINE,
-)
 
 
 def _find(names: tuple[str, ...]) -> str | None:
@@ -98,34 +100,12 @@ def _find(names: tuple[str, ...]) -> str | None:
     return None
 
 
-def _is_defined_global(symbol_type: str) -> bool:
-    return symbol_type.isupper() and symbol_type != UNDEFINED_SYMBOL
-
-
 def _object_path(object_root: Path, rel: str) -> Path:
     return object_root / (rel[:-2] + ".o" if rel.endswith(".c") else rel + ".o")
 
 
 def _define_args(defines: list[str]) -> list[str]:
     return [define if define.startswith("-D") else f"-D{define}" for define in defines]
-
-
-def _defined_elsewhere(defined_per_file: dict[str, set[str]], rel: str) -> set[str]:
-    if len(defined_per_file) <= 1:
-        return set()
-    return set().union(*(names for other, names in defined_per_file.items() if other != rel))
-
-
-def _dedupe_key(found: PolicyViolation) -> tuple:
-    return (found.rule, found.file, found.line) if found.line else (found.rule, found.file, found.message)
-
-
-def _unique_id(base: str, taken: set[str]) -> str:
-    candidate, suffix = base, 2
-    while candidate in taken:
-        candidate, suffix = f"{base}#{suffix}", suffix + 1
-    taken.add(candidate)
-    return candidate
 
 
 @dataclass
@@ -197,6 +177,7 @@ class _IntegrityGate(ABC):
         for rel in self.spec.sources.editable:
             self.check_file(rel)
         self.check_symbols_across_files()
+        self.check_predefined_macro_divergence()
         return self.report()
 
     def load_headers(self) -> None:
@@ -268,7 +249,7 @@ class _IntegrityGate(ABC):
             entry["checks"].append("preprocessed")
 
     def check_unbounded_stack_allocations(self, rel: str, entry: dict) -> None:
-        argv = [
+        unbounded = [
             self.compiler_path,
             f"-std={self.spec.language.standard}",
             *_define_args(self.spec.compile.defines),
@@ -276,26 +257,74 @@ class _IntegrityGate(ABC):
             *UNBOUNDED_STACK_CHECK_FLAGS,
             rel,
         ]
-        entry["argv"]["stack"] = argv
+        frames = [
+            self.compiler_path,
+            f"-std={self.spec.language.standard}",
+            *codegen_flags(self.spec.compile.flags),
+            *_define_args(self.spec.compile.defines),
+            *self.ctx.include_args(),
+            *STACK_FRAME_CHECK_FLAGS,
+            rel,
+        ]
+        entry["argv"]["stack"] = unbounded
+        entry["argv"]["stack_frames"] = frames
+        unbounded_parse = partial(unbounded_stack_violations, reason=self.stack_violation_reason)
+        ran_unbounded = self.run_stack_check(unbounded, rel, "stack", unbounded_parse)
+        ran_frames = self.run_stack_check(frames, rel, "stack-frame", stack_frame_violations)
+        if ran_unbounded and ran_frames:
+            entry["checks"].append("stack")
+
+    def run_stack_check(
+        self, argv: list[str], rel: str, what: str, parse: Callable[[str, str], list[PolicyViolation]]
+    ) -> bool:
         proc = self.ctx.run(argv, limits=self.limits, cwd=self.snapshot)
-        log_name = self.ctx.log_name(STAGE, f"stack-{rel}")
+        log_name = self.ctx.log_name(STAGE, f"{what}-{rel}")
         self.invocations.append(proc.to_invocation(self.compiler_name, self.ctx.run_dir, log_name))
         if proc.timed_out:
-            self.timeouts.append(f"stack check of {rel} timed out")
-            return
+            self.timeouts.append(f"{what} check of {rel} timed out")
+            return False
         if proc.error:
-            self.problems.append(f"stack check of {rel} failed: {proc.error}")
-            return
-        hits = 0
-        for diagnostic in _STACK_DIAG_RE.finditer(proc.stderr):
-            hits += 1
-            message = f"{diagnostic.group('msg').strip()} ({self.stack_violation_reason})"
-            self.violations.append(violation("UNBOUNDED_STACK", message, rel, int(diagnostic.group("line"))))
-        if proc.exit_code not in (0, None) and not hits:
+            self.problems.append(f"{what} check of {rel} failed: {proc.error}")
+            return False
+        found = parse(rel, proc.stderr)
+        self.violations += found
+        if proc.exit_code not in (0, None) and not found:
             self.problems.append(
-                f"stack check of {rel} failed (exit {proc.exit_code}): {self._stderr_excerpt(proc.stderr)}"
+                f"{what} check of {rel} failed (exit {proc.exit_code}): {self._stderr_excerpt(proc.stderr)}"
             )
-        entry["checks"].append("stack")
+        return True
+
+    def check_predefined_macro_divergence(self) -> None:
+        if not GCC_PREPROCESSED_GATES & set(self.spec.gates):
+            self.details["predefined_macros"] = {"checked": False, "reason": NO_GCC_PREPROCESSED_GATE}
+            return
+        gcc = _find(GCC_CANDIDATES)
+        if gcc is None:
+            self.problems.append(GCC_MISSING)
+            return
+        if not self.compiler_path:
+            return
+        clang_argv = [self.compiler_path, *self.spec.compile.flags, *self.ctx.include_args(), *PREDEFINED_MACRO_DUMP_ARGS]
+        gcc_argv = [gcc, *PREDEFINED_MACRO_DUMP_ARGS]
+        self.details["predefined_macros"] = {"checked": False, "argv": {"clang": clang_argv, "gcc": gcc_argv}}
+        clang_macros = self.predefined_macros(self.compiler_name, clang_argv)
+        gcc_macros = self.predefined_macros("gcc", gcc_argv)
+        if clang_macros is None or gcc_macros is None:
+            return
+        divergent = divergent_macros(clang_macros, gcc_macros)
+        self.details["predefined_macros"].update({"checked": True, "divergent": len(divergent)})
+        for rel, checked in self.checked.items():
+            self.violations += divergent_macro_use_violations(rel, checked.source, divergent)
+
+    def predefined_macros(self, tool: str, argv: list[str]) -> dict[str, MacroDefinition] | None:
+        dump = self.run_tool(tool, argv, tool, PREDEFINED_MACROS_STEP)
+        if dump is None:
+            return None
+        parsed = parse_predefined_macros(dump)
+        if parsed.unparsed or not parsed.definitions:
+            self.problems.append(f"{tool} printed an unexpected predefined-macro list: {parsed.unparsed[:1]!r}")
+            return None
+        return parsed.definitions
 
     def check_sections(self, rel: str, real_object: str, checked: _CheckedFile) -> None:
         if not self.readelf:
@@ -314,7 +343,7 @@ class _IntegrityGate(ABC):
         defined_per_file = {rel: self.defined_names(file.symbols or []) for rel, file in self.checked.items()}
         for rel, file in self.checked.items():
             if file.symbols is not None:
-                self.violations += self.symbol_violations(rel, file, _defined_elsewhere(defined_per_file, rel))
+                self.violations += self.symbol_violations(rel, file, defined_elsewhere(defined_per_file, rel))
         every_file_has_symbols = all(file.symbols is not None for file in self.checked.values())
         if self.checked and every_file_has_symbols and not any(
             self.object_defines_target(file.symbols) for file in self.checked.values()
@@ -325,7 +354,7 @@ class _IntegrityGate(ABC):
         rank = {rule: position for position, rule in enumerate(self.rules)}
         unique: dict[tuple, PolicyViolation] = {}
         for found in self.violations:
-            unique.setdefault(_dedupe_key(found), found)
+            unique.setdefault(dedupe_key(found), found)
         return sorted(
             unique.values(),
             key=lambda found: (found.file or "", found.line or 0, rank.get(found.rule, UNRANKED_RULE), found.message),
@@ -334,7 +363,7 @@ class _IntegrityGate(ABC):
     def failure_report(self, found: PolicyViolation, location: Location | None, taken_ids: set[str]) -> FailureReport:
         evidence = self.symbol_evidence(found.file or "") if found.rule in self.symbol_evidence_rules else None
         return FailureReport(
-            id=_unique_id(f"{STAGE}:{found.rule}:{found.file or '-'}:{found.line or 0}", taken_ids),
+            id=unique_id(f"{STAGE}:{found.rule}:{found.file or '-'}:{found.line or 0}", taken_ids),
             kind="policy",
             tool=TOOL,
             property_id=found.rule,
@@ -439,12 +468,12 @@ class _CIntegrityGate(_IntegrityGate):
             return
         symbols = parse_nm(listing)
         checked.symbols = symbols
-        checked.entry["defined"] = sorted(name for name, kind in symbols if _is_defined_global(kind))
+        checked.entry["defined"] = sorted(name for name, kind in symbols if is_defined_global(kind))
         checked.entry["undefined"] = sorted(name for name, kind in symbols if kind in UNDEFINED_TYPES)
         checked.entry["checks"].append("symbols")
 
     def defined_names(self, symbols: list) -> set[str]:
-        return {name for name, kind in symbols if _is_defined_global(kind)}
+        return {name for name, kind in symbols if is_defined_global(kind)}
 
     def symbol_violations(self, rel: str, checked: _CheckedFile, elsewhere: set[str]) -> list[PolicyViolation]:
         return check_object_symbols(
@@ -532,7 +561,7 @@ class _CppIntegrityGate(_IntegrityGate):
         if triples is None:
             return
         checked.symbols = triples
-        checked.entry["defined"] = sorted(shown for _, kind, shown in triples if _is_defined_global(kind))
+        checked.entry["defined"] = sorted(shown for _, kind, shown in triples if is_defined_global(kind))
         checked.entry["undefined"] = sorted(shown for _, kind, shown in triples if kind in UNDEFINED_TYPES)
         checked.entry["checks"].append("symbols")
 

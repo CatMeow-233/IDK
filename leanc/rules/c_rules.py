@@ -52,6 +52,7 @@ from leanc.rules.preprocessor import (
     redefinition_findings,
     tool_specific_identifiers,
 )
+from leanc.rules.stack_checks import MAX_STACK_FRAME_BYTES, STACK_FRAME_RULE
 from leanc.rules.symbol_types import (
     INDIRECT_FUNCTION_TYPES,
     UNDEFINED_TYPES,
@@ -103,6 +104,8 @@ RULES: dict[str, str] = {
     "MISSING_TARGET": "no editable object defines the target function",
     "UNBOUNDED_STACK": "variable-length arrays or alloca: CBMC has no model of stack limits, so an input-sized "
     "stack allocation verifies while crashing natively",
+    STACK_FRAME_RULE: f"a function whose stack frame exceeds {MAX_STACK_FRAME_BYTES} bytes (e.g. a huge fixed-size "
+    "local array): it overflows the native stack, while CBMC has no stack limit and only runs out of memory",
     **ACSL_RULES,
 }
 

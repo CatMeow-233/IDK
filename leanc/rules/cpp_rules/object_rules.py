@@ -30,12 +30,26 @@ from leanc.rules.symbol_types import (
 )
 from leanc.specs.model import Spec
 
-__all__ = ["CPP_ALLOWED_RUNTIME_IMPORTS", "ITANIUM_MANGLING_PREFIX", "check_cpp_object_symbols", "defines_target"]
+__all__ = [
+    "CPP_ALLOWED_RUNTIME_IMPORTS",
+    "CPP_RUNTIME_IMPORT_FAMILIES",
+    "ITANIUM_MANGLING_PREFIX",
+    "check_cpp_object_symbols",
+    "defines_target",
+]
 
 ITANIUM_MANGLING_PREFIX = "_Z"
 CPP_ALLOWED_RUNTIME_IMPORTS: frozenset[str] = frozenset(
     {"__cxa_pure_virtual", "__cxa_deleted_virtual", "__cxa_guard_acquire", "__cxa_guard_release",
      "__cxa_guard_abort", "__gxx_personality_v0", "_Unwind_Resume"}
+)
+CPP_RUNTIME_IMPORT_FAMILIES = (
+    "global operator new/delete",
+    "std::nothrow",
+    "std::__throw_*",
+    "std::__glibcxx_assert_fail",
+    "vtable for __cxxabiv1::__*class_type_info",
+    "std::terminate/__cxa_begin_catch (from __clang_call_terminate)",
 )
 _EXCEPTION_IMPORT_RE = re.compile(
     r"^(?:__cxa_(?:allocate_exception|free_exception|throw|rethrow|begin_catch|end_catch|get_exception_ptr|"
