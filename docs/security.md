@@ -4,7 +4,7 @@ Lean C 分析並執行 AI 生成的程式碼，因此把它當成潛在惡意輸
 
 | # | 要求 | 實作 |
 |---|---|---|
-| 1 | 不使用 `shell=True` | `leanc.core.runner.run_command` 只接受 argv 串列（傳字串會 `TypeError`）；`Popen(shell=False)`；NUL 位元組拒絕 |
+| 1 | 不使用 `shell=True` | `leanc.foundation.runner.run_command` 只接受 argv 串列（傳字串會 `TypeError`）；`Popen(shell=False)`；NUL 位元組拒絕 |
 | 2 | 結構化參數 | 所有工具呼叫都是 argv 陣列；報告中記錄完整 argv |
 | 3 | 限制工作目錄 | 工具在 `run_dir/snapshot` 執行，輸出只寫 `build/`、`raw/`、`logs/` |
 | 4 | 路徑穿越 | `Workspace.normalize` 拒絕絕對路徑、`..`、反斜線穿越、NUL；規格中的所有路徑在載入時正規化 |
@@ -34,7 +34,7 @@ namespace），Lean C **不會假裝已啟用沙箱**：
 
 ## 已知限制
 
-* bubblewrap 不是虛擬機；核心漏洞可能逃逸。高風險環境請在 Docker/VM 中執行（見 `docker/Dockerfile`），
+* bubblewrap 不是虛擬機；核心漏洞可能逃逸。高風險環境請在獨立的容器或 VM 中執行，
   並維持 bwrap 作為第二層。
 * `RLIMIT_CPU` 以行程為單位；`RLIMIT_NPROC` 在 bwrap 的 user namespace 中不可靠，因此行程數沒有硬上限。
   緩解：完整性關卡在物件層級拒絕 `fork`/`vfork`/`clone`/`posix_spawn`/`exec*`/`system`/`daemon` 匯入
@@ -42,3 +42,11 @@ namespace），Lean C **不會假裝已啟用沙箱**：
 * 每個測試案例目錄在磁碟上；單一檔案上限 64 MB，但檔案數沒有上限（逾時前可寫入的量受時間限制）。
 * 政策檢查是靜態文字規則（已去除註解與字串），可能被極端的巨集技巧繞過；真正的正確性防線是受保護的
   harness 與獨立驗證器，政策只是縱深防禦。
+* （V2）C++ 完整性關卡以**名稱**判斷外部定義是否「由受保護標頭宣告」（demangle 後的每個名稱元件都出現在標頭中），
+  而不是比對完整的宣告結構；例如標頭若有 `lc` 命名空間與 `push` 成員，自由函式 `lc::push(int)` 也會被接受。
+  這不會產生 `main` 之前執行的程式碼或偽造測試結果，但比「確實是標頭宣告的成員」寬鬆。
+* （V2）Lean 政策與 C/C++ 規則的 lexer 必須與編譯器的 lexer 一致（巢狀註解、raw/插值字串、數字分隔符…）。
+  目前沒有發現可隱藏禁止記號的差異；對 C/C++ 而言，物件檔符號/section 檢查是對**編譯結果**的獨立後盾，
+  對 Lean 而言，kernel + `leanchecker` + 公理檢查是後盾。這類 lexer 值得以差分模糊測試持續檢驗。
+* （V2）WP 的 smoke test 在 prover 逾時時視為通過（這是 Frama-C 的語意）；請保持 `wp.prover_timeout_s` 小。
+  功能性目標仍然必須被證明為 Valid，逾時永遠不會讓目標通過。

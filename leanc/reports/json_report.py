@@ -1,23 +1,3 @@
-"""Machine-readable reports: ``run.json`` / ``verification.json`` and the
-compact verdict summary embedded in ``leanc ... --json`` output.
-
-Why this module is careful about three things:
-
-* **Redaction.**  Reports embed tool output, argv, LLM-supplied rationale and
-  file contents, any of which can contain a credential that leaked into the
-  environment.  Every string is passed through :func:`leanc.core.redact.redact`
-  before serialisation *and* the serialised text is redacted again, so secrets
-  never reach disk whether they sit inside one JSON string or not.
-* **Atomicity.**  ``run.json`` is the record ``leanc report`` re-reads; a crash
-  mid-write must never leave a truncated file that later parses as something
-  else.  We write to a temporary file in the same directory, ``fsync`` and
-  ``os.replace`` it into place.
-* **Honest summaries.**  :func:`summary` reports exactly what the
-  :class:`VerificationResult` says (status, exit code, per-gate outcomes,
-  failures with the *detecting* tool, assumptions and limitations); it never
-  derives a more favourable verdict.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -32,16 +12,24 @@ from typing import Any, Iterable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from leanc.core.errors import LeanCError
-from leanc.core.models import Diagnostic, FailureReport, RunRecord, StageResult, VerificationResult
-from leanc.core.redact import REDACTED, redact
-from leanc.core.status import exit_code, is_success
+from leanc.foundation.errors import LeanCError
+from leanc.foundation.models import (
+    ApprovalCheck,
+    Diagnostic,
+    FailureReport,
+    RunRecord,
+    StageResult,
+    VerificationResult,
+)
+from leanc.foundation.redact import REDACTED, redact
+from leanc.foundation.text import utf8_safe
+from leanc.foundation.status import exit_code, is_success
 
 log = logging.getLogger("leanc.reports")
 
-#: Canonical presentation order of detecting tools (compiler first, formal last).
-#: Tools not listed here (e.g. ``leanc``, ``leanc-policy``) sort after these,
-#: alphabetically.
+REPORT_FILE_MODE = 0o644
+MAX_VALIDATION_ERRORS_SHOWN = 3
+
 TOOL_ORDER: tuple[str, ...] = (
     "clang",
     "clang-static-analyzer",
@@ -51,21 +39,15 @@ TOOL_ORDER: tuple[str, ...] = (
     "test-oracle",
     "cbmc",
 )
+_TOOL_RANK = {tool: rank for rank, tool in enumerate(TOOL_ORDER)}
 
-#: Diagnostic severities that count as a *finding* (notes / info only add
-#: context to another diagnostic and do not name a detecting tool).
 FINDING_SEVERITIES = frozenset({"error", "warning"})
 
 _M = TypeVar("_M", bound=BaseModel)
 
 
-# --------------------------------------------------------------------------- helpers
 def tool_sort_key(tool: str) -> tuple[int, str]:
-    """Sort key placing known tools in :data:`TOOL_ORDER`, others after them."""
-    try:
-        return (TOOL_ORDER.index(tool), tool)
-    except ValueError:
-        return (len(TOOL_ORDER), tool)
+    return (_TOOL_RANK.get(tool, len(TOOL_ORDER)), tool)
 
 
 def sort_tools(tools: Iterable[str]) -> list[str]:
@@ -77,22 +59,21 @@ def is_finding(d: Diagnostic) -> bool:
 
 
 def detecting_tools(stage: StageResult) -> list[str]:
-    """Tools that *flagged something* in this stage: the tool of every failure
-    and of every error/warning diagnostic, in :data:`TOOL_ORDER`."""
     return sort_tools([f.tool for f in stage.failures] + [d.tool for d in stage.diagnostics if is_finding(d)])
 
 
 def invoked_tools(stage: StageResult) -> list[str]:
-    """Tools that were run in this stage (first-invocation order, deduplicated)."""
     seen: dict[str, None] = {}
     for inv in stage.invocations:
         seen.setdefault(inv.tool, None)
     return list(seen)
 
 
+def _is_non_finite_float(obj: Any) -> bool:
+    return isinstance(obj, float) and not math.isfinite(obj)
+
+
 def _jsonable(obj: Any) -> Any:
-    """Convert ``obj`` into plain JSON data (deterministic, no lossy ``str()``
-    of unknown objects except as a last resort)."""
     if isinstance(obj, BaseModel):
         return _jsonable(obj.model_dump(mode="json"))
     if isinstance(obj, Enum):
@@ -105,15 +86,14 @@ def _jsonable(obj: Any) -> Any:
         return [_jsonable(v) for v in obj]
     if isinstance(obj, (set, frozenset)):
         return sorted((_jsonable(v) for v in obj), key=lambda v: json.dumps(v, sort_keys=True, default=str))
-    if isinstance(obj, float) and not math.isfinite(obj):
-        return str(obj)  # NaN / inf are not JSON; keep them visible instead of crashing the report
+    if _is_non_finite_float(obj):
+        return str(obj)
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
     return str(obj)
 
 
 def redact_data(obj: Any) -> Any:
-    """Recursively redact every string (keys included) of plain JSON data."""
     if isinstance(obj, str):
         return redact(obj)
     if isinstance(obj, dict):
@@ -123,13 +103,11 @@ def redact_data(obj: Any) -> Any:
     return obj
 
 
-def _redact_numbers(obj: Any) -> Any:
-    """Replace numbers whose JSON text is (part of) a secret by the redaction
-    marker.  Only reached when a secret value happens to be numeric."""
+def _redact_numeric_secrets(obj: Any) -> Any:
     if isinstance(obj, dict):
-        return {k: _redact_numbers(v) for k, v in obj.items()}
+        return {k: _redact_numeric_secrets(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_redact_numbers(v) for v in obj]
+        return [_redact_numeric_secrets(v) for v in obj]
     if isinstance(obj, (int, float)) and not isinstance(obj, bool):
         text = json.dumps(obj)
         return REDACTED if redact(text) != text else obj
@@ -148,58 +126,74 @@ def _valid_json(text: str) -> bool:
     return True
 
 
+def _text_redaction_keeping_valid_json(text: str) -> str | None:
+    redacted = redact(text)
+    return redacted if redacted == text or _valid_json(redacted) else None
+
+
 def dumps(model: BaseModel | dict | Any) -> str:
-    """Serialise ``model`` as pretty, redacted UTF-8 JSON text (with a trailing
-    newline).  Field order is the model's declaration order, so the output is
-    deterministic for equal inputs."""
     data = redact_data(_jsonable(model))
-    text = _serialise(data)
-    red = redact(text)
-    if red == text or _valid_json(red):
-        return red
-    # A secret matched outside any JSON string (a numeric secret value).  Redact
-    # the offending numbers as data so the document stays valid JSON.
-    data = _redact_numbers(data)
-    text = _serialise(data)
-    red = redact(text)
-    if red == text or _valid_json(red):
-        return red
+    redacted = _text_redaction_keeping_valid_json(_serialise(data))
+    if redacted is not None:
+        return redacted
+    text = _serialise(_redact_numeric_secrets(data))
+    redacted = _text_redaction_keeping_valid_json(text)
+    if redacted is not None:
+        return redacted
     log.warning("text-level redaction would corrupt the JSON document; keeping per-value redaction")
     return text
 
 
-def atomic_write_text(path: str | Path, text: str) -> Path:
-    """Write ``text`` to ``path`` atomically (temp file in the same directory,
-    fsync, ``os.replace``).  A pre-existing symlink at ``path`` is replaced, not
-    followed."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-    with contextlib.suppress(OSError):  # best effort: persist the rename itself
-        dfd = os.open(path.parent, os.O_RDONLY)
+def _write_synced(fd: int, text: str) -> None:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _discard_temp_file_keeping_original_error(tmp: str) -> None:
+    with contextlib.suppress(OSError):
+        os.unlink(tmp)
+
+
+def _persist_rename_best_effort(directory: Path) -> None:
+    with contextlib.suppress(OSError):
+        dfd = os.open(directory, os.O_RDONLY)
         try:
             os.fsync(dfd)
         finally:
             os.close(dfd)
+
+
+def atomic_write_text(path: str | Path, text: str) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    replaced = False
+    try:
+        _write_synced(fd, utf8_safe(text))
+        os.chmod(tmp, REPORT_FILE_MODE)
+        os.replace(tmp, path)
+        replaced = True
+    finally:
+        if not replaced:
+            _discard_temp_file_keeping_original_error(tmp)
+    _persist_rename_best_effort(path.parent)
     return path
 
 
-# --------------------------------------------------------------------------- public API
 def write_json(model: BaseModel | dict, path: str | Path) -> Path:
-    """Write ``model`` (a pydantic model or plain dict) to ``path`` as pretty,
-    redacted UTF-8 JSON, atomically.  Returns the path written."""
     return atomic_write_text(path, dumps(model))
+
+
+def _validation_summary(exc: ValidationError) -> str:
+    errs = exc.errors()
+    shown = "; ".join(
+        f"{'.'.join(str(x) for x in e.get('loc', ())) or '<root>'}: {e.get('msg', '')}"
+        for e in errs[:MAX_VALIDATION_ERRORS_SHOWN]
+    )
+    hidden = len(errs) - MAX_VALIDATION_ERRORS_SHOWN
+    return shown + (f" (+{hidden} more)" if hidden > 0 else "")
 
 
 def _read_model(path: str | Path, cls: type[_M], default_name: str, what: str) -> _M:
@@ -215,22 +209,14 @@ def _read_model(path: str | Path, cls: type[_M], default_name: str, what: str) -
     try:
         return cls.model_validate_json(text)
     except ValidationError as exc:
-        errs = exc.errors()
-        shown = "; ".join(
-            f"{'.'.join(str(x) for x in e.get('loc', ())) or '<root>'}: {e.get('msg', '')}" for e in errs[:3]
-        )
-        more = f" (+{len(errs) - 3} more)" if len(errs) > 3 else ""
-        raise LeanCError(f"{p} is not a valid {what}: {shown}{more}") from None
+        raise LeanCError(f"{p} is not a valid {what}: {_validation_summary(exc)}") from None
 
 
 def read_run_record(path: str | Path) -> RunRecord:
-    """Load and validate a ``run.json`` (``path`` may also be the run directory).
-    Raises :class:`LeanCError` with a readable message when it is missing or invalid."""
     return _read_model(path, RunRecord, "run.json", "run record")
 
 
 def read_verification(path: str | Path) -> VerificationResult:
-    """Load and validate a ``verification.json`` (``path`` may also be its directory)."""
     return _read_model(path, VerificationResult, "verification.json", "verification result")
 
 
@@ -248,35 +234,26 @@ def _failure_entry(stage: str, f: FailureReport) -> dict[str, Any]:
     }
 
 
-def summary(vr: VerificationResult) -> dict[str, Any]:
-    """Compact, machine-readable verdict of one verification.
-
-    Keys: ``run_id``, ``status``, ``exit_code``, ``success``, ``reasons``,
-    ``spec_id``/``spec_version``/``spec_hash``, ``approval`` (always a dict with
-    ``approved`` and ``reasons``), ``stages`` (``stage``, ``outcome``,
-    ``status``, ``required``, ``summary``, ``tools`` = detecting tools,
-    ``invoked`` = tools run, ``failures`` = count, ``duration_s``),
-    ``failures`` (``id``, ``kind``, ``tool``, ``stage``, ``property_id``,
-    ``description``, ``location``, ``inputs``, ``raw_ref``), ``detected_by``,
-    ``assumptions`` and ``limitations``.  All strings are redacted.
-    """
-    a = vr.approval
-    if a is not None:
-        approval: dict[str, Any] = {
-            "approved": a.approved,
-            "approved_by": a.approved_by,
-            "approved_at": a.approved_at,
-            "signature_valid": a.signature_valid,
-            "reasons": list(a.reasons),
-        }
-    else:
-        approval = {
+def _approval_entry(a: ApprovalCheck | None) -> dict[str, Any]:
+    if a is None:
+        return {
             "approved": False,
             "approved_by": None,
             "approved_at": None,
             "signature_valid": False,
             "reasons": ["no approval check was recorded for this verification"],
         }
+    return {
+        "approved": a.approved,
+        "approved_by": a.approved_by,
+        "approved_at": a.approved_at,
+        "signature_valid": a.signature_valid,
+        "reasons": list(a.reasons),
+    }
+
+
+def summary(vr: VerificationResult) -> dict[str, Any]:
+    approval = _approval_entry(vr.approval)
     stages = [
         {
             "stage": s.stage,

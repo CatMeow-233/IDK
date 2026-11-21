@@ -1,5 +1,3 @@
-"""Tests for the clang compile gate (leanc.backends.clang)."""
-
 from __future__ import annotations
 
 import dataclasses
@@ -8,14 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from leanc.backends.clang import compile_command, parse_clang_diagnostics, run_compile
-from leanc.backends.tools import Toolchain
-from leanc.core.context import BackendContext, make_context
-from leanc.core.status import Outcome, Status
+from leanc.backends.clang import compile_command, run_compile
+from leanc.backends.clang_diagnostics import parse_clang_diagnostics
+from leanc.foundation.status import Outcome, Status
 from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
+from leanc.toolchain.context import BackendContext, make_context
+from leanc.toolchain.environment import Toolchain
 
-# --------------------------------------------------------------------------- helpers
+TIMEOUT_SCALE_HITTING_ONE_SECOND_FLOOR = 0.0001
 
 HEADER = """#ifndef A_H
 #define A_H
@@ -89,9 +88,6 @@ def fake_tool(tmp_path: Path, name: str, body: str) -> str:
     return str(p)
 
 
-# --------------------------------------------------------------------------- parser
-
-
 def test_parse_warning_with_flag():
     [d] = parse_clang_diagnostics("src/a.c:12:5: warning: unused variable 'x' [-Wunused-variable]\n")
     assert d.tool == "clang"
@@ -137,13 +133,13 @@ def test_parse_notes_attach_to_preceding_diagnostic():
         ]
     )
     ds = parse_clang_diagnostics(text, tool="clang-static-analyzer")
-    assert [d.severity for d in ds] == ["note", "warning", "error"]  # notes are not double-counted
+    assert [d.severity for d in ds] == ["note", "warning", "error"]
     orphan, w, e = ds
     assert orphan.message == "orphan note before anything" and orphan.rule_id is None
     assert w.rule_id == "core.NullDereference" and w.tool == "clang-static-analyzer"
     assert [s.message for s in w.path] == ["'q' initialized to a null pointer value", "Assuming 'p' is equal to NULL"]
     assert w.path[0].location.line == 3 and w.path[1].location.column == 9
-    assert "initialized to a null pointer" in w.raw  # note text kept in raw too
+    assert "initialized to a null pointer" in w.raw
     assert e.path[0].location.file == "src/a.c" and e.path[0].message == "previous definition is here"
 
 
@@ -190,10 +186,10 @@ def test_parse_gnu_ld_linker_errors(tmp_path):
     assert undef_foo.location.file == "main.c" and undef_foo.location.function == "main"
     assert "in function `main'" in undef_foo.raw
     assert cmd_failed.message.startswith("linker command failed") and cmd_failed.location is None
-    assert undef_bar.location.file == "src/main.c" and undef_bar.location.line == 2  # relativised
+    assert undef_bar.location.file == "src/main.c" and undef_bar.location.line == 2
     assert undef_bar.location.function == "helper"
     assert multi.message.startswith("multiple definition of `g'")
-    assert multi.location is None  # an object file is not a source location
+    assert multi.location is None
     assert cannot.message.startswith("cannot find -lnosuchlib")
     assert warn.severity == "warning"
     assert collect2.message == "ld returned 1 exit status" and collect2.severity == "error"
@@ -247,9 +243,6 @@ def test_parse_relativises_absolute_paths(tmp_path):
     assert [d.location.file for d in ds] == ["src/a.c", "/usr/include/stdio.h", "src/b.c"]
 
 
-# --------------------------------------------------------------------------- command
-
-
 def test_compile_command_shape(tmp_path):
     ctx = make_project(
         tmp_path,
@@ -279,9 +272,6 @@ def test_compile_command_shape(tmp_path):
     ctx.tools = dataclasses.replace(ctx.tools, clang=None)
     with pytest.raises(ValueError):
         compile_command(ctx, "src/a.c", obj)
-
-
-# --------------------------------------------------------------------------- stage
 
 
 def test_clean_example_passes(needs_clang, example_copy, tmp_path):
@@ -346,7 +336,6 @@ def test_warnings_block_policy_fails(needs_clang, tmp_path):
     assert "blocked by policy" in res.summary
     [fr] = res.failures
     assert fr.kind == "compile" and fr.property_id == "-Wunused-variable" and fr.location.line == 4
-    # The object was still produced (the code compiles; policy blocks it).
     assert (ctx.build_dir / "obj" / "src" / "a.o").is_file()
 
 
@@ -368,9 +357,8 @@ def test_error_in_header_and_multiple_files(needs_clang, tmp_path):
     res = run_compile(ctx)
     assert res.outcome is Outcome.FAIL
     [e] = [d for d in res.diagnostics if d.severity == "error"]
-    assert (e.location.file, e.location.line) == ("include/a.h", 3)  # header error, relative path
+    assert (e.location.file, e.location.line) == ("include/a.h", 3)
     assert e.raw.startswith("In file included from src/a.c:1:")
-    # the good file was still compiled
     assert (ctx.build_dir / "obj" / "src" / "b.o").is_file()
     assert [f["source"] for f in res.details["files"]] == ["src/b.c", "src/a.c"]
 
@@ -409,7 +397,7 @@ def test_timeout(tmp_path):
     ctx.tools = dataclasses.replace(
         ctx.tools, clang=fake_tool(tmp_path, "clang", "exec sleep 30"), clang_version="fake clang version 0"
     )
-    ctx.options.timeout_scale = 0.0001  # -> the 1 s floor of ctx.timeout()
+    ctx.options.timeout_scale = TIMEOUT_SCALE_HITTING_ONE_SECOND_FLOOR
     res = run_compile(ctx)
     assert res.outcome is Outcome.TIMEOUT
     assert res.status is Status.TIMEOUT
@@ -429,7 +417,7 @@ def test_compiler_crash_is_error(tmp_path):
     res = run_compile(ctx)
     assert res.outcome is Outcome.ERROR, res.summary
     assert "crashed" in res.summary
-    assert res.failures == []  # a compiler crash is not attributed to the code
+    assert res.failures == []
 
 
 def test_signal_and_unexplained_exit_are_errors(tmp_path):
@@ -445,7 +433,7 @@ def test_signal_and_unexplained_exit_are_errors(tmp_path):
     )
     res2 = run_compile(ctx2)
     assert res2.outcome is Outcome.ERROR
-    assert "signal 11" in res2.summary  # direct signal or bwrap's 128+N exit status
+    assert "signal 11" in res2.summary
 
 
 def test_success_without_object_is_error(tmp_path):
@@ -454,9 +442,6 @@ def test_success_without_object_is_error(tmp_path):
     res = run_compile(ctx)
     assert res.outcome is Outcome.ERROR
     assert "no object file" in res.summary
-
-
-# --------------------------------------------------------------------------- regressions
 
 
 def test_parse_include_stack_of_note_stays_with_the_note():
@@ -473,7 +458,7 @@ def test_parse_include_stack_of_note_stays_with_the_note():
     e, w = parse_clang_diagnostics(text)
     assert e.path[0].location.file == "include/a.h"
     assert "                 from include/c.h:3:" in e.raw and "In file included from include/b.h:2:" in e.raw
-    assert w.raw == "src/a.c:12:1: warning: next one [-Wfoo]"  # no leaked include context
+    assert w.raw == "src/a.c:12:1: warning: next one [-Wfoo]"
 
 
 def test_parse_diagnostic_quoting_linker_text_is_a_compiler_diagnostic():
@@ -487,7 +472,6 @@ def test_crash_markers_in_source_diagnostics_are_not_a_crash(needs_clang, tmp_pa
     res = run_compile(ctx)
     assert res.outcome is Outcome.PASS, res.summary
     assert [d.rule_id for d in res.diagnostics] == ["-W#warnings", "-W#warnings"]
-    # ... and an #error carrying the marker is still the code's COMPILE_ERROR
     ctx2 = make_project(tmp_path / "two", {"src/a.c": CLEAN + "#error PLEASE submit a bug report\n", "include/a.h": HEADER})
     res2 = run_compile(ctx2)
     assert res2.outcome is Outcome.FAIL and res2.status is Status.COMPILE_ERROR, res2.summary
@@ -499,7 +483,7 @@ def test_driver_error_without_location_is_tool_error(needs_clang, tmp_path):
     assert res.outcome is Outcome.ERROR and res.status is Status.TOOL_ERROR, res.summary
     assert "not attributable to the source" in res.summary and "-fno-such-flag-leanc" in res.summary
     assert res.failures == []
-    assert any(d.severity == "error" and d.location is None for d in res.diagnostics)  # still reported
+    assert any(d.severity == "error" and d.location is None for d in res.diagnostics)
 
 
 def test_symlinked_run_dir_works_in_sandbox(needs_clang, tmp_path):

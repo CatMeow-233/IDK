@@ -73,6 +73,48 @@ repair: {max_rounds: 5, max_changed_lines: 200}
 provenance: {origin: human}         # human | ai-draft（AI 草案）
 ```
 
+## V2：C++20、Frama-C/WP、Lean 4
+
+```yaml
+language: {name: cpp, standard: c++20}     # C++17/20；editable 為 .cpp/.cc/.cxx，標頭建議 .hpp
+gates: [compile, static_analysis, sanitizer] # C++ 不能使用 cbmc / wp（沒有可用的 C++ model checker）→ 最佳狀態 UNKNOWN
+```
+
+```yaml
+gates: [compile, static_analysis, sanitizer, cbmc, wp]
+wp:                                        # Frama-C/WP（只支援 C）
+  provers: [alt-ergo, z3]                  # Why3 prover 名稱
+  prover_timeout_s: 10                     # 每個目標；smoke test 也會用滿一次 timeout，請保持小值
+  timeout_s: 600
+  memory_mb: 4096
+  require_termination: false               # true：每個迴圈都需要 loop variant，並證明終止
+```
+
+ACSL 契約寫在**受保護標頭**中目標函式的原型前（`/*@ requires ... assigns ... ensures ... */`），因此屬於已批准規格。
+`-wp-rte`（執行期錯誤守衛）與 smoke test 一律開啟、不能關閉；WP 快取一律停用。可編輯的 C 原始碼只能包含：
+`loop invariant` / `loop assigns` / `loop variant` / `assert` / `check`、static helper 的契約（緊接在其定義之前）、
+有本體的非遞迴 `predicate`/`logic`、`lemma`。禁止：目標函式上的任何契約（Frama-C 會與批准的契約**合併**）、
+`requires \false`、`admit`、`axiom`/`axiomatic`、`inductive`、`ghost`、在註解中使用本檔定義的巨集、`#define`
+批准標頭 ACSL 中用到的識別字或 `integer`/`real`/`boolean`。
+
+```yaml
+gates: [compile, static_analysis, sanitizer, cbmc, lean]
+lean:                                      # Lean 4（可選；需要 lean 與 leanchecker）
+  spec_file: lean/Spec.lean                # 受保護：模型 + 定理敘述（每個 `def <name> : Prop := ...`）
+  proofs: [lean/Proofs.lean]               # 可編輯：AI 撰寫的證明
+  theorems:
+    - {name: in_bounds, statement: Spec.clamp_in_bounds, proof: Proofs.clamp_in_bounds_proof}
+  vectors:                                 # 可選：模型 ↔ C 的差分測試
+    generator: lean/Vectors.lean           # 受保護：以模型計算輸入/期望輸出（`lean --run`）
+    driver: tests/vectors_driver.c         # 受保護：從 stdin 讀取向量並檢查 C 實作
+  timeout_s: 300
+```
+
+Lean 關卡在沙箱中以 kernel 檢查證明（`Elab.async false`），以 `leanchecker` 重新 replay，且只接受
+`propext`、`Classical.choice`、`Quot.sound` 三個公理；`sorry`、`native_decide`、自訂 axiom 都會使定理「未證明」。
+向量 driver 必須在成功時印出恰好一行 `LEANC-VECTORS-CHECKED <n>`，不符時印 `LEANC-VECTOR-MISMATCH k=v ...`。
+Lean 結果是關於**模型**的，不會把 C 的判決提升為 `PROVED`。
+
 ## CBMC 檢查類別
 
 | 名稱 | CBMC 旗標 | 強制 |
@@ -138,3 +180,4 @@ allow_unsandboxed: false
 | `LEANC_LLM_JSON_MODE=1` | 送出 `response_format: json_object` |
 | `LEANC_HOME` | 批准金鑰目錄（預設 `~/.config/leanc`） |
 | `LEANC_CLANG` / `LEANC_CBMC` | 指定工具路徑 |
+| `LEANC_CLANGXX` / `LEANC_FRAMAC` / `LEANC_LEAN` | 指定 clang++、frama-c（需 ≥ 27，含 WP）、lean 的路徑 |

@@ -1,0 +1,67 @@
+# Lean C specification: first occurrence of a key, ACSL contract proved with Frama-C/WP (V2).
+leanc_spec: 1
+spec_id: wp-contract-violation
+version: 1
+title: First occurrence of a key (contract violation found by CBMC and WP)
+requirement: |
+  實作 find_first(a, n, key, pos)：在 a[0..n) 中尋找 key 的「第一個」出現位置。找到時回傳 1 並將索引寫入 *pos；
+  找不到時回傳 0 且不修改 *pos。不得修改陣列。
+  (Find the first occurrence of key in a[0..n): return 1 and store its index in *pos, or return 0 and leave
+  *pos untouched. The array is never modified.)
+language: {name: c, standard: c17}
+target:
+  function: find_first
+  signature: "int find_first(const int *a, size_t n, int key, size_t *pos)"
+  params:
+    - {name: a, type: "const int *", description: "array of n readable ints"}
+    - {name: n, type: size_t, description: "number of elements (may be 0)"}
+    - {name: key, type: int, description: "value searched for"}
+    - {name: pos, type: "size_t *", description: "where the index is stored; not NULL, not pointing into a"}
+  returns:
+    type: int
+    description: 1 if found, 0 otherwise
+    values:
+      - {value: "1", meaning: "found: *pos is the smallest index with a[*pos] == key"}
+      - {value: "0", meaning: "not found: *pos untouched"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "a points to at least n readable ints", c_expr: "n <= MAX_LEN"}
+    - {id: PRE2, text: "pos is a valid pointer that does not point into a[0..n)"}
+  postconditions:
+    - {id: POST1, text: "some a[k] == key (k < n) => returns 1, *pos < n, a[*pos] == key, no earlier match"}
+    - {id: POST2, text: "no a[k] == key => returns 0 and *pos unchanged"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds read", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no undefined behaviour", checks: [signed-overflow, pointer-overflow]}
+  frame:
+    - "a[0..n) is never modified; only *pos may be written (ACSL: assigns *pos)"
+sources:
+  editable: [src/find_first.c]
+  headers: [include/find_first.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_find_first.c
+  cases:
+    - {name: found, args: [found]}
+    - {name: absent, args: [absent]}
+verification:
+  harness: harness/find_first_harness.c
+  checks: [unsigned-overflow]
+  unwind: 5
+  input_bounds:
+    - {name: n, min: "0", max: "4", note: "CBMC explores arrays of 0..4 arbitrary ints and any key; WP proves all n"}
+  timeout_s: 120
+wp:
+  # The functional contract is the ACSL annotation of find_first in include/find_first.h.
+  provers: [alt-ergo]
+  prover_timeout_s: 2
+  timeout_s: 180
+  memory_mb: 4096
+  require_termination: true
+gates: [compile, static_analysis, sanitizer, cbmc, wp]
+repair:
+  max_rounds: 3

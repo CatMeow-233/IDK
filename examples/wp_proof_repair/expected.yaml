@@ -1,0 +1,12 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: UNKNOWN              # correct code, but no loop invariant: WP goals unproved (proof-repairable)
+run: PROVED                  # mock proof repair: round 1 bounds invariants, round 2 functional invariants + variant
+detected_by: [frama-c-wp]    # the wp gate reports the open proof obligations (FailureReport kind "unproved")
+notes: >
+  V2 proof repair.  The shipped index_of_max is CORRECT: compile, integrity, static analysis, sanitizer
+  tests and CBMC (n = 1..5, arbitrary values) all pass, so the status is UNKNOWN only because Frama-C/WP
+  cannot prove the loop without invariants (9 goals open: in_bounds, is_max, is_first, 4 RTE guards,
+  assigns \nothing, termination).  This is proof-repairable.  Mock round 1 adds bounds invariants and
+  'loop assigns' (3 goals left: is_max, is_first, termination - strictly fewer, none introduced: accepted);
+  round 2 adds the functional invariants and 'loop variant n - i' => every goal proved, termination
+  included => PROVED.  The executable code never changes: only proof annotations are added.

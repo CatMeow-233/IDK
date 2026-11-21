@@ -1,5 +1,3 @@
-"""Tests for the Clang Static Analyzer gate (leanc.backends.analyzer)."""
-
 from __future__ import annotations
 
 import dataclasses
@@ -7,14 +5,15 @@ import json
 from pathlib import Path
 
 from leanc.backends import analyzer
-from leanc.backends.analyzer import analyzer_command, parse_sarif, run_static_analysis
-from leanc.backends.tools import Toolchain
-from leanc.core.context import BackendContext, make_context
-from leanc.core.status import Outcome, Status
+from leanc.backends.analyzer import analyzer_command, run_static_analysis
+from leanc.backends.sarif import parse_sarif
+from leanc.foundation.status import Outcome, Status
 from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
+from leanc.toolchain.context import BackendContext, make_context
+from leanc.toolchain.environment import Toolchain
 
-# --------------------------------------------------------------------------- helpers
+TIMEOUT_SCALE_HITTING_ONE_SECOND_FLOOR = 0.0001
 
 HEADER = """#ifndef A_H
 #define A_H
@@ -109,9 +108,6 @@ def _phys(uri: str | None = None, line: int | None = None, col: int | None = Non
     return {"physicalLocation": {"artifactLocation": a, "region": region}}
 
 
-# --------------------------------------------------------------------------- parse_sarif
-
-
 def test_parse_sarif_file_uri_relative_to_base_dir(tmp_path):
     base = tmp_path / "snap"
     (base / "src").mkdir(parents=True)
@@ -155,7 +151,6 @@ def test_parse_sarif_file_uri_relative_to_base_dir(tmp_path):
     assert [s.location.line for s in d.path] == [3, 4, 5]
     assert all(s.location.file == "src/bad.c" for s in d.path)
     assert d.raw and "core.NullDereference" in d.raw
-    # custom tool name
     assert parse_sarif(data, base_dir=base, tool="x")[0].tool == "x"
 
 
@@ -176,17 +171,11 @@ def test_parse_sarif_uri_variants(tmp_path):
                     }
                 },
                 "results": [
-                    # absolute file:// outside base_dir: kept absolute
                     {"ruleId": "a.B", "message": {"text": "outside"}, "locations": [_phys("file:///usr/include/stdio.h", 1, 2)]},
-                    # relative uri: kept relative
                     {"ruleId": "a.B", "message": {"text": "relative"}, "locations": [_phys("src/rel.c", 7)]},
-                    # percent-encoded absolute uri inside base (directory name has a space)
                     {"ruleId": "a.B", "message": {"text": "encoded"}, "locations": [_phys((base / "src" / "x.c").as_uri(), 2)]},
-                    # uri via artifact index; ruleId via ruleIndex; level via rule default
                     {"ruleIndex": 0, "message": {"text": "indexed"}, "locations": [_phys(None, 9, 1, index=0)]},
-                    # uriBaseId resolution
                     {"ruleId": "unix.Malloc", "message": {"text": "based"}, "locations": [_phys("src/b.c", 4, uriBaseId="SRCROOT")]},
-                    # file:/abs (single slash) and level none
                     {"ruleId": "a.B", "level": "none", "message": {"text": "single"}, "locations": [_phys(f"file:{base}/s.c", 1)]},
                 ],
             }
@@ -198,7 +187,6 @@ def test_parse_sarif_uri_variants(tmp_path):
     assert ds[1].location.line == 7 and ds[1].location.column is None
     assert ds[3].rule_id == "core.DivideZero" and ds[3].severity == "error"
     assert ds[5].severity == "info"
-    # without base_dir absolute paths stay absolute
     assert parse_sarif(data)[2].location.file == str(base / "src" / "x.c")
 
 
@@ -206,7 +194,7 @@ def test_parse_sarif_robust_to_missing_fields():
     assert parse_sarif({}) == []
     assert parse_sarif({"runs": None}) == []
     assert parse_sarif({"runs": [None, 3, {"results": "nope"}]}) == []
-    assert parse_sarif("not a dict") == []  # type: ignore[arg-type]
+    assert parse_sarif("not a dict") == []
     ds = parse_sarif(
         {
             "runs": [
@@ -222,14 +210,14 @@ def test_parse_sarif_robust_to_missing_fields():
             ]
         }
     )
-    assert len(ds) == 4  # the non-dict result is skipped, the empty one kept
+    assert len(ds) == 4
     empty, partial, strline, msgid = ds
     assert empty.rule_id is None and empty.message == "static analysis finding" and empty.location is None
     assert empty.severity == "warning"
     assert partial.rule_id == "x.Y" and partial.message == "x.Y" and partial.severity == "warning"
     assert partial.location is None and len(partial.path) == 1 and partial.path[0].location is None
     assert strline.location.line == 12
-    assert msgid.message == "x.W"  # id without rule messageStrings: falls back to the rule id
+    assert msgid.message == "x.W"
 
 
 def test_parse_sarif_message_strings_and_logical_locations():
@@ -263,9 +251,6 @@ def test_parse_sarif_message_strings_and_logical_locations():
     assert d.location.function == "get" and d.location.file == "src/a.c"
 
 
-# --------------------------------------------------------------------------- command
-
-
 def test_analyzer_command_shape(tmp_path):
     ctx = make_project(
         tmp_path,
@@ -284,9 +269,6 @@ def test_analyzer_command_shape(tmp_path):
     targv = analyzer_command(ctx, "src/a.c", None, output_format="text")
     assert targv[1:4] == ["--analyze", "-Xclang", "-analyzer-output=text"]
     assert "sarif" not in targv
-
-
-# --------------------------------------------------------------------------- stage
 
 
 def test_clean_example_passes(needs_clang, example_copy, tmp_path):
@@ -367,8 +349,6 @@ def test_missing_compiler_is_error(tmp_path):
 
 
 def test_text_fallback_when_sarif_unusable(needs_clang, tmp_path, monkeypatch):
-    # Make the "SARIF" run produce a plist instead: the file exists but is not
-    # SARIF JSON, so the stage must fall back to textual output -- and say so.
     monkeypatch.setattr(analyzer, "SARIF_ARGS", ("-Xclang", "-analyzer-output=plist"))
     ctx = make_project(tmp_path, {"src/a.c": NULL_DEREF, "include/a.h": HEADER})
     res = run_static_analysis(ctx)
@@ -378,10 +358,10 @@ def test_text_fallback_when_sarif_unusable(needs_clang, tmp_path, monkeypatch):
     assert "format: text" in res.summary
     [d] = res.diagnostics
     assert d.rule_id == "core.NullDereference" and d.location.line == NULL_DEREF_LINE
-    assert d.path and d.path[-1].location.line == NULL_DEREF_LINE  # bug path from note: lines
+    assert d.path and d.path[-1].location.line == NULL_DEREF_LINE
     [fr] = res.failures
     assert fr.raw_ref.endswith(".analyzer.txt") and (ctx.run_dir / fr.raw_ref).is_file()
-    assert len(res.invocations) == 2  # the SARIF attempt and the textual re-run are both recorded
+    assert len(res.invocations) == 2
     f = res.details["files"][0]
     assert "not valid JSON" in f["fallback_reason"] and "-analyzer-output=text" in f["text_argv"]
 
@@ -440,7 +420,7 @@ def test_timeout(tmp_path):
     ctx.tools = dataclasses.replace(
         ctx.tools, clang=fake_tool(tmp_path, "clang", "exec sleep 30"), clang_version="fake clang version 0"
     )
-    ctx.options.timeout_scale = 0.0001
+    ctx.options.timeout_scale = TIMEOUT_SCALE_HITTING_ONE_SECOND_FLOOR
     res = run_static_analysis(ctx)
     assert res.outcome is Outcome.TIMEOUT and res.status is Status.TIMEOUT
     assert res.invocations[0].timed_out
@@ -454,15 +434,11 @@ def test_crash_is_tool_error(tmp_path):
 
 
 def test_missing_sarif_and_failing_fallback_is_error(tmp_path):
-    # A "clang" that exits 0 but writes nothing: SARIF missing -> textual
-    # fallback -> which also produces nothing usable but exits 0 -> no findings,
-    # recorded as format "text" with a note (not silently treated as SARIF).
     ctx = make_project(tmp_path, {"src/a.c": CLEAN, "include/a.h": HEADER})
     ctx.tools = dataclasses.replace(ctx.tools, clang=fake_tool(tmp_path, "clang", "exit 0"), clang_version="fake clang 0")
     res = run_static_analysis(ctx)
     assert res.details["format"] == "text"
     assert any("SARIF file was not produced" in n for n in res.details["notes"])
-    # and when the fallback fails too, the stage is an ERROR
     ctx2 = make_project(tmp_path / "two", {"src/a.c": CLEAN, "include/a.h": HEADER})
     script = 'case "$*" in *analyzer-output=text*) echo "error: boom" >&2; exit 1;; esac\nexit 0'
     ctx2.tools = dataclasses.replace(ctx2.tools, clang=fake_tool(tmp_path, "clang2", script), clang_version="fake clang 0")
@@ -471,8 +447,6 @@ def test_missing_sarif_and_failing_fallback_is_error(tmp_path):
 
 
 def test_symlinked_run_dir_still_uses_sarif(needs_clang, tmp_path):
-    # The sandbox binds the build dir at its real path; the SARIF output path
-    # must be canonical or clang silently fails to write it.
     (tmp_path / "real").mkdir()
     (tmp_path / "link").symlink_to(tmp_path / "real")
     ctx = make_project(tmp_path / "link", {"src/a.c": NULL_DEREF, "include/a.h": HEADER})

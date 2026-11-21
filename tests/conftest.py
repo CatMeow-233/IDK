@@ -1,12 +1,3 @@
-"""Shared pytest fixtures.
-
-* ``LEANC_HOME`` is redirected to a temporary directory for every test so the
-  approval signing key never touches the developer's real configuration.
-* Tests that need external tools use the ``needs_clang`` / ``needs_cbmc`` /
-  ``needs_bwrap`` / ``needs_toolchain`` markers-as-fixtures and are skipped
-  (not silently passed) when a tool is missing.
-"""
-
 from __future__ import annotations
 
 import shutil
@@ -14,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from leanc.core.sandbox import detect_sandbox
+from leanc.foundation.sandbox import detect_sandbox
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO_ROOT / "examples"
@@ -56,8 +47,6 @@ def needs_toolchain(needs_clang, needs_cbmc, needs_bwrap):
 
 @pytest.fixture
 def example_copy(tmp_path):
-    """Return a function copying ``examples/<name>`` into a fresh tmp project."""
-
     def _copy(name: str) -> Path:
         src = EXAMPLES / name
         dst = tmp_path / name

@@ -1,15 +1,7 @@
-"""Tests for the foundation process runner (leanc.core.runner) and the
-bubblewrap sandbox (leanc.core.sandbox).
-
-These are the guarantees every backend relies on when it executes tools and,
-above all, untrusted generated programs: no shell, bounded time / CPU /
-output, whole process groups killed, no inherited secrets, and -- inside the
-sandbox -- no network, no home directories, read-only system and nobody uid.
-"""
-
 from __future__ import annotations
 
 import os
+import resource
 import shutil
 import signal
 import subprocess
@@ -20,17 +12,22 @@ from pathlib import Path
 
 import pytest
 
-from leanc.core import runner
-from leanc.core.runner import Limits, minimal_env, run_command
-from leanc.core.sandbox import SandboxMounts, detect_sandbox
+from leanc.foundation import runner
+from leanc.foundation.runner import Limits, minimal_env, run_command
+from leanc.foundation.sandbox import (
+    NetworkIsolation,
+    SandboxMounts,
+    detect_sandbox,
+    network_probe_blocked,
+)
 
 SH = shutil.which("sh") or "/bin/sh"
 CAT = shutil.which("cat") or "/bin/cat"
-PY_SANDBOX = "/usr/bin/python3"  # visible inside the sandbox (/usr is bound)
+PYTHON_VISIBLE_IN_SANDBOX = "/usr/bin/python3"
+BWRAP_SIGNAL_EXIT_BASE = 128
 
 
-def _alive(pid: int) -> bool:
-    """True if ``pid`` is a live (non-zombie) process."""
+def _alive_and_not_zombie(pid: int) -> bool:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except (FileNotFoundError, ProcessLookupError):
@@ -42,10 +39,10 @@ def _alive(pid: int) -> bool:
 def _wait_dead(pid: int, timeout: float = 3.0) -> bool:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        if not _alive(pid):
+        if not _alive_and_not_zombie(pid):
             return True
         time.sleep(0.05)
-    return not _alive(pid)
+    return not _alive_and_not_zombie(pid)
 
 
 @pytest.fixture
@@ -53,14 +50,11 @@ def sandbox(needs_bwrap):
     return detect_sandbox("auto")
 
 
-# ============================================================================ runner (no sandbox)
-
-
 def test_string_argv_is_rejected(tmp_path):
     with pytest.raises(TypeError):
-        run_command("echo hi; touch pwned", cwd=tmp_path)  # type: ignore[arg-type]
+        run_command("echo hi; touch pwned", cwd=tmp_path)
     with pytest.raises(TypeError):
-        run_command(b"echo hi", cwd=tmp_path)  # type: ignore[arg-type]
+        run_command(b"echo hi", cwd=tmp_path)
     with pytest.raises(ValueError):
         run_command([], cwd=tmp_path)
     with pytest.raises(ValueError):
@@ -125,9 +119,8 @@ def test_secrets_in_parent_environment_are_not_visible(tmp_path, monkeypatch):
         assert name not in res.stdout
     keys = {line.split("=", 1)[0] for line in res.stdout.splitlines() if "=" in line}
     assert keys <= set(minimal_env()) | {"PWD", "SHLVL", "_"}
-    # an explicit env is passed through as given (and nothing else)
-    res = run_command(["env"], cwd=tmp_path, env=minimal_env({"FOO": "bar"}))
-    assert "FOO=bar" in res.stdout and secret not in res.stdout
+    explicit_env_only = run_command(["env"], cwd=tmp_path, env=minimal_env({"FOO": "bar"}))
+    assert "FOO=bar" in explicit_env_only.stdout and secret not in explicit_env_only.stdout
 
 
 def test_rlimit_cpu_stops_busy_loop(tmp_path):
@@ -149,6 +142,14 @@ def test_rlimit_fsize_limits_file_writes(tmp_path):
 def test_core_dumps_disabled(tmp_path):
     res = run_command([SH, "-c", "ulimit -c"], cwd=tmp_path)
     assert res.stdout.strip() == "0"
+
+
+def test_open_files_limit_above_inherited_hard_limit_keeps_the_inherited_limit(tmp_path):
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard == resource.RLIM_INFINITY:
+        pytest.skip("no finite inherited RLIMIT_NOFILE hard limit")
+    res = run_command([SH, "-c", "ulimit -Hn"], cwd=tmp_path, limits=Limits(max_open_files=hard + 1))
+    assert res.ok and res.stdout.strip() == str(hard)
 
 
 def test_launch_failure_for_missing_executable(tmp_path):
@@ -175,16 +176,12 @@ def test_launch_failure_in_preexec_hook_is_reported_not_raised(tmp_path, monkeyp
 
 
 def test_stdin_is_delivered_while_output_is_read(tmp_path):
-    data = os.urandom(1_000_000)
-    hexdata = data.hex().encode()  # 2 MB; cat echoes it: needs concurrent write + read
-    res = run_command([CAT], cwd=tmp_path, stdin_data=hexdata, limits=Limits(timeout_s=30))
-    assert res.ok and res.stdout.encode() == hexdata
+    two_megabytes_echoed_while_written = os.urandom(1_000_000).hex().encode()
+    res = run_command([CAT], cwd=tmp_path, stdin_data=two_megabytes_echoed_while_written, limits=Limits(timeout_s=30))
+    assert res.ok and res.stdout.encode() == two_megabytes_echoed_while_written
 
 
 def test_large_stdin_to_non_reading_child_does_not_defeat_timeout(tmp_path):
-    """Regression: stdin used to be written with a blocking write before the
-    read loop, which hung forever (timeout never checked) when the child did
-    not read and the data exceeded the pipe buffer."""
     box: dict = {}
 
     def _go():
@@ -223,9 +220,6 @@ def test_to_invocation_writes_redacted_logs(tmp_path, monkeypatch):
     assert inv.exit_code == 0 and inv.sandbox == "none"
 
 
-# ============================================================================ sandbox
-
-
 def _sb_run(sandbox, argv, tmp_path, *, ro=None, rw=None, cwd=None, **kw):
     mounts = SandboxMounts(ro=[str(p) for p in (ro or [])], rw=[str(p) for p in (rw or [])])
     return run_command(argv, cwd=cwd or "/", sandbox=sandbox, mounts=mounts, **kw)
@@ -235,7 +229,7 @@ def test_sandbox_only_loopback_interface(sandbox, tmp_path):
     res = _sb_run(sandbox, [CAT, "/proc/net/dev"], tmp_path)
     assert res.exit_code == 0, res.stderr
     assert res.sandbox == "bwrap"
-    assert res.display_argv == [CAT, "/proc/net/dev"]  # recorded argv is the unwrapped one
+    assert res.display_argv == [CAT, "/proc/net/dev"]
     ifaces = [ln.split(":", 1)[0].strip() for ln in res.stdout.splitlines()[2:] if ":" in ln]
     assert ifaces == ["lo"]
 
@@ -253,7 +247,7 @@ def test_sandbox_tcp_connect_fails(sandbox, tmp_path):
         sys.exit(1)
         """
     )
-    res = _sb_run(sandbox, [PY_SANDBOX, "-c", code], tmp_path, limits=Limits(timeout_s=20))
+    res = _sb_run(sandbox, [PYTHON_VISIBLE_IN_SANDBOX, "-c", code], tmp_path, limits=Limits(timeout_s=20))
     assert res.exit_code == 0, (res.stdout, res.stderr)
     assert res.stdout.startswith("blocked")
 
@@ -281,10 +275,11 @@ def test_sandbox_read_only_and_read_write_mounts(sandbox, tmp_path):
     ro_dir.mkdir()
     rw_dir.mkdir()
     (ro_dir / "input.txt").write_text("hello")
-    res = _sb_run(sandbox, [SH, "-c", 'cat "$1/input.txt"; echo x > "$1/out.txt"', "sh", str(ro_dir)], tmp_path,
-                  ro=[ro_dir])
-    assert res.stdout == "hello"
-    assert res.exit_code != 0  # write to a read-only bind fails
+    read_then_write_ro = _sb_run(
+        sandbox, [SH, "-c", 'cat "$1/input.txt"; echo x > "$1/out.txt"', "sh", str(ro_dir)], tmp_path, ro=[ro_dir]
+    )
+    assert read_then_write_ro.stdout == "hello"
+    assert read_then_write_ro.exit_code != 0
     assert not (ro_dir / "out.txt").exists()
     res = _sb_run(sandbox, [SH, "-c", 'echo x > "$1/out.txt"', "sh", str(rw_dir)], tmp_path, rw=[rw_dir])
     assert res.exit_code == 0, res.stderr
@@ -292,8 +287,6 @@ def test_sandbox_read_only_and_read_write_mounts(sandbox, tmp_path):
 
 
 def test_sandbox_rw_subdirectory_of_ro_mount(sandbox, tmp_path):
-    """The sanitizer gate binds the binary's directory read-only and a per-case
-    sub-directory read-write on top of it."""
     parent = tmp_path / "bin"
     child = parent / "cases" / "c1"
     child.mkdir(parents=True)
@@ -307,11 +300,12 @@ def test_sandbox_rw_subdirectory_of_ro_mount(sandbox, tmp_path):
 
 
 def test_sandbox_cannot_write_system_dirs_and_has_private_tmp(sandbox, tmp_path):
-    marker = f"/tmp/leanc-sandbox-probe-{os.getpid()}"
-    res = _sb_run(sandbox, [SH, "-c", f"echo x > /usr/pwned; echo y > {marker} && cat {marker}"], tmp_path)
+    marker_in_private_tmp = f"/tmp/leanc-sandbox-probe-{os.getpid()}"
+    script = f"echo x > /usr/pwned; echo y > {marker_in_private_tmp} && cat {marker_in_private_tmp}"
+    res = _sb_run(sandbox, [SH, "-c", script], tmp_path)
     assert res.stdout == "y\n"
     assert not os.path.exists("/usr/pwned")
-    assert not os.path.exists(marker)  # /tmp inside is a private tmpfs
+    assert not os.path.exists(marker_in_private_tmp)
 
 
 def test_sandbox_environment_is_cleared(sandbox, tmp_path, monkeypatch):
@@ -356,14 +350,21 @@ def test_sandbox_output_cap_and_cpu_limit(sandbox, tmp_path):
     t0 = time.monotonic()
     res = _sb_run(sandbox, [SH, "-c", "while :; do :; done"], tmp_path, limits=Limits(timeout_s=30, cpu_s=1))
     assert time.monotonic() - t0 < 10 and res.timed_out is False
-    # bubblewrap reports "killed by signal N" as exit status 128+N
-    assert res.exit_code in (128 + signal.SIGXCPU, 128 + signal.SIGKILL)
+    assert res.exit_code in (BWRAP_SIGNAL_EXIT_BASE + signal.SIGXCPU, BWRAP_SIGNAL_EXIT_BASE + signal.SIGKILL)
 
 
 def test_sandbox_missing_executable_fails_cleanly(sandbox, tmp_path):
     res = _sb_run(sandbox, ["/nonexistent/prog"], tmp_path)
     assert res.ok is False and res.exit_code != 0
     assert "bwrap" in res.stderr
+
+
+def test_network_probe_reports_loopback_only_inside_bwrap(sandbox, tmp_path):
+    assert network_probe_blocked(sandbox, tmp_path) is NetworkIsolation.BLOCKED
+
+
+def test_network_probe_cannot_confirm_isolation_without_a_sandbox(tmp_path):
+    assert network_probe_blocked(detect_sandbox("none"), tmp_path) is NetworkIsolation.UNCONFIRMED
 
 
 def test_detect_sandbox_none_preference():

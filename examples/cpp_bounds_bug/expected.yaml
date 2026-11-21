@@ -1,0 +1,17 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: RUNTIME_TEST_FAILED  # AddressSanitizer: heap-buffer-overflow in lc::SampleBuffer::append
+run: UNKNOWN                 # repaired by mock round 1: all required gates pass, but there is no formal gate
+repaired: true               # the repair round is accepted and written back although the status stays UNKNOWN
+detected_by: [asan]
+rejected_rounds: []
+notes: >
+  lc::SampleBuffer (protected header include/sample_buffer.hpp) owns a heap array of exactly capacity ints.
+  The shipped member function append() checks `size_ > capacity_` instead of `size_ >= capacity_`, so
+  appending to a full buffer writes one int past the allocation. It compiles cleanly with clang++
+  -std=c++20, passes the C++ integrity gate, and the Clang Static Analyzer reports nothing (it does not
+  relate size_ to the allocation size); the trusted C++ tests fill_to_capacity and capacity_one fail under
+  AddressSanitizer ("heap-buffer-overflow ... WRITE of size 4 ... src/sample_buffer.cpp:14 in
+  lc::SampleBuffer::append(int)"), so verify is RUNTIME_TEST_FAILED. Mock round 1 changes the check to
+  `>=`; every required gate then passes and the repaired source is written back, but the spec has no formal
+  gate (no C++20-capable model checker is available), so the final status is honestly UNKNOWN, not
+  VERIFIED_BOUNDED.

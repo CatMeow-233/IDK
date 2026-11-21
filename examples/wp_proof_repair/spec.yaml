@@ -1,0 +1,62 @@
+# Lean C specification: index of the first maximum, proved with Frama-C/WP after proof repair (V2).
+leanc_spec: 1
+spec_id: wp-proof-repair
+version: 1
+title: Index of the first maximum (WP proof repair)
+requirement: |
+  實作 index_of_max(a, n)：回傳陣列 a[0..n) 中「第一個」最大元素的索引（n >= 1）。不得修改陣列。
+  (Return the index of the FIRST maximum element of a[0..n), n >= 1; the array is never modified.)
+language: {name: c, standard: c17}
+target:
+  function: index_of_max
+  signature: "size_t index_of_max(const int *a, size_t n)"
+  params:
+    - {name: a, type: "const int *", description: "array of n readable ints"}
+    - {name: n, type: size_t, description: "number of elements, n >= 1"}
+  returns:
+    type: size_t
+    description: index of the first maximum
+contract:
+  preconditions:
+    - {id: PRE1, text: "n >= 1", c_expr: "n >= 1"}
+    - {id: PRE2, text: "a points to at least n readable ints"}
+  postconditions:
+    - {id: POST1, text: "0 <= result < n"}
+    - {id: POST2, text: "a[k] <= a[result] for every k < n"}
+    - {id: POST3, text: "a[k] < a[result] for every k < result (first maximum)"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds read", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no undefined behaviour", checks: [signed-overflow, pointer-overflow]}
+  frame:
+    - "a[0..n) is never modified (ACSL: assigns \\nothing)"
+sources:
+  editable: [src/array_max.c]
+  headers: [include/array_max.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_array_max.c
+  cases:
+    - {name: basic, args: [basic]}
+    - {name: ties, args: [ties]}
+    - {name: extremes, args: [extremes]}
+verification:
+  harness: harness/array_max_harness.c
+  checks: [unsigned-overflow]
+  unwind: 6
+  input_bounds:
+    - {name: n, min: "1", max: "5", note: "CBMC explores arrays of 1..5 arbitrary ints; WP proves all n"}
+  timeout_s: 120
+wp:
+  # The functional contract is the ACSL annotation of index_of_max in include/array_max.h.
+  provers: [alt-ergo]
+  prover_timeout_s: 2
+  timeout_s: 180
+  memory_mb: 4096
+  require_termination: true
+gates: [compile, static_analysis, sanitizer, cbmc, wp]
+repair:
+  max_rounds: 3

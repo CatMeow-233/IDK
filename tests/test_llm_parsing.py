@@ -1,5 +1,3 @@
-"""Edge cases of model-response JSON extraction and validation."""
-
 from __future__ import annotations
 
 import json
@@ -8,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from leanc.core.errors import ProviderError
+from leanc.foundation.errors import ProviderError
 from leanc.llm.parsing import (
     MAX_RESPONSE_CHARS,
     check_keys,
@@ -25,7 +23,6 @@ from leanc.llm.parsing import (
 RESP = Path(__file__).parent / "fixtures" / "llm" / "responses"
 
 
-# ------------------------------------------------------------------ extract_json_object
 def test_plain_object_with_whitespace_and_bom():
     assert extract_json_object('﻿  \n{"a": 1, "b": [1, 2]}\n') == {"a": 1, "b": [1, 2]}
 
@@ -48,7 +45,7 @@ def test_braces_inside_strings_and_prose():
 
 def test_expect_keys_skips_example_objects_in_prose():
     text = 'For example {"x": 1} is not the answer. Answer: {"root_cause": "r", "rationale": "q", "files": {}}'
-    assert extract_json_object(text)["x"] == 1  # without hints the first object wins
+    assert extract_json_object(text)["x"] == 1
     got = extract_json_object(text, expect_keys=["root_cause"])
     assert got["root_cause"] == "r"
 
@@ -95,7 +92,7 @@ def test_array_and_truncated_and_non_text():
     with pytest.raises(ProviderError, match="no JSON object"):
         extract_json_object('```json\n{"files": {"a.c": "int x;"\n```')
     with pytest.raises(ProviderError, match="not text"):
-        extract_json_object(None)  # type: ignore[arg-type]
+        extract_json_object(None)
 
 
 def test_too_large_response_rejected():
@@ -111,7 +108,6 @@ def test_error_excerpt_is_redacted():
     assert "[REDACTED]" in str(ei.value)
 
 
-# ------------------------------------------------------------------ validators
 def test_check_keys_required_unknown_strict():
     assert check_keys({"a": 1, "z": 2}, required=["a"]) == ["z"]
     with pytest.raises(ProviderError, match="missing required"):
@@ -119,7 +115,7 @@ def test_check_keys_required_unknown_strict():
     with pytest.raises(ProviderError, match="unexpected key"):
         check_keys({"a": 1, "z": 2}, required=["a"], strict=True)
     with pytest.raises(ProviderError, match="expected a JSON object"):
-        check_keys([1], required=["a"])  # type: ignore[arg-type]
+        check_keys([1], required=["a"])
 
 
 def test_expect_str_variants():
@@ -147,7 +143,6 @@ def test_expect_files_normalises_and_keeps_bad_paths_visible():
     with pytest.raises(ProviderError, match="must be an object"):
         expect_files({"files": ["src/a.c"]})
     assert expect_files({}, required=False) is None
-    # fixtures are returned byte-for-byte
     assert expect_files({"files": {"a.c": "```c\nx\n```"}}, clean=False) == {"a.c": "```c\nx\n```"}
 
 
@@ -157,11 +152,10 @@ def test_strip_code_fence():
     assert strip_code_fence("int x; /* ``` */\n") == "int x; /* ``` */\n"
 
 
-# ------------------------------------------------------------------ typed parsers
 def test_parse_repair_from_prose_and_fence():
     prop = parse_repair_response((RESP / "repair_prose_fenced.md").read_text())
     assert prop.root_cause.startswith("idx > len")
-    assert list(prop.files) == ["src/safe_array.c"]  # "./" normalised
+    assert list(prop.files) == ["src/safe_array.c"]
     assert "idx >= len" in prop.files["src/safe_array.c"]
     assert '"}"' in prop.files["src/safe_array.c"]
     assert prop.patch is None and prop.raw_response.startswith("Sure!")

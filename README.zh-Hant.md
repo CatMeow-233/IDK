@@ -1,0 +1,316 @@
+# Lean C
+
+[English](README.md) · [简体中文](README.zh-Hans.md) · **繁體中文**
+
+規格優先、由獨立驗證器裁決的 AI C17 程式碼生成（V2 另支援 C++20、Frama-C/WP、Lean 4）。研究原型。
+
+程式碼由 AI 撰寫，但正確與否由獨立工具判斷：Clang、Clang Static Analyzer、ASan/UBSan/LSan、CBMC，以及可選的 Frama-C/WP 與 Lean 4。它們依據的是經人工批准並雜湊鎖定的規格。
+
+```
+需求 -> 規格草案（不受信任）-> 人工批准（雜湊鎖定、HMAC 簽章）
+  -> 程式碼生成 -> 編譯 -> 完整性關卡 -> 靜態分析 -> sanitizer 測試
+  -> CBMC ->（V2）Frama-C/WP ->（V2，可選）Lean 4
+  -> 反例 -> AI 修復（政策檢查，最多 N 回合）-> 重新驗證 -> JSON / Markdown 報告
+```
+
+目錄：[安裝](#安裝) · [快速開始](#快速開始) · [概念](#概念) · [指令](#指令) · [狀態與結束代碼](#狀態與結束代碼) · [機器介面（AI agent / CI）](#機器介面ai-agent--ci) · [LLM provider](#llm-provider) · [設定](#設定) · [V2 工具](#v2-可選工具) · [範例](#範例) · [開發 Lean C](#開發-lean-c) · [限制](#限制)
+
+---
+
+## 安裝
+
+需要 Linux 或 WSL2（以下指令以 Ubuntu 24.04 為例），以及 Python 3.11 以上。
+
+```bash
+sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap
+pip install -e ".[dev]"          # 執行相依：pydantic、PyYAML；開發：pytest
+leanc doctor                     # 實測 clang、分析器、sanitizers、CBMC、bwrap 沙箱與網路隔離、LLM 設定
+```
+
+`leanc doctor` 會實際執行每個工具，並為每項失敗的檢查給出修復方式。加上 `--json` 可取得機器可讀輸出（`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`）。若 bubblewrap 沙箱不可用，sanitizer 測試會被略過，整體狀態最多只能是 `UNKNOWN`（見 [安全性](docs/security.md)）。
+
+## 快速開始
+
+以下全部離線執行，不需要 API key。
+
+```bash
+leanc init demo                                   # 範本：spec.yaml、include/、harness/、tests/、src/、leanc.yaml
+leanc verify demo/spec.yaml                       # SPEC_UNAPPROVED（exit 40）：沒有已批准的規格就不宣稱任何結果
+# 由人審查 demo/spec.yaml、demo/harness/、demo/tests/、demo/include/ 之後：
+leanc spec approve demo/spec.yaml --by alice      # 互動確認；加 --yes 可略過
+leanc verify demo/spec.yaml                       # VERIFIED_BOUNDED（exit 0）
+leanc report latest --project-root demo           # Markdown；--format json 輸出 JSON
+```
+
+用一個附帶缺陷的範例跑完整流程（生成 → 驗證 → 反例 → 修復 → 再驗證）：
+
+```bash
+cp -r examples/div_by_zero /tmp/dz
+leanc spec approve /tmp/dz/spec.yaml --by alice --yes
+leanc run /tmp/dz/spec.yaml --provider mock --regenerate
+#   initial         COUNTEREXAMPLE_FOUND  (den == 0; INT_MIN / -1)
+#   repair round 1: COUNTEREXAMPLE_FOUND  accepted (improvement; continuing)
+#   repair round 2: VERIFIED_BOUNDED      accepted (verified)
+#   STATUS          VERIFIED_BOUNDED
+```
+
+`--provider mock` 會重播範例 `mock/` 目錄中的固定 fixture。它是確定性的，並不代表 LLM 的表現；報告中會標示這是 mock 輸出。
+
+## 概念
+
+| 名詞 | 意義 |
+|---|---|
+| 專案根目錄 | 最近一個含 `leanc.yaml` 的上層目錄，否則為規格檔所在目錄；可用 `--project-root` 覆寫 |
+| 規格（`spec.yaml`） | 可信契約：目標簽名、契約、來源檔、編譯/分析/測試/CBMC 設定、必要 `gates`。格式見 [docs/spec-format.md](docs/spec-format.md) |
+| 受保護檔 | 規格、`sources.headers`、`verification.harness`、`tests.driver`，以及 V2 的 ACSL 標頭、Lean spec/vectors。生成與修復永遠不會寫入這些檔案 |
+| 可編輯檔 | `sources.editable`：生成與修復唯一能寫入的檔案 |
+| 批准 | `leanc spec approve` 把規格的語意雜湊與每個受保護檔的 SHA-256 綁進一筆紀錄，並用 `LEANC_HOME`（預設 `~/.config/leanc`）中的金鑰簽章。任何變更都會導致 `SPEC_UNAPPROVED`，直到重新批准為止，而且 `version` 必須遞增。回滾帳本會拒絕已被取代的批准 |
+| 規格草案 | `leanc spec draft` 寫入 `drafts/<id>/`，並標記為 `provenance: ai-draft`。在人工審查並批准之前，它永遠不受信任 |
+| 關卡（gate） | 一個驗證階段：`compile`、`integrity`（強制，每次都執行）、`static_analysis`、`sanitizer`、`cbmc`，V2 另有 `wp`、`lean`。必須每個必要關卡都執行且通過，才算成功 |
+| 執行（run） | 每次 `generate` / `verify` / `repair` / `run` 都會建立 `.leanc/runs/<run_id>/` |
+
+給所有 agent 的規則：不得修改受保護檔，也不得代替人執行 `spec approve`。批准就是信任邊界。
+
+## 指令
+
+| 指令 | 作用 | 建立 run |
+|---|---|---|
+| `leanc doctor` | 檢查工具鏈、沙箱與 LLM 設定 | 否 |
+| `leanc init [DIR] [--template safe-array-get] [--force]` | 由範本建立專案 | 否 |
+| `leanc spec draft --id ID (--requirement TEXT \| --requirement-file F)` | 需求 → `drafts/<id>/` 中不受信任的草案（exit 40） | 否 |
+| `leanc spec approve SPEC --by NAME [--note N] [--yes]` | 人工批准（雜湊鎖定 + 簽章） | 否 |
+| `leanc spec status SPEC` | 批准狀態、簽章有效性、批准後的變更 | 否 |
+| `leanc spec show SPEC` | 正規化規格、雜湊、有效的 CBMC 檢查 | 否 |
+| `leanc generate SPEC [--force]` | 為已批准的規格寫入 `sources.editable`（exit 0 表示已生成，**尚未**驗證） | 是 |
+| `leanc verify SPEC` | 對目前的原始碼執行各驗證關卡 | 是 |
+| `leanc repair SPEC [--max-rounds N] [--no-write]` | 先驗證，再進行反例驅動的修復迴圈 | 是 |
+| `leanc run SPEC [--regenerate] [--no-repair] [--max-rounds N] [--no-write]` | 規格檢查 → 生成（若不存在）→ 驗證 → 修復 → 再驗證 → 報告 | 是 |
+| `leanc report [RUN\|latest] [--format md\|json]` | 顯示某次執行的報告；以該次執行的狀態作為 exit code；若成功的執行之後檔案被修改，顯示 STALE 並回傳 20 | 否 |
+
+共用選項：
+
+| 選項 | 適用指令 | 作用 |
+|---|---|---|
+| `--json` | `report` 以外全部 | stdout 只輸出單一 JSON 物件，日誌寫到 stderr |
+| `-v` | `report` 以外全部 | 詳細日誌寫到 stderr |
+| `--project-root DIR` | spec、generate、verify、repair、run、report | 覆寫專案根目錄 |
+| `--gates a,b` | verify、repair、run | 只執行規格關卡的子集（結果最多 `UNKNOWN`） |
+| `--fail-fast` | verify、repair、run | 第一個未通過的關卡之後就停止 |
+| `--timeout-scale X` | verify、repair、run | 所有工具逾時乘以 X |
+| `--no-sandbox` | verify、repair、run | 不使用 bwrap；動態測試會 `SKIPPED`，結果最多 `UNKNOWN` |
+| `--allow-unsandboxed` | verify、repair、run | 危險：在沒有沙箱的情況下執行不可信的測試程式（只有這個旗標能這樣做，`leanc.yaml` 不行） |
+| `--check-unapproved` | verify、repair、run | 對未批准的規格執行關卡，結果僅供參考；狀態仍是 `SPEC_UNAPPROVED` |
+| `--provider mock\|openai`、`--mock-dir D`、`--llm-timeout S` | spec draft、generate、repair、run | 選擇 LLM |
+
+## 狀態與結束代碼
+
+| exit | 狀態 | 意義 |
+|---|---|---|
+| 0 | `PROVED` | 必要的 `wp` 關卡證明了已批准的 ACSL 契約與所有 RTE 守衛（smoke test 無異常）。這是 `PROVED` 唯一的來源 |
+| 0 | `VERIFIED_BOUNDED` | 在已批准的 harness、輸入界限與 unwind 界限內沒有違反；所有迴圈都已完全展開；harness 不是 vacuous。**永遠不會升級為 `PROVED`** |
+| 10 | `COMPILE_ERROR` | 編譯錯誤（或在 `warnings_policy: block` 下出現警告） |
+| 11 | `STATIC_ANALYSIS_WARNING` | 在 `policy: block` 下有分析器發現，或違反完整性關卡 |
+| 12 | `RUNTIME_TEST_FAILED` | sanitizer 回報、exit code 或輸出錯誤，或 Lean 測試向量不符 |
+| 13 | `COUNTEREXAMPLE_FOUND` | CBMC 找到具體反例（真實的執行路徑，即使 unwind 不足也成立） |
+| 20 | `UNKNOWN` | 無法下結論：unwind 不足、harness vacuous、關卡被略過、只跑關卡子集、沒有形式化關卡（C++）、目標未證明 |
+| 21 | `TIMEOUT` | 必要工具逾時 |
+| 30 | `TOOL_ERROR` | 工具崩潰或輸出無法解析 |
+| 40 | `SPEC_UNAPPROVED` | 目前的規格與受保護檔沒有有效批准 |
+| 50 | `REPAIR_EXHAUSTED` | 修復迴圈結束但沒有成功；工作區已還原 |
+| 2 | — | 使用方式或輸入錯誤 |
+| 70 | — | 內部錯誤（traceback 寫到 stderr） |
+
+「沒找到反例」不等於成功。逾時、工具錯誤、無法解析的結果、被略過的關卡，都不算成功。彙總規則見 [docs/status-semantics.md](docs/status-semantics.md)。
+
+## 機器介面（AI agent / CI）
+
+使用 `--json`，並依 exit code 或 `status` 分支。`leanc verify SPEC --json` 的輸出如下：
+
+```json
+{
+  "command": "verify", "status": "COUNTEREXAMPLE_FOUND", "exit_code": 13,
+  "run_id": "verify-20261121T034210Z-7c8afd", "run_dir": ".../.leanc/runs/verify-...",
+  "provider": null, "report": ".../report.md", "messages": ["..."],
+  "verification": {
+    "status": "...", "success": false, "spec_id": "...", "spec_version": 1, "spec_hash": "...",
+    "approval": {"...": "..."},
+    "stages": [{"stage": "cbmc", "outcome": "FAIL", "status": "...", "required": true, "invoked": true,
+                "duration_s": 1.2, "summary": "...", "tools": [], "failures": []}],
+    "detected_by": ["asan", "cbmc"], "reasons": ["..."], "assumptions": ["..."], "limitations": ["..."],
+    "failures": [{
+      "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
+      "kind": "...", "property_id": "...", "location": {"file": "src/array_lookup.c", "line": 9, "column": 16, "function": "array_lookup"},
+      "inputs": [{"name": "argv", "value": "index_equals_count", "type": null}],
+      "description": "...", "raw_ref": "raw/..."
+    }]
+  }
+}
+```
+
+執行目錄結構：
+
+```
+.leanc/runs/<run_id>/
+  run.json  report.md  leanc.log
+  verify/                         （修復回合：repair/round-N/verify/）
+    verification.json  verification.md
+    snapshot/   實際被驗證的原始碼
+    raw/        工具原始輸出：cbmc-verify.json、compile/、integrity/、static_analysis/（SARIF）、sanitizer/、wp/、lean/
+    logs/       每次工具呼叫的 stdout / stderr，依執行順序編號
+    build/
+```
+
+agent 修正程式碼有兩種方式：
+
+1. **外部 agent 迴圈。** 執行 `leanc verify SPEC --json`，讀取 `verification.failures`（位置、輸入、性質）與 `raw_ref`。只修改 `sources.editable` 列出的檔案，然後再驗證。遇到 exit 0，或 40（需要人處理）、20/21/30（不是程式碼缺陷，請看 `reasons`）時停止。
+2. **內建迴圈。** 執行 `leanc run SPEC --provider openai --json`（或 `repair`）。Lean C 會呼叫模型、對每個補丁做政策檢查，並且只把驗證通過的候選寫回（`--no-write` 讓工作區保持不變）。
+
+修復政策會拒絕以下補丁：寫入 `sources.editable` 以外的檔案、加入 `__CPROVER_*` / `LEANC_*` / `__builtin_assume`、刪除 `assert`、抑制警告或 sanitizer、`#include` 逃逸、`system`/`exec`/`fork`/`socket`、inline asm、把目標函式掏空，以及過大的補丁。重複的補丁會被判定為循環。結果變成 `UNKNOWN`/`TIMEOUT` 不算改善。
+
+## LLM provider
+
+**mock**（`leanc.yaml` 沒有設定 provider 時的預設值）。它從 `<project>/mock/` 讀取 fixture（可用 `--mock-dir` 覆寫）：
+
+```
+mock/
+  spec_draft.yaml、harness_draft.c、tests_draft.c    `spec draft` 回傳的內容
+  generate/<可編輯檔路徑>          例如 generate/src/safe_ratio.c
+  repair/round-<N>.json            {"root_cause": "...", "rationale": "...", "files": {"src/x.c": "<完整內容>"}}
+                                   或以 "patch": "<unified diff>" 取代 "files"；缺少某回合 = 沒有提案
+```
+
+**openai**（任何 OpenAI 相容的 chat-completions 端點）：
+
+| 變數 | 意義 |
+|---|---|
+| `LEANC_API_KEY`（或 `OPENAI_API_KEY`） | API key。日誌、報告與 transcript 中都會遮蔽，也不會傳給子行程。若以 `LEANC_BASE_URL` 指向本機伺服器，可以留空 |
+| `LEANC_MODEL` | 模型名稱（必填） |
+| `LEANC_BASE_URL` | 預設 `https://api.openai.com/v1` |
+| `LEANC_LLM_TIMEOUT` | 請求逾時秒數 |
+| `LEANC_LLM_MAX_RETRIES` | 暫時性錯誤的重試次數 |
+| `LEANC_LLM_MAX_TOKENS` | 最大生成 token 數（看到 `finish_reason=length` 時請調高） |
+| `LEANC_LLM_TEMPERATURE` | 數字或 `default` |
+| `LEANC_LLM_JSON_MODE=1` | 送出 `response_format: json_object` |
+| `LEANC_LLM_PROXY` | `env`（使用 `HTTPS_PROXY`）或 `none` |
+
+```bash
+export LEANC_API_KEY=... LEANC_MODEL=<model>
+leanc spec draft --id my-func --requirement "實作一個……" --provider openai   # 不受信任的草案 -> 審查 -> 批准
+leanc run path/to/spec.yaml --provider openai --json
+```
+
+prompt 位於 `leanc/llm/prompts/`。評估模型時，請自行記錄模型、溫度與 prompt 版本。
+
+## 設定
+
+專案根目錄可放一個可選的 `leanc.yaml`：
+
+```yaml
+provider: mock        # 預設 provider：mock | openai
+mock_dir: mock
+sandbox: auto         # auto | none
+```
+
+專案設定不能削弱檢查、界限、關卡、批准或隔離。若設定了 `allow_unsandboxed`，該值會被忽略並發出警告。
+
+| 變數 | 意義 |
+|---|---|
+| `LEANC_HOME` | 批准金鑰與帳本目錄（預設 `~/.config/leanc`）；請放在工作區之外 |
+| `LEANC_CLANG`、`LEANC_CLANGXX`、`LEANC_CBMC` | 工具路徑 |
+| `LEANC_FRAMAC` | `frama-c`（>= 27，含 WP）；未設定時搜尋 `PATH` 與 `/opt/opam/*/bin` |
+| `LEANC_LEAN` | `lean`（含 `leanchecker` 的 toolchain）；未設定時搜尋 `PATH` 與 `/opt/lean/*/bin` |
+
+## V2 可選工具
+
+| 功能 | 安裝 | 規格 | 對狀態的影響 |
+|---|---|---|---|
+| Frama-C/WP + ACSL | `sudo apt-get install -y opam z3 cvc5 && opam init -y && opam install -y frama-c alt-ergo`（Ubuntu 的 `frama-c-base` 不含 WP） | ACSL 契約寫在受保護標頭中，關卡 `wp` | `PROVED` 唯一的途徑；證明修復讓 AI 補上 loop invariant |
+| Lean 4 | release toolchain 解壓到 `/opt/lean/<版本>`，或使用 elan | 受保護的模型與定理敘述；證明由 AI 撰寫；kernel + `leanchecker`；只接受標準公理；差分測試向量 | 模型層級：未證明 → `UNKNOWN`，向量不符 → `RUNTIME_TEST_FAILED`；永遠不會產生 `PROVED` |
+| C++20 | `clang++`（clang-18 內含） | `language: {name: cpp, standard: c++20}` | 沒有可用的 C++ model checker，因此最佳結果是 `UNKNOWN` |
+
+`leanc doctor` 會回報上述每個工具。缺少某個工具時，相關測試會被略過，而不是失敗。
+
+## 範例
+
+每個 `examples/<name>/` 都包含 `spec.yaml`、受保護的 `include/`、`harness/`、`tests/`，附帶的（通常有缺陷的）`src/`，`mock/` fixture，以及 `expected.yaml`。
+
+| 範例 | 附帶的程式碼 | `verify` | `run --provider mock` |
+|---|---|---|---|
+| `safe_array_get` | 正確 | `VERIFIED_BOUNDED` | `VERIFIED_BOUNDED` |
+| `array_oob` | `index <= count` | `COUNTEREXAMPLE_FOUND`（cbmc、asan） | 1 回合 → `VERIFIED_BOUNDED` |
+| `div_by_zero` | 未檢查 `den` | `COUNTEREXAMPLE_FOUND`（cbmc、ubsan） | 2 回合 → `VERIFIED_BOUNDED` |
+| `int_overflow` | 先加再檢查 | `COUNTEREXAMPLE_FOUND` | 1 回合 → `VERIFIED_BOUNDED` |
+| `null_deref` | 檢查了 NULL 但沒有返回 | `COUNTEREXAMPLE_FOUND`（analyzer、cbmc、ubsan） | 1 回合 → `VERIFIED_BOUNDED` |
+| `loop_unwind` | 正確，但 unwind 不足 | `UNKNOWN` | `UNKNOWN`（不會被「修復」）；變體 `spec_full_unwind.yaml` → `VERIFIED_BOUNDED` |
+| `vacuous_harness` | assume 互相矛盾 | `UNKNOWN`（單用 CBMC 會說 SUCCESSFUL） | `UNKNOWN` |
+| `runtime_memory` | 錯誤路徑洩漏 | `RUNTIME_TEST_FAILED`（lsan） | 1 回合 → `VERIFIED_BOUNDED` |
+| `ring_buffer` | 兩個 `.c`，正確 | `VERIFIED_BOUNDED` | `VERIFIED_BOUNDED` |
+| `cheating_repair` | off-by-one | `COUNTEREXAMPLE_FOUND` | 第 1–4 回合被政策拒絕，第 5 回合 → `VERIFIED_BOUNDED` |
+| `repair_exhausted` | `(a+b)/2` 溢位 | `COUNTEREXAMPLE_FOUND` | `REPAIR_EXHAUSTED`，工作區不變 |
+| `cbmc_timeout` | 困難的 64 位元等價性 | `TIMEOUT` | `TIMEOUT` |
+| `wp_safe_array_get` | ACSL 契約，正確 | `PROVED` | `PROVED` |
+| `wp_proof_repair` | 正確，但沒有 loop invariant | `UNKNOWN` | 2 回合證明修復 → `PROVED` |
+| `wp_contract_violation` | 違反後置條件 | `COUNTEREXAMPLE_FOUND` | 1 回合 → `PROVED` |
+| `lean_clamp` | Lean 定理留為 `sorry` | `UNKNOWN` | 2 回合 → `VERIFIED_BOUNDED` |
+| `cpp_ring_buffer` | C++20 class template | `UNKNOWN` | `UNKNOWN` |
+| `cpp_bounds_bug` | C++ off-by-one | `RUNTIME_TEST_FAILED`（asan） | 1 回合 → `UNKNOWN` |
+
+全部重現：
+
+```bash
+python scripts/run_experiments.py                       # 全部範例；應回報 N/N 符合
+python scripts/run_experiments.py --only array_oob div_by_zero
+```
+
+腳本會把每個範例複製到暫存專案，並以暫時的 `LEANC_HOME` 批准。接著透過真正的 CLI 執行 `verify` 與 `run --provider mock --regenerate`，再與 `expected.yaml` 比對結果。輸出寫到 `experiments/results/`（本機產生，已列入 gitignore）。詳見 [docs/experiments.md](docs/experiments.md)。
+
+## 開發 Lean C
+
+agent 指令寫在 [`CLAUDE.md`](CLAUDE.md)，並由 `tests/test_architecture.py` 強制執行：
+
+- 嚴格的單向分層、無循環的模組圖，且只允許頂層 import：
+  ```
+  foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < pipeline < cli
+  ```
+  共用程式碼往下層移。套件的 `__init__` 只能 re-export 自己的子模組。
+- `leanc/`、`tests/`、`scripts/` 中不得有註解或 docstring。意圖要用名稱、常數、Enum 與 frozen dataclass 表達。
+- 不得有 bare/`Exception`/`BaseException` handler（唯一的例外是 `leanc/cli.py` 的 `main()`，它以 exit 70 結束），也不得吞掉例外。
+- 每個 `.py` 檔最多 600 行。
+
+| 套件 | 職責 |
+|---|---|
+| `foundation` | 狀態、資料模型、錯誤、雜湊、憑證遮蔽、工作區（路徑/符號連結安全）、沙箱、`run_command`（只接受 argv、資源限制） |
+| `specs` | 規格 schema、載入、雜湊、批准與帳本 |
+| `lang` | C / C++ / Lean lexer |
+| `rules` | 關卡與修復政策共用的純函式信任規則（C、C++、ACSL、Lean、前處理器） |
+| `toolchain` | 工具探測、`BackendContext` |
+| `reports` | JSON / Markdown 輸出 |
+| `llm` | provider 介面、mock、OpenAI 相容、prompts、回應解析 |
+| `backends` | 各關卡：clang、analyzer、integrity、sanitizer、cbmc、counterexample、wp、lean |
+| `repair` | 套用補丁（fuzz 0）、生成與修復政策 |
+| `pipeline` | 驗證控制器、生成、修復迴圈、doctor、設定、指令實作 |
+| `cli.py` | 只有 argparse 與 `main` |
+
+檢查：
+
+```bash
+python scripts/affected_tests.py --run              # 修改後：依 import 圖相對於 HEAD 選出受影響的測試
+python scripts/affected_tests.py --base main --run  # 整個分支
+python -m pytest tests/test_architecture.py -q      # 分層、循環、註解、docstring、handler、檔案大小
+python -m pytest -q                                 # 完整測試（約 9 分鐘），合併或發布前執行
+python scripts/run_experiments.py                   # 必須回報 N/N
+```
+
+完整測試需要 clang-18、CBMC 與 bwrap；WP 測試需要 Frama-C >= 27，Lean 測試需要 Lean 4。缺少某個工具時，相關測試會被略過。
+
+## 限制
+
+- `VERIFIED_BOUNDED` 受限於已批准的 harness；harness 是否忠實表達需求，仍需由人判斷。
+- sanitizer 只涵蓋可信測試實際執行到的路徑。
+- `PROVED` 只相對於已批准的 ACSL 契約成立，且以 WP 的記憶體與機器模型為前提。
+- 修復政策是縱深防禦（文字規則）；真正的防線是受保護的 harness 加上獨立驗證器。
+- C++20 沒有形式化關卡（CBMC 無法解析現代 C++，ESBMC 尚未整合），因此 C++ 的最佳結果是 `UNKNOWN`。
+- Lean 證明的是模型，它與 C 程式碼之間只透過差分測試向量連結。
+- bubblewrap 不是虛擬機；高風險工作請在獨立的容器或 VM 中執行。
+
+更多文件（繁體中文）：[架構](docs/architecture.md) · [規格格式](docs/spec-format.md) · [狀態語意](docs/status-semantics.md) · [信任模型](docs/trust-model.md) · [安全性](docs/security.md) · [實驗](docs/experiments.md) · [Roadmap](docs/roadmap.md)

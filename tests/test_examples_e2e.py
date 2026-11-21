@@ -1,7 +1,3 @@
-"""Every example under examples/ must produce exactly the statuses declared in
-its expected.yaml, both for `leanc verify` on the shipped sources and for the
-full `leanc run --provider mock` workflow (mock generation + repair)."""
-
 from __future__ import annotations
 
 import json
@@ -12,6 +8,11 @@ import pytest
 import yaml
 
 from leanc.cli import main
+from leanc.specs.loader import load_spec
+from leanc.toolchain.cxx import find_clangxx
+from leanc.toolchain.framac import MIN_FRAMAC_MAJOR, find_framac, framac_version_key
+from leanc.toolchain.lean import find_lean
+from leanc.toolchain.tools import find_clang, tool_version
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 CASES = sorted(p.parent.name for p in EXAMPLES.glob("*/expected.yaml"))
@@ -36,9 +37,25 @@ def _tools(payload: dict) -> set[str]:
     return {f["tool"] for f in payload.get("verification", {}).get("failures", [])}
 
 
+def _skip_without_v2_tools(name: str) -> None:
+    spec = load_spec(EXAMPLES / name / "spec.yaml")
+    if "wp" in spec.gates:
+        fc = find_framac()
+        if fc is None or framac_version_key(tool_version(fc.real, "-version"))[0] < MIN_FRAMAC_MAJOR:
+            pytest.skip("Frama-C/WP (>= 27) not available")
+    if "lean" in spec.gates:
+        lt = find_lean()
+        if lt is None or not lt.leanchecker:
+            pytest.skip("Lean 4 toolchain with leanchecker not available")
+    if spec.language.is_cpp:
+        if find_clangxx(find_clang()) is None:
+            pytest.skip("clang++ not available")
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("name", CASES)
 def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
+    _skip_without_v2_tools(name)
     exp = yaml.safe_load((EXAMPLES / name / "expected.yaml").read_text())
 
     proj = _fresh(name, tmp_path / "verify" / name)
@@ -64,5 +81,9 @@ def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
         assert [r["round"] for r in rounds if r["policy_allowed"] is False] == list(exp["rejected_rounds"])
     if exp["run"] == "VERIFIED_BOUNDED" and exp["verify"] != "VERIFIED_BOUNDED":
         assert rounds, "a repaired example must have repair rounds"
-    if exp["run"] in ("UNKNOWN", "TIMEOUT"):
+    if exp.get("repaired"):
+        last_round_accepted = rounds and rounds[-1]["policy_allowed"] and not rounds[-1]["reverted"]
+        assert last_round_accepted, rounds
+        assert data["status"] == "UNKNOWN", "without a formal gate a written-back repair stays UNKNOWN"
+    elif exp["run"] in ("UNKNOWN", "TIMEOUT"):
         assert not rounds, "inconclusive results must not be 'repaired'"

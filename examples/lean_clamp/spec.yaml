@@ -1,0 +1,77 @@
+# Lean C specification: integer clamp with a Lean 4 model (V2 'lean' gate).
+leanc_spec: 1
+spec_id: lean-clamp
+version: 1
+title: Clamp an int into a closed interval (C + Lean 4 model)
+requirement: |
+  實作一個把整數限制在閉區間 [lo, hi] 內的函式。若 lo > hi 必須回傳錯誤且不寫入輸出；
+  若輸出指標為 NULL 必須回傳錯誤。另以 Lean 4 建立數學模型並證明其性質。
+  (Clamp an int into [lo, hi]. lo > hi must return an error without writing the output;
+  a NULL output pointer must return an error. A Lean 4 model of the function is proved
+  to have the expected properties.)
+language: {name: c, standard: c17}
+target:
+  function: clamp_int
+  signature: "int clamp_int(int x, int lo, int hi, int *out)"
+  params:
+    - {name: x, type: int, description: "value to clamp (any int)"}
+    - {name: lo, type: int, description: "lower bound (any int)"}
+    - {name: hi, type: int, description: "upper bound (any int)"}
+    - {name: out, type: "int *", description: "where the result is written, or NULL"}
+  returns:
+    type: int
+    description: status code
+    values:
+      - {value: "CLAMP_OK (0)", meaning: "lo <= hi; *out == max(lo, min(x, hi))"}
+      - {value: "CLAMP_ERR_NULL (-1)", meaning: "out == NULL; nothing written"}
+      - {value: "CLAMP_ERR_RANGE (-2)", meaning: "lo > hi; *out untouched"}
+contract:
+  postconditions:
+    - {id: POST1, text: "out != NULL and lo <= hi => returns 0 and lo <= *out <= hi"}
+    - {id: POST2, text: "lo <= x <= hi => *out == x; x < lo => *out == lo; x > hi => *out == hi"}
+    - {id: POST3, text: "out != NULL and lo > hi => returns -2 and *out is unchanged"}
+    - {id: POST4, text: "out == NULL => returns -1"}
+    - {id: MODEL, text: "the Lean model clamp (lean/Spec.lean) is within bounds, idempotent, monotone, the identity on [lo, hi] and fits int32; the C code agrees with it on 1331 boundary vectors"}
+  safety:
+    - {id: SAFE1, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE2, text: "no undefined behaviour", checks: [signed-overflow, undefined-shift]}
+sources:
+  editable: [src/clamp.c]
+  headers: [include/clamp.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_clamp.c
+  cases:
+    - {name: inside, args: [inside]}
+    - {name: outside, args: [outside]}
+    - {name: errors, args: [errors]}
+verification:
+  harness: harness/clamp_harness.c
+  checks: [conversion]
+  unwind: 1
+  input_bounds:
+    - {name: x, note: "unconstrained (every int)"}
+    - {name: lo, note: "unconstrained (every int)"}
+    - {name: hi, note: "unconstrained (every int)"}
+  timeout_s: 120
+lean:
+  spec_file: lean/Spec.lean
+  proofs: [lean/Proofs.lean]
+  theorems:
+    - {name: result_in_bounds, statement: LeanClamp.result_in_bounds, proof: LeanClamp.Proofs.result_in_bounds_proof}
+    - {name: error_iff_empty_range, statement: LeanClamp.error_iff_empty_range, proof: LeanClamp.Proofs.error_iff_empty_range_proof}
+    - {name: identity_in_range, statement: LeanClamp.identity_in_range, proof: LeanClamp.Proofs.identity_in_range_proof}
+    - {name: idempotent, statement: LeanClamp.idempotent, proof: LeanClamp.Proofs.idempotent_proof}
+    - {name: monotone, statement: LeanClamp.monotone, proof: LeanClamp.Proofs.monotone_proof}
+    - {name: result_fits_int32, statement: LeanClamp.result_fits_int32, proof: LeanClamp.Proofs.result_fits_int32_proof}
+  vectors:
+    generator: lean/Vectors.lean
+    driver: tests/clamp_vectors.c
+  timeout_s: 120
+gates: [compile, static_analysis, sanitizer, cbmc, lean]
+repair:
+  max_rounds: 3

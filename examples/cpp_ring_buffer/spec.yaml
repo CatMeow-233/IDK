@@ -1,0 +1,62 @@
+# Lean C specification: C++20 class-template ring buffer (correct implementation).
+leanc_spec: 1
+spec_id: cpp-ring-buffer
+version: 1
+title: Fixed-capacity FIFO ring buffer (C++20 class template)
+requirement: |
+  以 C++20 類別模板實作固定容量的先進先出環形緩衝區 RingBuffer<T, N>：push、pop、front、at(i)。
+  滿時 push 必須回傳 false 且不改變內容；空時 pop 必須回傳 false 且不改變輸出參數；任何操作序列都
+  必須維持先進先出順序（包含多次繞回），且不得越界存取、不得配置記憶體、不得拋出例外。
+  (Implement a fixed-capacity FIFO ring buffer as the C++20 class template RingBuffer<T, N>:
+  push, pop, front, at(i). push on a full buffer returns false and leaves the contents unchanged;
+  pop on an empty buffer returns false and leaves the output unchanged; every sequence of
+  operations (including repeated wrap-around) preserves FIFO order, never accesses memory out of
+  bounds, never allocates and never throws.)
+language: {name: cpp, standard: c++20}
+target:
+  function: push
+  signature: "template <std::copyable T, std::size_t N> bool lc::RingBuffer<T, N>::push(const T& value) noexcept"
+  params:
+    - {name: value, type: "const T&", description: "value to append as the newest element"}
+  returns:
+    type: bool
+    description: "whether the value was appended (the other members pop, front, at are in src/ring_buffer.cpp; see include/ring_buffer.hpp)"
+    values:
+      - {value: "true", meaning: "value appended as the newest element; size() incremented"}
+      - {value: "false", meaning: "buffer already held N elements; contents unchanged"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "the buffer is only modified through its member functions"}
+  postconditions:
+    - {id: POST1, text: "push on a full buffer => false, contents unchanged; otherwise true and value becomes the newest element"}
+    - {id: POST2, text: "pop on an empty buffer => false, out unchanged; otherwise true and out is the oldest element (FIFO)"}
+    - {id: POST3, text: "front() is the oldest element or nullptr when empty; at(i) is the i-th oldest element or nullptr when i >= size()"}
+    - {id: POST4, text: "invariant after every operation: head_ < N, count_ <= N, count_ equals accepted pushes minus accepted pops"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds access of buf_ (checked at runtime by ASan/UBSan on the trusted tests)"}
+    - {id: SAFE2, text: "no heap allocation and no exceptions (enforced by the integrity gate: no operator new import, no throw)"}
+  frame:
+    - "push/pop modify only buf_ slot written, head_ and count_"
+sources:
+  editable: [src/ring_buffer.cpp]
+  headers: [include/ring_buffer.hpp]
+  include_dirs: [include]
+compile:
+  compiler: clang++
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: block
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_ring_buffer.cpp
+  cases:
+    - {name: fifo, args: [fifo], expect_stdout: "ok\n"}
+    - {name: full, args: [full], expect_stdout: "ok\n"}
+    - {name: empty, args: [empty], expect_stdout: "ok\n"}
+    - {name: wrap_around, args: [wrap_around], expect_stdout: "ok\n"}
+  sanitizers: [address, undefined, leak]
+# No formal gate: no C++20-capable model checker is configured (CBMC and WP
+# are C-only), so the best possible verdict is UNKNOWN ("no formal gate").
+gates: [compile, static_analysis, sanitizer]
+repair:
+  max_rounds: 3

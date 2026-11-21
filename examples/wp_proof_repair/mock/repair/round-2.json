@@ -1,0 +1,7 @@
+{
+  "root_cause": "After round 1 the post-conditions is_max and is_first and the termination goal remain unproved: the invariants only bound the indices and say nothing about the values seen so far, and the loop has no variant.",
+  "rationale": "Proof repair, second step: add the functional invariants - every element a[0..i) is <= a[best], and every element before best is strictly smaller (so best is the FIRST maximum) - and the loop variant n - i (non-negative, strictly decreasing). At loop exit i == n, which turns the invariants into the post-conditions. Still no change to the executable code.",
+  "files": {
+    "src/array_max.c": "#include \"array_max.h\"\n\nsize_t index_of_max(const int *a, size_t n)\n{\n    size_t best = 0;\n    /*@ loop invariant 1 <= i <= n;\n        loop invariant 0 <= best < i;\n        loop invariant \\forall integer k; 0 <= k < i ==> a[k] <= a[best];\n        loop invariant \\forall integer k; 0 <= k < best ==> a[k] < a[best];\n        loop assigns i, best;\n        loop variant n - i;\n    */\n    for (size_t i = 1; i < n; i++) {\n        if (a[i] > a[best]) {\n            best = i;\n        }\n    }\n    return best;\n}\n"
+  }
+}

@@ -1,16 +1,21 @@
-"""Spec schema, hashing, approval trust boundary and workspace guards (no external tools)."""
-
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 from pathlib import Path
 
 import pytest
 
-from leanc.core.errors import ApprovalError, SpecError, WorkspaceError
-from leanc.core.workspace import Workspace, normalize_relpath, safe_rmtree
-from leanc.specs.approval import approve_spec, approvals_dir, check_approval, leanc_home
+from leanc.foundation.errors import ApprovalError, SpecError, WorkspaceError
+from leanc.foundation.workspace import Workspace, normalize_relpath, safe_rmtree
+from leanc.specs.approval import (
+    approvals_dir,
+    approve_spec,
+    check_approval,
+    leanc_home,
+    load_key,
+)
 from leanc.specs.loader import load_spec, parse_spec_text, spec_hash
 from leanc.specs.model import MANDATORY_CHECKS
 
@@ -20,7 +25,6 @@ def project(example_copy) -> Path:
     return example_copy("safe_array_get")
 
 
-# --------------------------------------------------------------- workspace
 @pytest.mark.parametrize("bad", ["/etc/passwd", "../x", "a/../../b", "a/..", "", "C:\\x", "a\\..\\b", "x\x00y"])
 def test_normalize_rejects_escapes(bad):
     with pytest.raises(WorkspaceError):
@@ -66,7 +70,6 @@ def test_safe_rmtree_refuses_outside(tmp_path):
     assert not inner.exists()
 
 
-# --------------------------------------------------------------- spec schema
 def test_example_spec_loads_with_mandatory_checks(project):
     spec = load_spec(project / "spec.yaml")
     eff = spec.verification.effective_checks()
@@ -125,7 +128,6 @@ def test_hash_ignores_comments_but_not_content(project):
     assert spec_hash(parse_spec_text(text.replace("unwind: 9", "unwind: 8"))) != h
 
 
-# --------------------------------------------------------------- approval
 def test_unapproved_by_default(project):
     spec = load_spec(project / "spec.yaml")
     chk = check_approval(spec, Workspace(project))
@@ -174,13 +176,12 @@ def test_forged_approval_record_is_detected(project):
     ws = Workspace(project)
     spec = load_spec(project / "spec.yaml")
     approve_spec(spec, "spec.yaml", ws, approved_by="alice")
-    # An attacker (e.g. a patch) edits the spec AND rewrites the record's hash.
-    weaker = parse_spec_text((project / "spec.yaml").read_text().replace("unwind: 9", "unwind: 2"))
+    weaker_spec_by_attacker = parse_spec_text((project / "spec.yaml").read_text().replace("unwind: 9", "unwind: 2"))
     rec_path = approvals_dir(project) / "safe-array-get.json"
     store = json.loads(rec_path.read_text())
-    store["current"]["spec_hash"] = spec_hash(weaker)
+    store["current"]["spec_hash"] = spec_hash(weaker_spec_by_attacker)
     rec_path.write_text(json.dumps(store))
-    chk = check_approval(weaker, ws)
+    chk = check_approval(weaker_spec_by_attacker, ws)
     assert not chk.approved
     assert any("signature is invalid" in r for r in chk.reasons)
 
@@ -201,9 +202,10 @@ def test_missing_or_different_key_means_unapproved(project, monkeypatch, tmp_pat
 
 def test_changed_content_requires_version_bump(project):
     ws = Workspace(project)
-    spec = load_spec(project / "spec.yaml")
-    approve_spec(spec, "spec.yaml", ws, approved_by="alice")
-    approve_spec(spec, "spec.yaml", ws, approved_by="alice")  # idempotent re-approval is fine
+    v1 = load_spec(project / "spec.yaml")
+    first = approve_spec(v1, "spec.yaml", ws, approved_by="alice")
+    idempotent_reapproval = approve_spec(v1, "spec.yaml", ws, approved_by="alice")
+    assert idempotent_reapproval["spec_hash"] == first["spec_hash"]
     changed = parse_spec_text((project / "spec.yaml").read_text().replace("unwind: 9", "unwind: 12"))
     with pytest.raises(ApprovalError, match="bump"):
         approve_spec(changed, "spec.yaml", ws, approved_by="alice")
@@ -212,7 +214,8 @@ def test_changed_content_requires_version_bump(project):
     )
     approve_spec(bumped, "spec.yaml", ws, approved_by="bob")
     assert check_approval(bumped, ws).approved
-    assert not check_approval(spec, ws).approved  # the old version is no longer current
+    superseded_v1 = v1
+    assert not check_approval(superseded_v1, ws).approved
     store = json.loads((approvals_dir(project) / "safe-array-get.json").read_text())
     assert len(store["history"]) == 2
 
@@ -228,29 +231,24 @@ def test_rollback_to_superseded_version_is_rejected(project):
     v1_text = (project / "spec.yaml").read_text()
     v1 = parse_spec_text(v1_text)
     approve_spec(v1, "spec.yaml", ws, approved_by="alice")
-    v1_store = (approvals_dir(project) / "safe-array-get.json").read_text()
+    genuine_signed_v1_store = (approvals_dir(project) / "safe-array-get.json").read_text()
     v2 = parse_spec_text(v1_text.replace("unwind: 9", "unwind: 12").replace("version: 1", "version: 2"))
     approve_spec(v2, "spec.yaml", ws, approved_by="alice")
-    # Restore the old (signed, genuine) v1 record and the v1 spec.
-    (approvals_dir(project) / "safe-array-get.json").write_text(v1_store)
+    (approvals_dir(project) / "safe-array-get.json").write_text(genuine_signed_v1_store)
     chk = check_approval(v1, ws)
     assert not chk.approved
     assert any("rollback" in r for r in chk.reasons)
 
 
 def test_concurrent_key_creation_yields_one_valid_key(tmp_path, monkeypatch):
-    import multiprocessing as mp
-
     monkeypatch.setenv("LEANC_HOME", str(tmp_path / "home"))
-    ctx = mp.get_context("fork")
+    ctx = multiprocessing.get_context("fork")
     with ctx.Pool(8) as pool:
         keys = pool.map(_create_key, range(8))
     assert len(set(keys)) == 1 and len(bytes.fromhex(keys[0])) == 32
 
 
 def _create_key(_):
-    from leanc.specs.approval import load_key
-
     return load_key(create=True).hex()
 
 
@@ -282,7 +280,8 @@ def test_approving_a_superseded_version_is_refused(project):
     approve_spec(parse_spec_text(text), "spec.yaml", ws, approved_by="a")
     approve_spec(parse_spec_text(text.replace("unwind: 9", "unwind: 12").replace("version: 1", "version: 2")),
                  "spec.yaml", ws, approved_by="a")
-    (approvals_dir(project) / "safe-array-get.json").unlink()  # even with the record store reset
+    record_store = approvals_dir(project) / "safe-array-get.json"
+    record_store.unlink()
     with pytest.raises(ApprovalError, match="bump"):
         approve_spec(parse_spec_text(text), "spec.yaml", ws, approved_by="a")
     with pytest.raises(ApprovalError, match="bump"):

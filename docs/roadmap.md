@@ -13,22 +13,26 @@
 * JSON / Markdown 報告、CLI（doctor / init / spec / generate / verify / repair / run / report）
 * 自動化測試與可重現實驗（`scripts/run_experiments.py`）
 
-## V2（規劃，未實作）
+## V2（已實作）
 
-V1 刻意**沒有**留下這些功能的空殼模組；以下是設計方向：
-
-| 項目 | 方向 | 對狀態的影響 |
+| 項目 | 實作 | 狀態影響 |
 |---|---|---|
-| C++20 | `language.name: cpp`；clang++ 後端；CBMC 的 C++ 前端支援有限，可能需要 ESBMC 或僅限 C 子集 | 新的 gate 實作，沿用 `StageResult` |
-| Frama-C / ACSL | 由已批准規格產生（或人工撰寫）ACSL 契約；`frama-c -wp` 後端；每個 proof obligation 的結果記錄進報告 | 所有 PO 皆被證明且無 `admit` 時，才可能是 **`PROVED`**（在 ACSL 契約與 WP 記憶體模型的前提下） |
-| Lean 4 | 對純函式的數學規格做證明（例如 `Nat` 上的演算法性質），C 實作透過 refinement 或測試對應 | 只在有機器檢查的證明物件時給 `PROVED` |
-| 多 TU 靜態分析 | Clang CTU（`-analyzer-config experimental-enable-naive-ctu-analysis`） | 減少單 TU 分析的誤判/漏判 |
-| Harness 審查輔助 | 以覆蓋率（`--cover`）與變異測試（mutation）評估 harness 強度，提示過強的 assume / 過弱的 assert | 只提供建議，不自動修改可信檔案 |
-| 更強的隔離 | 以 gVisor / Firecracker / 容器 per-run 執行 | 沙箱種類記錄於報告 |
+| Frama-C/WP + ACSL | `leanc/backends/wp/`、`leanc/rules/acsl.py`、`leanc/toolchain/framac.py`；契約在受保護標頭；`-wp-rte`、smoke test、停用快取；證明修復（AI 加 loop invariant） | 唯一能產生 `PROVED` 的途徑 |
+| Lean 4（可選） | `leanc/backends/lean/`、`leanc/rules/lean_rules.py`、`leanc/toolchain/lean.py`；受保護模型與定理敘述、AI 撰寫證明、kernel + `leanchecker`、只接受標準公理、沙箱執行、差分測試向量 | 模型層級；未證明 → `UNKNOWN`；向量不符 → `RUNTIME_TEST_FAILED`；不會產生 `PROVED` |
+| C++20 | `leanc/toolchain/cxx.py`、`leanc/rules/cpp_rules/`、`leanc/lang/cpp_lexer.py`；clang++ 編譯 / 分析 / sanitizer；C++ 專屬完整性規則（禁止例外、RTTI、coroutine、全域建構子、取代 `operator new`、寫入 `std` …） | 沒有可用的 C++ model checker → 最佳 `UNKNOWN` |
+
+## 之後（V3 方向，未實作）
+
+| 項目 | 方向 |
+|---|---|
+| C++ 形式化關卡 | ESBMC（clang 前端，支援現代 C++）。在本環境中執行下載的 ESBMC 執行檔未獲許可，因此尚未整合 |
+| 多 TU 靜態分析 | Clang CTU |
+| Harness / 契約審查輔助 | 覆蓋率、變異測試評估 harness 與 ACSL 契約強度 |
+| 更強的隔離 | gVisor / Firecracker / 每次執行一個容器 |
 
 ## 已知限制（V1）
 
-* `VERIFIED_BOUNDED` 只涵蓋 harness 所描述的輸入空間與界限，不是無界證明。
+* `VERIFIED_BOUNDED` 只涵蓋 harness 所描述的輸入空間與界限，不是無界證明；`PROVED` 只涵蓋已批准的 ACSL 契約。
 * 規格品質取決於人工審查；Lean C 能檢查「程式是否符合 harness」，不能檢查「harness 是否符合需求」。
 * 修復政策是文字層級的縱深防禦，不是完整的語意分析。
 * CBMC 對大型迴圈、複雜指標結構、浮點數可能很慢；以逾時回報 `TIMEOUT`，不會假裝成功。

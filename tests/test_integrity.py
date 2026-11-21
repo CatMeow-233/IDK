@@ -1,11 +1,3 @@
-"""Mandatory source-integrity gate (leanc.backends.integrity) and the shared
-absolute source rules used by the repair/generation policy.
-
-The fixtures under tests/fixtures/integrity/ are the reviewers' confirmed
-bypasses (each produced a false VERIFIED_BOUNDED before this gate existed)
-plus a few honest-but-buggy controls that must *not* be flagged here (the
-verifiers catch their bugs)."""
-
 from __future__ import annotations
 
 import json
@@ -15,20 +7,22 @@ import pytest
 
 from leanc.backends import integrity
 from leanc.backends.clang import run_compile
-from leanc.backends.integrity import (
-    ALLOWED_IMPORTS,
+from leanc.backends.integrity import run_integrity
+from leanc.foundation.status import Outcome, Status
+from leanc.lang.c_lexer import CSource
+from leanc.repair.policy import check_candidate, check_generated
+from leanc.rules.c_names import ALLOWED_IMPORTS
+from leanc.rules.c_rules import (
     RULES,
     check_object_symbols,
     parse_nm,
     preprocessed_violations,
-    run_integrity,
     section_violations,
-    source_violations,
 )
-from leanc.core.context import VerifyOptions, make_context
-from leanc.core.status import Outcome, Status
-from leanc.repair.policy import CSource, check_candidate, check_generated
+from leanc.rules.definitions import defined_functions
+from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
+from leanc.toolchain.context import VerifyOptions, make_context
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -37,36 +31,34 @@ FIX = Path(__file__).resolve().parent / "fixtures" / "integrity"
 SAFE = ("safe_array_get", "src/safe_array.c")
 RATIO = ("div_by_zero", "src/safe_ratio.c")
 
-#: fixture, (example, editable path), rules that must be reported (by the gate AND by the policy)
 REPROS = [
-    ("cand_assertfail.c", SAFE, {"SYMBOL_OVERRIDE"}),  # body for __assert_fail
-    ("cand_nondet.c", SAFE, {"SYMBOL_OVERRIDE", "CPROVER_BUILTIN"}),  # body for nondet_size_t (+ weak ref)
-    ("cand_pragma.c", SAFE, {"OBFUSCATION"}),  # _Pragma(#x) -> CPROVER check disable
+    ("cand_assertfail.c", SAFE, {"SYMBOL_OVERRIDE"}),
+    ("cand_nondet.c", SAFE, {"SYMBOL_OVERRIDE", "CPROVER_BUILTIN"}),
+    ("cand_pragma.c", SAFE, {"OBFUSCATION"}),
     ("cand_pragma2.c", SAFE, {"OBFUSCATION"}),
-    ("cand_clang.c", SAFE, {"TOOL_DIVERGENCE"}),  # #ifdef __clang__
-    ("cand_opt.c", SAFE, {"TOOL_DIVERGENCE"}),  # #ifdef __OPTIMIZE__
-    ("cand_exit.c", SAFE, {"TERMINATION"}),  # exit(0)
+    ("cand_clang.c", SAFE, {"TOOL_DIVERGENCE"}),
+    ("cand_opt.c", SAFE, {"TOOL_DIVERGENCE"}),
+    ("cand_exit.c", SAFE, {"TERMINATION"}),
     ("cand_vac_sa.c", SAFE, {"TERMINATION"}),
-    ("cand_leak.c", SAFE, {"CONSTRUCTOR", "TERMINATION"}),  # constructor + atexit(_exit)
+    ("cand_leak.c", SAFE, {"CONSTRUCTOR", "TERMINATION"}),
     ("cand_atexit.c", SAFE, {"CONSTRUCTOR", "TERMINATION"}),
-    ("cand_vacmacro.c", SAFE, {"TOOL_DIVERGENCE", "TERMINATION"}),  # #if defined(__CPROVER__) && !LEANC_VACUITY
+    ("cand_vacmacro.c", SAFE, {"TOOL_DIVERGENCE", "TERMINATION"}),
     ("reqs_cheat.c", SAFE, {"TOOL_DIVERGENCE", "CONSTRUCTOR", "SYMBOL_OVERRIDE", "TERMINATION"}),
     ("reqs_div.c", SAFE, {"TOOL_DIVERGENCE"}),
     ("sec_af.c", RATIO, {"SYMBOL_OVERRIDE"}),
     ("sec_a1_src.c", RATIO, {"TOOL_DIVERGENCE"}),
-    ("sec_a2_src.c", RATIO, {"SYMBOL_OVERRIDE", "CPROVER_BUILTIN"}),  # body for nondet_int
+    ("sec_a2_src.c", RATIO, {"SYMBOL_OVERRIDE", "CPROVER_BUILTIN"}),
     ("sec_a3.c", RATIO, {"SYMBOL_OVERRIDE", "CONSTRUCTOR", "TERMINATION"}),
-    ("sec_vf.c", RATIO, {"CPROVER_BUILTIN"}),  # weak __VERIFIER_assume
-    ("sec_ab.c", RATIO, {"TERMINATION"}),  # abort() == assume(false) in CBMC
-    ("sec_a4.c", ("null_deref", "src/sensor.c"), {"LINE_DIRECTIVE"}),  # '# 1 "src/sensor.c" 3'
+    ("sec_vf.c", RATIO, {"CPROVER_BUILTIN"}),
+    ("sec_ab.c", RATIO, {"TERMINATION"}),
+    ("sec_a4.c", ("null_deref", "src/sensor.c"), {"LINE_DIRECTIVE"}),
     ("sec_a5.c", ("runtime_memory", "src/join.c"), {"CONSTRUCTOR", "TERMINATION"}),
 ]
-#: rules only the object/preprocessed levels can see
 GATE_EXTRA = {
-    "cand_nondet.c": {"DANGEROUS_IMPORT"},  # weak undefined any_size
+    "cand_nondet.c": {"DANGEROUS_IMPORT"},
     "sec_a2_src.c": {"DANGEROUS_IMPORT"},
-    "sec_vf.c": {"DANGEROUS_IMPORT"},  # weak undefined __VERIFIER_assume
-    "cand_pragma.c": {"PRAGMA"},  # '#pragma CPROVER check disable' after expansion
+    "sec_vf.c": {"DANGEROUS_IMPORT"},
+    "cand_pragma.c": {"PRAGMA"},
     "cand_pragma2.c": {"PRAGMA"},
 }
 CONTROLS = [("cand_leak_ctl.c", SAFE), ("sec_af_noovr.c", RATIO), ("sec_a2_bug_only.c", RATIO)]
@@ -91,7 +83,6 @@ def _shipped(example: str, rel: str) -> str:
     return (EXAMPLES / example / rel).read_text()
 
 
-# ============================================================================ reviewer repros
 @pytest.mark.parametrize("fixture, where, expected", REPROS, ids=[r[0] for r in REPROS])
 def test_repro_fails_the_gate(example_copy, needs_clang, tmp_path, fixture, where, expected):
     example, rel = where
@@ -124,19 +115,17 @@ def test_repro_rejected_by_policy(fixture, where, expected):
 
 @pytest.mark.parametrize("fixture, where", CONTROLS, ids=[c[0] for c in CONTROLS])
 def test_honest_buggy_controls_pass_the_gate(example_copy, needs_clang, tmp_path, fixture, where):
-    """Wrong but honest code is the verifiers' business, not this gate's."""
     example, rel = where
     res, spec, _ = _gate(example_copy, tmp_path, example, {rel: (FIX / fixture).read_text()})
     assert res.outcome is Outcome.PASS, [d.message for d in res.diagnostics]
     assert source_violations(spec, rel, (FIX / fixture).read_text()) == []
 
 
-# ============================================================================ no false positives
 def _accepted_rounds(ex: Path) -> list[dict[str, str]]:
     out = []
     for r in sorted((ex / "mock" / "repair").glob("round-*.json")):
         if ex.name == "cheating_repair" and r.name in {f"round-{i}.json" for i in range(1, 5)}:
-            continue  # deliberate cheats
+            continue
         files = json.loads(r.read_text()).get("files") or {}
         if files:
             out.append(files)
@@ -149,7 +138,7 @@ def _legit_sets() -> list[tuple[str, str, dict[str, str]]]:
         spec = load_spec(ex / "spec.yaml")
         src = {rel: (ex / rel).read_text() for rel in spec.sources.editable if (ex / rel).is_file()}
         gen = {rel: (ex / "mock/generate" / rel).read_text() for rel in spec.sources.editable
-               if (ex / "mock/generate" / rel).is_file()}  # fmt: skip
+               if (ex / "mock/generate" / rel).is_file()}
         if src:
             sets.append((f"{ex.name}:src", ex.name, src))
         if gen:
@@ -196,7 +185,6 @@ def test_pass_details_record_what_was_checked(example_copy, needs_clang, tmp_pat
     assert res.invocations and all(i.tool in ("clang", "nm", "readelf") for i in res.invocations)
 
 
-# ============================================================================ gate behaviour
 def test_macro_built_termination_is_seen_after_expansion(example_copy, needs_clang, tmp_path):
     text = _shipped(*SAFE).replace(
         '#include "safe_array.h"\n', '#include <stdlib.h>\n#include "safe_array.h"\n#define QUIT(c) ex##it(c)\n'
@@ -206,7 +194,7 @@ def test_macro_built_termination_is_seen_after_expansion(example_copy, needs_cla
     term = [d for d in res.diagnostics if d.rule_id == "TERMINATION"]
     assert res.outcome is Outcome.FAIL and term
     assert any("after macro expansion" in d.message for d in term)
-    assert any("imports 'exit'" in d.message for d in term)  # object level
+    assert any("imports 'exit'" in d.message for d in term)
 
 
 def test_object_level_symbol_rules(example_copy, needs_clang, tmp_path):
@@ -237,7 +225,6 @@ def test_missing_tools_are_tool_errors_not_passes(example_copy, needs_clang, tmp
     res = run_integrity(ctx)
     assert res.outcome is Outcome.ERROR and res.status is Status.TOOL_ERROR
     assert "nm" in res.summary and "readelf" in res.summary
-    # definite evidence still wins over missing tools
     (ctx.snapshot_dir / SAFE[1]).write_text((FIX / "cand_exit.c").read_text())
     res = run_integrity(ctx)
     assert res.outcome is Outcome.FAIL and "TERMINATION" in _rules(res) and "could not run" in res.summary
@@ -247,11 +234,10 @@ def test_missing_object_is_a_tool_error(example_copy, needs_clang, tmp_path):
     root = example_copy(SAFE[0])
     spec = load_spec(root / "spec.yaml")
     ctx = make_context(spec, root, tmp_path / "run", VerifyOptions())
-    res = run_integrity(ctx)  # compile gate never ran
+    res = run_integrity(ctx)
     assert res.outcome is Outcome.ERROR and "compile gate" in res.summary
 
 
-# ============================================================================ pure functions
 @pytest.fixture(scope="module")
 def spec():
     return load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
@@ -377,7 +363,7 @@ def test_preprocessed_scan_on_synthetic_output():
     )
     vs = preprocessed_violations("src/x.c", pp)
     got = {(v.rule, v.line) for v in vs}
-    assert got == {("PRAGMA", 3), ("TERMINATION", 10)}, vs  # header lines are not attributed to the file
+    assert got == {("PRAGMA", 3), ("TERMINATION", 10)}, vs
     assert all("after macro expansion" in v.message for v in vs)
 
 
@@ -408,7 +394,7 @@ def test_check_object_symbols_unit(spec):
         "__VERIFIER_assume": "DANGEROUS_IMPORT",
         "nondet_int": "CPROVER_BUILTIN",
     }, vs
-    assert len(vs) == 8  # memcpy, malloc, __udivti3, ring_count, the target and the static helper are fine
+    assert len(vs) == 8
     assert {"memcpy", "malloc", "free", "__assert_fail"} <= ALLOWED_IMPORTS
 
 
@@ -434,8 +420,6 @@ def test_policy_reports_integrity_rules_without_duplicates(spec):
 
 
 def test_defined_functions_helper():
-    from leanc.backends.integrity import defined_functions
-
     src = CSource(
         "int f(int x);\nstatic int g(void) { return f(1); }\n"
         "__attribute__((constructor)) static void c(void) { }\nint (h)(void);\nint k(void) [[gnu::used]] { return 0; }\n"

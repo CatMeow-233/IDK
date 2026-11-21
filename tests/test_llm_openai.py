@@ -1,7 +1,3 @@
-"""OpenAICompatProvider against a threaded local fake ``/chat/completions``
-server, plus the prompts it sends.  No external network: the server listens on
-127.0.0.1 and the provider bypasses the environment's proxies (proxy="none")."""
-
 from __future__ import annotations
 
 import json
@@ -17,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from leanc.core.errors import ProviderError
-from leanc.core.models import (
+from leanc.foundation.errors import ProviderError
+from leanc.foundation.models import (
     CounterexampleInput,
     Diagnostic,
     FailureReport,
@@ -26,7 +22,7 @@ from leanc.core.models import (
     StageResult,
     VerificationResult,
 )
-from leanc.core.status import Outcome, Status
+from leanc.foundation.status import Outcome, Status
 from leanc.llm.base import CodeGenRequest, RepairRequest, SpecDraftRequest
 from leanc.llm.openai_compat import OpenAICompatProvider
 from leanc.llm.prompts import (
@@ -45,11 +41,10 @@ EXAMPLE = REPO / "examples" / "safe_array_get"
 KEY = "sk-test-" + "Zq9x" * 8
 
 
-# ------------------------------------------------------------------ fake server
 @dataclass
 class Reply:
     status: int = 200
-    body: Any = None  # dict -> JSON, str/bytes -> raw
+    body: Any = None
     headers: dict[str, str] = field(default_factory=dict)
     delay: float = 0.0
 
@@ -68,6 +63,7 @@ class FakeLLM:
     def __init__(self) -> None:
         self.script: list[Reply] = []
         self.requests: list[dict[str, Any]] = []
+        self.replies_abandoned_by_client = 0
         self.lock = threading.Lock()
 
     def push(self, *replies: Reply) -> None:
@@ -75,8 +71,8 @@ class FakeLLM:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:  # noqa: N802 - http.server API
-        fake: FakeLLM = self.server.fake  # type: ignore[attr-defined]
+    def do_POST(self) -> None:
+        fake: FakeLLM = self.server.fake
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         with fake.lock:
             fake.requests.append(
@@ -106,10 +102,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError):  # client gave up (timeout test)
-            pass
+        except (BrokenPipeError, ConnectionResetError):
+            fake.replies_abandoned_by_client += 1
 
-    def log_message(self, *args: Any) -> None:  # keep test output clean
+    def log_message(self, *args: Any) -> None:
         pass
 
 
@@ -117,12 +113,12 @@ class _Handler(BaseHTTPRequestHandler):
 def fake():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     server.daemon_threads = True
-    server.fake = FakeLLM()  # type: ignore[attr-defined]
+    server.fake = FakeLLM()
     t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     t.start()
-    server.fake.url = f"http://127.0.0.1:{server.server_address[1]}"  # type: ignore[attr-defined]
+    server.fake.url = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        yield server.fake  # type: ignore[attr-defined]
+        yield server.fake
     finally:
         server.shutdown()
         server.server_close()
@@ -199,7 +195,6 @@ def vresult() -> VerificationResult:
 GOOD_FILES = {"files": {"src/safe_array.c": "#include \"safe_array.h\"\nint safe_array_get(const int *a, size_t n, size_t i, int *o) { return 0; }\n"}, "notes": "ok"}
 
 
-# ------------------------------------------------------------------ request shape
 def test_generate_code_request_body_and_headers(fake, make, spec):
     fake.push(Reply(body=chat(json.dumps(GOOD_FILES))))
     prov = make()
@@ -218,7 +213,7 @@ def test_generate_code_request_body_and_headers(fake, make, spec):
     system, user = (m["content"] for m in body["messages"])
     assert "C17" in system and "__CPROVER_" in system and '"files"' in system and '"notes"' in system
     assert "src/safe_array.c" in user and spec.target.signature in user
-    assert "SAFE_ARRAY_ERR_RANGE" in user  # protected header content is shown
+    assert "SAFE_ARRAY_ERR_RANGE" in user
     assert prov.info.model_dump() == {"name": "openai-compatible", "model": "test-model", "real_llm": True}
 
 
@@ -230,7 +225,7 @@ def test_json_mode_temperature_and_max_tokens(fake, make, spec):
     gen, expl = (r["body"] for r in fake.requests)
     assert gen["response_format"] == {"type": "json_object"} and gen["max_tokens"] == 512
     assert "temperature" not in gen
-    assert "response_format" not in expl  # free-text answers are not forced into JSON
+    assert "response_format" not in expl
 
 
 def test_repair_prompt_states_hard_rules_and_parses_answer(fake, make, spec):
@@ -260,7 +255,7 @@ def test_repair_prompt_states_hard_rules_and_parses_answer(fake, make, spec):
     for path in ("harness/safe_array_get_harness.c", "include/safe_array.h", "tests/test_safe_array_get.c"):
         assert path in user
     assert "idx=3" in user and "len=3" in user and "unused variable" in user and "earlier attempt reverted" in user
-    assert re.search(r"^\s*>\s*9 \| ", user, re.M)  # numbered excerpt around the counterexample location
+    assert re.search(r"^\s*>\s*9 \| ", user, re.M)
     assert "Repair round 1" in user
 
 
@@ -282,7 +277,7 @@ def test_spec_draft_round_trip(fake, make):
     assert d.spec_yaml == FEW_SHOT_SPEC_YAML and d.harness_c.endswith("\n") and d.tests_c is None
     system, user = (m["content"] for m in fake.requests[0]["body"]["messages"])
     assert "UNTRUSTED" in system and "leanc spec approve" in system
-    assert "verification: object (required)" in system  # schema summary derived from the model
+    assert "verification: object" in system
     assert '"spec_yaml"' in system and '"harness_c"' in system and '"tests_c"' in system
     assert "spec_id: safe-array-get" in user and "clamp an int" in user and "UNTRUSTED" in user
 
@@ -293,13 +288,12 @@ def test_content_parts_form_is_accepted(fake, make, spec):
     assert make().generate_code(codegen_req(spec)).files == GOOD_FILES["files"]
 
 
-# ------------------------------------------------------------------ retries
 def test_retry_500_then_200(fake, make, spec, sleeps):
     fake.push(Reply(500, {"error": {"message": "boom"}}), Reply(body=chat(json.dumps(GOOD_FILES))))
     out = make(backoff_s=0.5).generate_code(codegen_req(spec))
     assert out.files == GOOD_FILES["files"]
     assert len(fake.requests) == 2 and sleeps == [0.5]
-    assert fake.requests[0]["raw"] == fake.requests[1]["raw"]  # identical retry
+    assert fake.requests[0]["raw"] == fake.requests[1]["raw"]
 
 
 def test_retry_after_header_is_honoured_and_capped(fake, make, spec, sleeps):
@@ -339,7 +333,6 @@ def test_timeout_is_retried_and_reported(fake, make, spec, sleeps):
     assert "after 2 attempt(s)" in str(ei.value) and len(fake.requests) == 2 and len(sleeps) == 1
 
 
-# ------------------------------------------------------------------ errors and secrets
 def test_401_is_not_retried_and_never_leaks_the_key(fake, make, spec, tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     fake.push(Reply(401, {"error": {"message": f"Incorrect API key provided: {KEY}", "code": "invalid_api_key"}}))
@@ -383,7 +376,7 @@ def test_redirects_are_not_followed(fake, make, spec):
     fake.push(Reply(302, b"", headers={"Location": fake.url + "/elsewhere"}), Reply(body=chat(json.dumps(GOOD_FILES))))
     with pytest.raises(ProviderError, match="redirect"):
         make().generate_code(codegen_req(spec))
-    assert len(fake.requests) == 1  # Authorization was not re-sent anywhere
+    assert len(fake.requests) == 1
 
 
 def test_transcripts_are_written_and_redacted(fake, make, spec, tmp_path, monkeypatch):
@@ -419,7 +412,6 @@ def test_transcript_numbering_skips_existing_files(fake, make, spec, tmp_path):
     assert (tmp_path / "llm" / "001-generate.json").read_text() == "{}"
 
 
-# ------------------------------------------------------------------ configuration
 def test_from_env_errors_are_actionable():
     with pytest.raises(ProviderError, match="LEANC_MODEL is not set"):
         OpenAICompatProvider.from_env(environ={})
@@ -484,10 +476,9 @@ def test_base_url_validation():
     with pytest.raises(ProviderError, match="timeout"):
         OpenAICompatProvider("https://llm.example.com/v1", KEY, "m", timeout_s=0)
     with pytest.raises(ProviderError, match="proxy"):
-        OpenAICompatProvider("https://llm.example.com/v1", KEY, "m", proxy="socks")  # type: ignore[arg-type]
+        OpenAICompatProvider("https://llm.example.com/v1", KEY, "m", proxy="socks")
 
 
-# ------------------------------------------------------------------ prompt construction
 def test_schema_summary_is_derived_from_the_model():
     s = spec_schema_summary()
     for needle in ("spec_id: string (required)", "unwind: integer (>=1, <=100000) = 10", "harness: string (required)",

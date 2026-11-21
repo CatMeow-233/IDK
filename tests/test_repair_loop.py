@@ -1,29 +1,25 @@
-"""Repair loop: policy enforcement, cycle detection, regression revert, write-back
-and REPAIR_EXHAUSTED, using a scripted in-process provider and the real toolchain."""
-
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from leanc.core.context import VerifyOptions
-from leanc.core.controller import verify
-from leanc.core.models import ProviderInfo
-from leanc.core.status import Status
-from leanc.core.workspace import Workspace
+from leanc.foundation.models import ProviderInfo, VerificationResult
+from leanc.foundation.status import Status
+from leanc.foundation.workspace import Workspace
 from leanc.llm.base import RepairProposal
-from leanc.repair.loop import is_improvement, repair_loop
+from leanc.pipeline.controller import verify
+from leanc.pipeline.repair_loop import is_improvement, repair_loop
+from leanc.repair.patch import make_unified_diff
 from leanc.specs.approval import approve_spec
 from leanc.specs.loader import load_spec
+from leanc.toolchain.context import VerifyOptions
 
 GOOD = (Path(__file__).resolve().parent.parent / "examples/safe_array_get/src/safe_array.c").read_text()
 BUGGY = GOOD.replace("if (idx >= len) {", "if (idx > len) {")
 
 
 class ScriptedProvider:
-    """Deterministic in-process stand-in for an LLM (test double, not an LLM)."""
-
     def __init__(self, proposals: list[RepairProposal]):
         self.info = ProviderInfo(name="scripted-test", model=None, real_llm=False)
         self.proposals = proposals
@@ -62,13 +58,13 @@ def test_loop_rejects_cheats_reverts_regressions_and_accepts_real_fix(buggy_proj
         "--- a/harness/safe_array_get_harness.c\n+++ b/harness/safe_array_get_harness.c\n"
         "@@ -1,1 +1,1 @@\n-/* Trusted CBMC harness for safe_array_get (human-reviewed). */\n+/* weakened */\n"
     )
-    broken = BUGGY.replace("return SAFE_ARRAY_OK;", "return SAFE_ARRAY_OK")  # compile error
+    compile_error = BUGGY.replace("return SAFE_ARRAY_OK;", "return SAFE_ARRAY_OK")
     provider = ScriptedProvider(
         [
             RepairProposal(root_cause="r1", rationale="cheat", files=files(cheat)),
             RepairProposal(root_cause="r2", rationale="edit harness", patch=harness_edit),
             RepairProposal(root_cause="r3", rationale="noop", files=files(BUGGY)),
-            RepairProposal(root_cause="r4", rationale="regression", files=files(broken)),
+            RepairProposal(root_cause="r4", rationale="regression", files=files(compile_error)),
             RepairProposal(root_cause="r5", rationale="fix", files=files(GOOD)),
         ]
     )
@@ -83,13 +79,11 @@ def test_loop_rejects_cheats_reverts_regressions_and_accepts_real_fix(buggy_proj
     assert r[3].status_after is Status.COMPILE_ERROR and r[3].reverted
     assert r[4].status_after is Status.VERIFIED_BOUNDED and not r[4].reverted
     assert r[4].fixed_failures, "the fixed counterexample must be listed"
-    # history of earlier rounds is passed to the provider
-    assert len(provider.requests[4].history) == 4
+    assert len(provider.requests[4].history) == 4, "earlier rounds are passed to the provider"
     assert provider.requests[4].failures, "counterexample reports are given to the repair agent"
-    # the verified candidate is written back; protected files untouched
     assert (root / "src/safe_array.c").read_text() == GOOD
     assert out.written_back == ["src/safe_array.c"]
-    assert "weakened" not in (root / "harness/safe_array_get_harness.c").read_text()
+    assert "weakened" not in (root / "harness/safe_array_get_harness.c").read_text(), "protected files untouched"
     assert (tmp_path / "rep/repair/round-5/patch.diff").read_text().startswith("--- a/src/safe_array.c")
 
 
@@ -106,7 +100,7 @@ def test_cycle_detection_and_exhaustion_leave_workspace_unchanged(buggy_project,
     out = repair_loop(root / "spec.yaml", spec, root, provider, initial, run_dir=tmp_path / "rep", max_rounds=3)
     assert out.status is Status.REPAIR_EXHAUSTED
     assert len(out.rounds) == 3
-    assert out.rounds[0].reverted  # more failures than before: not an improvement
+    assert out.rounds[0].reverted, "more failures than before is not an improvement"
     assert "cycle" in out.rounds[1].note
     assert "no more proposals" in out.rounds[2].note
     assert (root / "src/safe_array.c").read_text() == BUGGY
@@ -115,18 +109,16 @@ def test_cycle_detection_and_exhaustion_leave_workspace_unchanged(buggy_project,
 
 def test_unrepairable_status_is_not_sent_to_the_provider(example_copy, needs_toolchain, tmp_path):
     root = example_copy("safe_array_get")
-    spec = load_spec(root / "spec.yaml")  # not approved
-    initial = verify(root / "spec.yaml", project_root=root, run_dir=tmp_path / "init", spec=spec)
+    unapproved_spec = load_spec(root / "spec.yaml")
+    initial = verify(root / "spec.yaml", project_root=root, run_dir=tmp_path / "init", spec=unapproved_spec)
     assert initial.status is Status.SPEC_UNAPPROVED
     provider = ScriptedProvider([])
-    out = repair_loop(root / "spec.yaml", spec, root, provider, initial, run_dir=tmp_path / "rep")
+    out = repair_loop(root / "spec.yaml", unapproved_spec, root, provider, initial, run_dir=tmp_path / "rep")
     assert out.status is Status.SPEC_UNAPPROVED
     assert provider.requests == []
 
 
 def test_is_improvement_never_accepts_inconclusive():
-    from leanc.core.models import VerificationResult
-
     before = VerificationResult(run_id="a", status=Status.COUNTEREXAMPLE_FOUND)
     for s in (Status.UNKNOWN, Status.TIMEOUT, Status.TOOL_ERROR, Status.SPEC_UNAPPROVED):
         assert not is_improvement(before, VerificationResult(run_id="b", status=s))
@@ -136,8 +128,6 @@ def test_is_improvement_never_accepts_inconclusive():
 
 
 def test_partial_fix_that_shifts_lines_is_an_improvement(example_copy, needs_toolchain, tmp_path):
-    """Fixing one of two counterexamples while moving the other to a new line
-    number must count as an improvement (failures compared line-insensitively)."""
     root = example_copy("div_by_zero")
     spec = load_spec(root / "spec.yaml")
     approve_spec(spec, "spec.yaml", Workspace(root), approved_by="tester")
@@ -145,9 +135,9 @@ def test_partial_fix_that_shifts_lines_is_an_improvement(example_copy, needs_too
     assert initial.status is Status.COUNTEREXAMPLE_FOUND
     src = (root / "src/safe_ratio.c").read_text()
     lines = src.splitlines(keepends=True)
-    # insert a separate den == 0 guard (3 new lines) before the line that divides
-    idx = next(i for i, ln in enumerate(lines) if "/ den" in ln)
-    guarded = "".join(lines[:idx]) + "    if (den == 0) {\n        return SAFE_RATIO_ERR_DIV_ZERO;\n    }\n" + "".join(lines[idx:])
+    division_line = next(i for i, ln in enumerate(lines) if "/ den" in ln)
+    three_line_guard = "    if (den == 0) {\n        return SAFE_RATIO_ERR_DIV_ZERO;\n    }\n"
+    guarded = "".join(lines[:division_line]) + three_line_guard + "".join(lines[division_line:])
     if "SAFE_RATIO_ERR_DIV_ZERO" not in (root / "include/safe_ratio.h").read_text():
         pytest.skip("example header changed")
     provider = ScriptedProvider([RepairProposal(root_cause="den==0", rationale="guard", files={"src/safe_ratio.c": guarded})])
@@ -161,13 +151,11 @@ def test_partial_fix_that_shifts_lines_is_an_improvement(example_copy, needs_too
 def test_candidate_making_a_gate_inconclusive_is_reverted(buggy_project, tmp_path):
     root, spec = buggy_project
     initial = _initial(root, spec, tmp_path)
-    # an unbounded loop makes CBMC inconclusive (unwinding assertion) while a
-    # definite failure elsewhere keeps the overall status definite
-    sneaky = BUGGY.replace(
+    unwinding_assertion_with_definite_failure_elsewhere = BUGGY.replace(
         "    *out = arr[idx];",
         "    for (size_t k = 0; k < 100; k++) { (void)k; }\n    *out = arr[idx];",
     )
-    provider = ScriptedProvider([RepairProposal(root_cause="x", rationale="hide", files=files(sneaky))])
+    provider = ScriptedProvider([RepairProposal(root_cause="x", rationale="hide", files=files(unwinding_assertion_with_definite_failure_elsewhere))])
     out = repair_loop(root / "spec.yaml", spec, root, provider, initial, run_dir=tmp_path / "rep", max_rounds=1)
     r = out.rounds[0]
     assert r.reverted
@@ -181,7 +169,8 @@ def test_crlf_sources_keep_their_line_endings(example_copy, needs_toolchain, tmp
     spec = load_spec(root / "spec.yaml")
     approve_spec(spec, "spec.yaml", Workspace(root), approved_by="tester")
     initial = verify(root / "spec.yaml", project_root=root, run_dir=tmp_path / "init", spec=spec)
-    provider = ScriptedProvider([RepairProposal(root_cause="r", rationale="fix", files=files(GOOD))])  # LF answer
+    lf_answer = files(GOOD)
+    provider = ScriptedProvider([RepairProposal(root_cause="r", rationale="fix", files=lf_answer)])
     out = repair_loop(root / "spec.yaml", spec, root, provider, initial, run_dir=tmp_path / "rep", max_rounds=1)
     assert out.status is Status.VERIFIED_BOUNDED, out.rounds[0].note
     assert out.rounds[0].lines_added == 1 and out.rounds[0].lines_removed == 1
@@ -196,8 +185,6 @@ def test_max_rounds_zero_keeps_the_real_status(buggy_project, tmp_path):
 
 
 def test_lf_unified_diff_applies_to_crlf_sources(example_copy, needs_toolchain, tmp_path):
-    from leanc.repair.patch import make_unified_diff
-
     root = example_copy("safe_array_get")
     (root / "src/safe_array.c").write_bytes(BUGGY.replace("\n", "\r\n").encode())
     spec = load_spec(root / "spec.yaml")

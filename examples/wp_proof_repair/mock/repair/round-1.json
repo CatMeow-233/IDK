@@ -1,0 +1,7 @@
+{
+  "root_cause": "The implementation is correct (compile, integrity, analyzer, sanitizer tests and CBMC all pass), but Frama-C/WP cannot prove anything about the loop of index_of_max: without a loop invariant WP only knows the loop condition, so the post-conditions in_bounds / is_max / is_first, the runtime-error guards on a[i] and a[best] (mem_access, pointer_value) and 'assigns \\nothing' (the loop has no 'loop assigns', so WP assumes it may write everything) stay unproved. Termination is also unproved (no loop variant).",
+  "rationale": "Proof repair, first step: state the index bounds the loop maintains (1 <= i <= n, 0 <= best < i) and what it writes (loop assigns i, best). These invariants are proof obligations (WP must show they hold initially and are preserved); with them the memory-access and pointer guards, in_bounds and the frame condition become provable. The functional properties is_max / is_first need stronger invariants (next round). No executable code is changed.",
+  "files": {
+    "src/array_max.c": "#include \"array_max.h\"\n\nsize_t index_of_max(const int *a, size_t n)\n{\n    size_t best = 0;\n    /*@ loop invariant 1 <= i <= n;\n        loop invariant 0 <= best < i;\n        loop assigns i, best;\n    */\n    for (size_t i = 1; i < n; i++) {\n        if (a[i] > a[best]) {\n            best = i;\n        }\n    }\n    return best;\n}\n"
+  }
+}
