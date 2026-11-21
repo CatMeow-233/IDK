@@ -26,7 +26,7 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 * **修復迴圈控制**：多回合修復、改善判定、循環偵測、達到上限時 `REPAIR_EXHAUSTED`。
 
 **這些實驗不量測 LLM 的能力。** `--provider mock` 重播固定的 fixture；要評估真實模型，請以
-`--provider openai` 執行並自行記錄模型、溫度與 prompt 版本（`leanc/llm/prompts.py`）。
+`--provider openai` 執行並自行記錄模型、溫度與 prompt 版本（`leanc/llm/prompts/`）。
 
 ## 測試案例對照
 

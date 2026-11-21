@@ -12,7 +12,8 @@ foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < p
 - foundation: none | specs, lang: foundation | rules: foundation specs lang | toolchain: foundation specs
 - reports: foundation | llm: foundation specs | backends: foundation specs lang rules toolchain
 - repair: foundation specs lang rules | pipeline: all below | cli: all
-- shared code -> move DOWN. MUST NOT: upward import, lazy import, re-export shim.
+- shared code -> move DOWN. MUST NOT: upward import, lazy import, cross-package re-export shim.
+- allowed: package `__init__` re-exporting its OWN submodules (split modules keep their import path).
 
 ## errors
 - MUST NOT: bare except, except Exception, except BaseException. sole exception: leanc/cli.py main() -> print traceback, return 70.
