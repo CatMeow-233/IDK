@@ -54,6 +54,8 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 - known gaps (not detected): divergent macro names built by ##; header-defined macros that differ between tools (M_PI); frame size measured per function at -O0.
 - every instrumented build (sanitizer test, ownership trace project+driver, lean vectors) uses build.instrumented_compile_flags: BUILD_FIDELITY_FLAGS after compile.flags.
 - compile.flags MUST NOT carry -fsanitize*/-fno-sanitize* or tool-control options (specs/compile_options.TOOL_CONTROL_PREFIXES; spec validator); cbmc checks = spec.effective_cbmc_checks() (contract.safety included).
+- compile.flags entry = one option, value joined; non-options/-/-- rejected by spec validator; integrity probes `clang -### <entry>` per entry, missing-value diagnostic or unclean probe -> ERROR. cbmc translator, stack checks, codegen_flags rely on this: read entries standalone, no separate-value parsing.
+- stack frame check -include's an anchor function so every codegen run writes .su; no .su -> ERROR. stack checks accept only exit 0 (signal death -> ERROR).
 
 ## check
 - `python -m scripts.constraints` MUST exit 0 (run from repo root; rules from constraints.toml; `--fix` removes comments/docstrings only when the AST is unchanged and no encoding cookie, rewrites the layer block; `--json`).

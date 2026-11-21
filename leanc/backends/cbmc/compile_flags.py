@@ -13,14 +13,10 @@ UNDEFINE_FLAG = "-U"
 INCLUDE_DIR_FLAG = "-I"
 STANDARD_FLAG_PREFIX = "-std="
 LONG_STANDARD_FLAG_PREFIX = "--std="
-LONG_STANDARD_FLAG = "--std"
 ANSI_FLAGS = frozenset({"-ansi", "--ansi"})
 ANSI_STANDARD = "c89"
 CBMC_UNSIGNED_CHAR_FLAG = "--unsigned-char"
 DEFINES_DISABLING_HARNESS_ASSERTIONS = frozenset({"NDEBUG"})
-UNAPPLIED_FLAGS_TAKING_SEPARATE_VALUE = frozenset({"-include", "-imacros", "-isystem", "-iquote", "-idirafter", "-x"})
-SINGLE_FLAG_WIDTH = 1
-FLAG_WITH_SEPARATE_VALUE_WIDTH = 2
 
 C89_MODE = "--c89"
 C99_MODE = "--c99"
@@ -168,17 +164,10 @@ class _Translator:
 
 
 OptionHandler = Callable[[_Translator, str, str], None]
-MACRO_AND_INCLUDE_OPTIONS: dict[str, OptionHandler] = {
+JOINED_OPTIONS: dict[str, OptionHandler] = {
     DEFINE_FLAG: _Translator.define,
     UNDEFINE_FLAG: _Translator.undefine,
     INCLUDE_DIR_FLAG: _Translator.include_dir,
-}
-SEPARATE_VALUE_OPTIONS: dict[str, OptionHandler] = {
-    **MACRO_AND_INCLUDE_OPTIONS,
-    LONG_STANDARD_FLAG: _Translator.select_standard,
-}
-JOINED_OPTIONS: dict[str, OptionHandler] = {
-    **MACRO_AND_INCLUDE_OPTIONS,
     STANDARD_FLAG_PREFIX: _Translator.select_standard,
     LONG_STANDARD_FLAG_PREFIX: _Translator.select_standard,
 }
@@ -201,32 +190,14 @@ def _joined_option(flag: str) -> str | None:
     return None
 
 
-def _translate_flag_at(translator: _Translator, flags: list[str], position: int) -> int:
-    flag = flags[position]
-    value = flags[position + 1] if position + 1 < len(flags) else None
-    if value is not None and flag in SEPARATE_VALUE_OPTIONS:
-        SEPARATE_VALUE_OPTIONS[flag](translator, value, f"{flag} {value}")
-        return FLAG_WITH_SEPARATE_VALUE_WIDTH
-    if value is not None and flag in UNAPPLIED_FLAGS_TAKING_SEPARATE_VALUE:
-        translator.not_applied.append(f"{flag} {value}")
-        return FLAG_WITH_SEPARATE_VALUE_WIDTH
-    translator.flag(flag)
-    return SINGLE_FLAG_WIDTH
-
-
-def _translate_flags(translator: _Translator, flags: list[str]) -> None:
-    position = 0
-    while position < len(flags):
-        position += _translate_flag_at(translator, flags, position)
-
-
 def _spec_define_arg(define: str) -> str:
     return define if define.startswith(DEFINE_FLAG) else DEFINE_FLAG + define
 
 
 def translate_compile_options(compile_config: CompileConfig, standard: str) -> CompileFlagTranslation:
     translator = _Translator(standard=standard)
-    _translate_flags(translator, list(compile_config.flags))
+    for flag in compile_config.flags:
+        translator.flag(flag)
     for define in compile_config.defines:
         translator.macros.define(_spec_define_arg(define), define)
     mode = CBMC_STANDARD_MODES.get(translator.standard)

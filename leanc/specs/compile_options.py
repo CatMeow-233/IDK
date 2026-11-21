@@ -25,10 +25,16 @@ TOOL_CONTROL_PREFIXES = (
     *CODE_LOADING_PREFIXES,
     *TOOLCHAIN_REPLACEMENT_PREFIXES,
 )
+OPTION_PREFIX = "-"
+NON_OPTION_ENTRIES = frozenset({"-", "--"})
 SANITIZER_CONTROL_MESSAGE = "sanitizers are chosen by tests.sanitizers, not compile.flags"
 TOOL_CONTROL_MESSAGE = (
     "compile.flags must not pass options to an internal tool (frontend, analyzer, LLVM, preprocessor, assembler, "
     "linker), read options from a file, load plugins or replace the toolchain"
+)
+NON_OPTION_MESSAGE = (
+    "every compile.flags entry must be one option with its value joined to it (-I<dir>, -D<name>, -std=<standard>); "
+    "input files, '-' and '--' are not options"
 )
 
 WARNING_OPTION_PREFIX = "-W"
@@ -38,6 +44,10 @@ DEBUG_INFO_PREFIX = "-g"
 
 def sanitizer_control_flags(flags: list[str]) -> list[str]:
     return [flag for flag in flags if flag.startswith(SANITIZER_FLAG_PREFIXES)]
+
+
+def non_option_entries(flags: list[str]) -> list[str]:
+    return [flag for flag in flags if not flag.startswith(OPTION_PREFIX) or flag in NON_OPTION_ENTRIES]
 
 
 def tool_control_flags(flags: list[str]) -> list[str]:

@@ -18,7 +18,6 @@ from integrity_support import (
 
 from leanc.backends import integrity
 from leanc.backends.cbmc.compile_flags import (
-    CBMC_ARCHITECTURE_DEFINES,
     cbmc_preprocessor_macro_args,
     translate_compile_options,
 )
@@ -50,11 +49,14 @@ NDEBUG_READ = "#ifndef NDEBUG\n    *out = arr[idx + 1];\n#else\n    *out = arr[i
 NDEBUG_USE_READ = "    *out = arr[idx] + NDEBUG - 1;"
 MIRROR_PROBE = (
     "long v = __STDC_VERSION__; int a = linux; int c = __CPROVER__; int f = FOO; int u = __CHAR_UNSIGNED__;\n"
-    "int lp = __LP64__; int x = __x86_64__;\n"
+    "int lp = __LP64__; int x = __x86_64__; int x1 = __x86_64; int l1 = _LP64; int a1 = __amd64__; int a2 = __amd64;\n"
     "#ifdef BAR\nint bar_defined;\n#endif\n"
     "#ifdef __STRICT_ANSI__\nint strict;\n#endif\n"
 )
-MIRROR_FLAGS = ["-funsigned-char", "-DFOO=3", "-DBAR", "-UBAR", "-O2", "-D__LP64__=0", "-D__x86_64__=7"]
+MIRROR_FLAGS = [
+    "-funsigned-char", "-DFOO=3", "-DBAR", "-UBAR", "-O2",
+    "-D__LP64__=0", "-D__x86_64__=7", "-D__x86_64=0", "-D_LP64=0", "-D__amd64__=0", "-D__amd64=0",
+]
 FRAMA_C_DEFINES = ["LEGACY=2", "-DPLAIN"]
 WP_EXAMPLE_GATES = "gates: [compile, static_analysis, sanitizer, cbmc, wp]"
 WP_ONLY_GATES = "gates: [compile, static_analysis, sanitizer, wp]"
@@ -130,18 +132,19 @@ def test_define_in_compile_flags_reaches_cbmc_so_it_is_no_divergence(example_cop
     assert "-DLEGACY_MODE" in result.details["predefined_macros"]["argv"]["cbmc"]
 
 
-def test_define_only_in_compile_flags_is_a_divergence_for_frama_c(example_copy, needs_clang, tmp_path):
+def test_define_only_in_compile_flags_is_a_divergence_for_frama_c(example_copy, needs_clang, needs_framac, tmp_path):
     source = shipped(WP_EXAMPLE).replace(READ_LINE, LEGACY_MODE_READ)
     result = integrity_gate(example_copy, tmp_path, source, with_flags("-Wall", "-DLEGACY_MODE"), WP_EXAMPLE)
     [found] = [d for d in by_rule(result, "TOOL_DIVERGENCE") if "'LEGACY_MODE'" in d.message]
     assert "for Frama-C" in found.message and result.outcome is Outcome.FAIL
 
 
-def test_define_in_compile_defines_reaches_both_verifiers(example_copy, needs_clang, tmp_path):
+def test_define_in_compile_defines_reaches_both_verifiers(example_copy, needs_clang, needs_framac, tmp_path):
     source = shipped(WP_EXAMPLE).replace(READ_LINE, LEGACY_MODE_READ)
     edits = {DEFAULT_FLAGS: f"{DEFAULT_FLAGS}\n  defines: [LEGACY_MODE]"}
     result = integrity_gate(example_copy, tmp_path, source, edits, WP_EXAMPLE)
-    assert not by_rule(result, "TOOL_DIVERGENCE"), result.summary
+    assert result.outcome is Outcome.PASS, result.summary
+    assert result.details["predefined_macros"]["checked"] is True
 
 
 def test_cbmc_preprocessing_standard_differs_from_the_compile_gate(example_copy, needs_clang, tmp_path):
@@ -154,7 +157,8 @@ def test_cbmc_preprocessing_standard_differs_from_the_compile_gate(example_copy,
 def test_cbmc_macro_environment_mirrors_cbmc_preprocessor_command():
     compile_config = CompileConfig(flags=["-funsigned-char", "-DA=1", "-UA", "-DB", "-O2"], defines=["NDEBUG", "C"])
     assert cbmc_preprocessor_macro_args(compile_config, "c99") == [
-        "-D__CPROVER__", "-m64", "-funsigned-char", "-std=gnu99", "-DB", "-DC", *CBMC_ARCHITECTURE_DEFINES
+        "-D__CPROVER__", "-m64", "-funsigned-char", "-std=gnu99", "-DB", "-DC",
+        "-D__LP64__", "-D__x86_64", "-D__x86_64__", "-D_LP64", "-D__amd64__", "-D__amd64",
     ]
     assert cbmc_preprocessor_macro_args(CompileConfig(), "c2x")[:3] == ["-D__CPROVER__", "-m64", "-std=gnu11"]
 
@@ -222,6 +226,7 @@ def _frama_c_real_macro_dump(tmp_path, frama_c: str, defines: list[str]) -> str:
 
 
 def test_frama_c_mirror_predefines_exactly_like_frama_c(tmp_path, needs_framac):
+    assert shutil.which("gcc"), "gcc is required wherever Frama-C runs"
     frama_c = find_framac().frama_c
     builtin = tmp_path / "builtin_macros.h"
     printed = subprocess.run([frama_c, *PRINT_BUILTIN_MACROS_ARGS], capture_output=True, text=True, check=True)
@@ -239,7 +244,9 @@ def test_frama_c_mirror_predefines_exactly_like_frama_c(tmp_path, needs_framac):
 
 
 @pytest.mark.parametrize("name", sorted(FRAMA_C_MACHDEP_MACRO_READS))
-def test_frama_c_machdep_macro_branch_is_rejected_for_wp_only_specs(example_copy, tmp_path, needs_framac, name):
+def test_frama_c_machdep_macro_branch_is_rejected_for_wp_only_specs(
+    example_copy, tmp_path, needs_clang, needs_framac, name
+):
     source = shipped(WP_EXAMPLE).replace(READ_LINE, FRAMA_C_MACHDEP_MACRO_READS[name])
     result = integrity_gate(example_copy, tmp_path, source, {WP_EXAMPLE_GATES: WP_ONLY_GATES}, WP_EXAMPLE)
     assert result.outcome is Outcome.FAIL, result.summary
@@ -251,3 +258,22 @@ def test_missing_frama_c_is_an_integrity_error_for_wp_specs(example_copy, tmp_pa
     monkeypatch.setattr(builtin_macros, "find_framac", lambda: None)
     result = integrity_gate(example_copy, tmp_path, spec_edits={WP_EXAMPLE_GATES: WP_ONLY_GATES}, example=WP_EXAMPLE)
     assert result.outcome is Outcome.ERROR and FRAMA_C_MISSING in result.summary
+
+
+@pytest.mark.parametrize(
+    "script, reason",
+    [
+        ("#!/bin/sh\nexit 0\n", "(exit 0)"),
+        ("#!/bin/sh\necho '#define __FC_MACHDEP_X86_64 1'\necho 'fatal: machdep error' >&2\nexit 3\n", "(exit 3)"),
+    ],
+    ids=["empty-output", "partial-output-and-failure"],
+)
+def test_failing_frama_c_macro_print_is_an_integrity_error(example_copy, tmp_path, needs_clang, monkeypatch, script, reason):
+    stub = tmp_path / "stub" / "bin" / "frama-c"
+    stub.parent.mkdir(parents=True)
+    stub.write_text(script)
+    stub.chmod(0o755)
+    monkeypatch.setenv("LEANC_FRAMAC", str(stub))
+    result = integrity_gate(example_copy, tmp_path, spec_edits={WP_EXAMPLE_GATES: WP_ONLY_GATES}, example=WP_EXAMPLE)
+    assert result.outcome is Outcome.ERROR, result.summary
+    assert f"frama-c could not print its machdep builtin macros {reason}" in result.summary

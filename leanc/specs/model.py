@@ -9,8 +9,10 @@ from leanc.foundation.errors import WorkspaceError
 from leanc.foundation.text import NUL, has_lone_surrogate
 from leanc.foundation.workspace import normalize_relpath
 from leanc.specs.compile_options import (
+    NON_OPTION_MESSAGE,
     SANITIZER_CONTROL_MESSAGE,
     TOOL_CONTROL_MESSAGE,
+    non_option_entries,
     sanitizer_control_flags,
     tool_control_flags,
 )
@@ -196,13 +198,16 @@ class CompileConfig(_M):
 
     @field_validator("flags")
     @classmethod
-    def _no_tool_control_flags(cls, v: list[str]) -> list[str]:
+    def _only_ordinary_options(cls, v: list[str]) -> list[str]:
         sanitizer_controls = sanitizer_control_flags(v)
         if sanitizer_controls:
             raise ValueError(f"{SANITIZER_CONTROL_MESSAGE}: {sanitizer_controls}")
         tool_controls = tool_control_flags(v)
         if tool_controls:
             raise ValueError(f"{TOOL_CONTROL_MESSAGE}: {tool_controls}")
+        non_options = non_option_entries(v)
+        if non_options:
+            raise ValueError(f"{NON_OPTION_MESSAGE}: {non_options}")
         return v
 
 

@@ -51,7 +51,8 @@ UNBOUNDED_STACK_CHECK_FLAGS: tuple[str, ...] = (
 STACK_FRAME_CHECK_FLAGS: tuple[str, ...] = ("-O0", "-fno-lto", "-fstack-usage", "-Wno-everything", "-S")
 
 _STACK_DIAG_RE = re.compile(
-    r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+: (?:error|warning): (?P<msg>.*?)\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
+    r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+:(?:(?:\{[^}\n]*\})+:)? (?:error|warning): (?P<msg>.*?)"
+    r"\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
     re.MULTILINE,
 )
 _STACK_USAGE_ROW_RE = re.compile(

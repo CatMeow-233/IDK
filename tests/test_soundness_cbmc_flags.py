@@ -54,7 +54,7 @@ def _unapplied_lines(res) -> list[str]:
 
 
 def test_macros_follow_compiler_order_and_undefines_cancel():
-    translation = _translate(["-DA=1", "-D", "B", "-UA", "-UPREDEFINED", "-DC"], defines=["D=4", "-DE"])
+    translation = _translate(["-DA=1", "-DB", "-UA", "-UPREDEFINED", "-DC"], defines=["D=4", "-DE"])
     assert translation.macro_args == ("-DB", "-DC", "-DD=4", "-DE")
     assert translation.not_applied == ("-UPREDEFINED",)
 
@@ -67,16 +67,15 @@ def test_ndebug_from_flags_or_defines_is_dropped_unless_undefined_again():
 
 
 def test_include_paths_char_and_standard_are_forwarded():
-    translation = _translate(["-Iextra", "-I", "more", "-std=gnu99", "-funsigned-char"])
+    translation = _translate(["-Iextra", "-Imore", "-std=gnu99", "-funsigned-char"])
     assert translation.include_args == ("-Iextra", "-Imore")
     assert translation.semantic_args == ("--c99", "--unsigned-char")
     assert translation.standard == "gnu99" and translation.standard_mode.approximation is None
     assert translation.not_applied == () and translation.char_signedness is CharSignedness.UNSIGNED
 
 
-@pytest.mark.parametrize("flags", [["-DTWICE(x)=x", "-UTWICE"], ["-D", "TWICE(x)=x", "-U", "TWICE"]])
-def test_undefine_cancels_a_function_like_define(flags):
-    translation = _translate(flags)
+def test_undefine_cancels_a_function_like_define():
+    translation = _translate(["-DTWICE(x)=x", "-UTWICE"])
     assert translation.macro_args == () and translation.not_applied == ()
 
 
@@ -84,7 +83,7 @@ def test_function_like_ndebug_is_dropped_like_ndebug():
     assert _translate(["-DNDEBUG(x)="]).dropped_defines == ("-DNDEBUG(x)=",)
 
 
-@pytest.mark.parametrize("flags", [["--std=c99"], ["--std", "c99"], ["-std=c11", "--std=c99"]])
+@pytest.mark.parametrize("flags", [["--std=c99"], ["-std=c11", "--std=c99"]])
 def test_long_standard_spellings_select_the_standard(flags):
     translation = _translate(flags, standard="c11")
     assert translation.standard == "c99" and translation.standard_mode.flag == "--c99"
@@ -122,12 +121,17 @@ def test_standards_map_to_cbmc_modes(standard, mode, approximate):
 
 def test_unsupported_standard_and_semantic_flags_are_not_applied():
     flags = ["-Wall", "-Wextra", "-Wpedantic", "-pedantic", "-g", "-std=c2x", "-O2", "-ffast-math", "-mavx2",
-             "-fwrapv", "-m32", "-include", "pre.h", "-isystem", "sys", "-D"]
+             "-fwrapv", "-m32", "-includepre.h", "-isystemsys", "-D"]
     translation = _translate(flags)
     assert translation.no_semantic_effect == ("-Wall", "-Wextra", "-Wpedantic", "-pedantic", "-g")
     assert translation.not_applied == ("-O2", "-ffast-math", "-mavx2", "-fwrapv", "-m32",
-                                       "-include pre.h", "-isystem sys", "-D", "-std=c2x")
+                                       "-includepre.h", "-isystemsys", "-D", "-std=c2x")
     assert translation.standard_mode is None and translation.macro_args == ()
+
+
+def test_every_entry_is_translated_as_an_option_of_its_own():
+    translation = _translate(["-iprefix", "-funsigned-char"])
+    assert translation.char_signedness is CharSignedness.UNSIGNED and translation.not_applied == ("-iprefix",)
 
 
 def test_platform_architecture():
@@ -156,8 +160,6 @@ def test_argv_carries_translated_flags_in_every_mode(tmp_path):
 def test_mutation_macro_flag_reaches_cbmc(tmp_path, needs_cbmc):
     guarded = run_cbmc(_add_project(tmp_path / "defined", [f"-D{GUARD}"], GUARDED_ADD))
     assert guarded.outcome is Outcome.PASS, guarded.summary
-    separate = run_cbmc(_add_project(tmp_path / "separate", ["-D", GUARD], GUARDED_ADD))
-    assert separate.outcome is Outcome.PASS, separate.summary
     undefined = run_cbmc(_add_project(tmp_path / "undefined", [f"-D{GUARD}", f"-U{GUARD}"], GUARDED_ADD))
     assert undefined.outcome is Outcome.FAIL, undefined.summary
 

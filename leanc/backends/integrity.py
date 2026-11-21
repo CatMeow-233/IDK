@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from leanc.backends.clang import define_args, sandbox_visible_path
+from leanc.backends.flag_arity import probe_flag_arity
 from leanc.backends.stack_check import StackCheck
 from leanc.backends.verifier_macros import (
     CLANG_DUMP_LABEL,
@@ -171,6 +172,7 @@ class _IntegrityGate(ABC):
 
     def run(self) -> StageResult:
         self.load_headers()
+        self.check_flag_arity()
         for rel in self.spec.sources.editable:
             self.check_file(rel)
         self.check_symbols_across_files()
@@ -199,6 +201,15 @@ class _IntegrityGate(ABC):
             self.problems.append(f"{what} of {rel} failed ({reason}): {redacted_excerpt(proc.stderr)}")
             return None
         return proc.stdout
+
+    def check_flag_arity(self) -> None:
+        if not self.compiler_path:
+            return
+        probed = probe_flag_arity(self.ctx, self.compiler_path, self.compiler_name, self.limits, STAGE)
+        self.details["flag_arity"] = probed.details(self.compiler_path)
+        self.problems += probed.problems
+        self.timeouts += probed.timeouts
+        self.invocations += probed.invocations
 
     def check_file(self, rel: str) -> None:
         entry: dict[str, Any] = {"source": rel, "checks": [], "argv": {}}

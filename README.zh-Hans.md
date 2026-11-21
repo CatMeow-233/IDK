@@ -66,7 +66,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 可编辑文件 | `sources.editable`：生成与修复唯一能写入的文件 |
 | 批准 | `leanc spec approve` 把规格的语义哈希与每个受保护文件的 SHA-256 绑定进一条记录，并用 `LEANC_HOME`（默认 `~/.config/leanc`）中的密钥签名。任何改动都会导致 `SPEC_UNAPPROVED`，直到重新批准为止，而且 `version` 必须递增。回滚账本会拒绝已被取代的批准 |
 | 规格草案 | `leanc spec draft` 写入 `drafts/<id>/`，并标记为 `provenance: ai-draft`。在人工审查并批准之前，它永远不受信任 |
-| 关卡（gate） | 一个验证阶段：`compile`、`integrity`（强制，每次都运行）、`static_analysis`、`sanitizer`、`cbmc`，V2 另有 `wp`、`lean`。必须每个必需关卡都运行且通过，才算成功 |
+| 关卡（gate） | 一个验证阶段：`compile`、`integrity`（强制；在编译关卡通过后运行）、`static_analysis`、`sanitizer`、`cbmc`，V2 另有 `wp`、`lean`。必须每个必需关卡都运行且通过，才算成功 |
 | 运行（run） | 每次 `generate` / `verify` / `repair` / `run` 都会创建 `.leanc/runs/<run_id>/` |
 
 给所有 agent 的规则：不得修改受保护文件，也不得代替人执行 `spec approve`。批准就是信任边界。
@@ -131,7 +131,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 完整性未通过 | `sanitizer`、`cbmc`、`wp`、`lean` 只在完整性关卡通过后运行，否则为 `SKIPPED`（报告原文：“never executed, model-checked or proved”）；`gates` 不含 `compile` 时同样如此，因为完整性关卡在编译关卡通过后才运行。`static_analysis` 照常运行。状态取自完整性关卡：`FAIL` 得 `STATIC_ANALYSIS_WARNING`，`ERROR` 得 `TOOL_ERROR`，`TIMEOUT` 得 `TIMEOUT`；完整性关卡没有运行时，状态为 `UNKNOWN`。修复循环中，让完整性通过的候选算作进展，即使随后解锁的关卡找到反例，前提是先前已运行的关卡（`compile`、`static_analysis`）没有失去通过、也没有新增失败 |
 | 栈帧大小 | 完整性关卡以 `-fstack-usage` 编译每个可编辑文件（去掉警告控制后的 `compile.flags`，再加 `-O0 -fno-lto`），读取 clang 写出的栈帧大小：超过 1 MiB 的栈帧为 `STACK_FRAME_TOO_LARGE`。clang 没有写出栈用量文件时（例如 `-emit-llvm`），完整性关卡为 `ERROR`。VLA / `alloca` 检查（`UNBOUNDED_STACK`）同样带上 `compile.flags` 编译 |
 | 预定义宏 | 仅适用于含 `cbmc` 或 `wp` 的规格。把 clang 在编译关卡选项（`-std`、`compile.flags`、`compile.defines`）下的预定义宏，与 gcc 在各验证器自身预处理方式下的预定义宏比较。CBMC：`-D__CPROVER__ -m64 -std=gnuNN`、`-funsigned-char`、它收到的 `-D` 定义，然后是它的 x86-64 定义（`__LP64__`、`__x86_64__` 等），顺序与 CBMC 调用 gcc 时相同。Frama-C：`-undef -nostdinc` 加 machdep 的内建宏（`frama-c -print-machdep-builtin-macros`，其中定义了 `unix` 与 `linux`）、`-D__FRAMAC__ -std=c11` 与 `compile.defines`。可编辑代码中用到取值不同的宏即为 `TOOL_DIVERGENCE`。需要 `gcc`，`wp` 还需要 `frama-c`；缺少时完整性关卡为 `ERROR` |
-| `compile.flags` | 拒绝：`-fsanitize*` / `-fno-sanitize*`（sanitizer 由 `tests.sanitizers` 决定），以及把参数交给内部工具或替换工具链的选项：`-X...`（`-Xclang`、`-Xanalyzer`、`-Xlinker` 等）、`-mllvm`、`-Wp,` / `-Wa,` / `-Wl,`、`--analyze...`、`@file`、`--config`、`-fplugin` / `-fpass-plugin`、`-B`、`-resource-dir`、`--sysroot` / `-isysroot`、`--gcc-toolchain`、`-nostdlib` / `-nodefaultlibs` / `-nostartfiles`。静态分析收到其余参数。CBMC 会收到 `-D`、`-I`、`-std=` / `--std` 与 `-funsigned-char`（有符号 `char` 是 CBMC 在 x86 上的默认），但绝不会收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`（函数式宏也一样）；其他 `-U` 会被列为未套用。警告与 `-g` 参数没有语义影响。其余参数（例如 `-O2 -ffast-math -mavx2`）列在假设“compile.flags not applied by CBMC”中；WP 不套用任何 `compile.flags`，并把它们列在“compile.flags not applied by Frama-C”中。判定不变 |
+| `compile.flags` | 每一项都是一个选项，值直接接在选项后面（`-Iinclude`、`-DNAME=1`、`-std=c17`、`-includepre.h`）。规格验证拒绝输入文件、`-` 与 `--`。完整性关卡会询问 clang（`clang -### <项>`）某一项是否把下一项当作自己的值（`-I include`、`-iprefix -funsigned-char`）；这样的项得 `TOOL_ERROR`，因为 CBMC 转换与栈检查把每一项都当作独立选项读取。另外拒绝：`-fsanitize*` / `-fno-sanitize*`（sanitizer 由 `tests.sanitizers` 决定），以及把参数交给内部工具或替换工具链的选项：`-X...`（`-Xclang`、`-Xanalyzer`、`-Xlinker` 等）、`-mllvm`、`-Wp,` / `-Wa,` / `-Wl,`、`--analyze...`、`@file`、`--config`、`-fplugin` / `-fpass-plugin`、`-ccc-*`、`-B`、`-resource-dir` / `--resource-dir`、`--sysroot` / `-isysroot`、`--gcc-toolchain` / `--gcc-install-dir`、`-nostdlib` / `-nodefaultlibs` / `-nostartfiles`。静态分析收到其余参数。CBMC 会收到 `-D`、`-I`、`-std=` / `--std=` 与 `-funsigned-char`（有符号 `char` 是 CBMC 在 x86 上的默认），但绝不会收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`（函数式宏也一样）；其他 `-U` 会被列为未套用。警告与 `-g` 参数没有语义影响。其余参数（例如 `-O2 -ffast-math -mavx2`）列在假设“compile.flags not applied by CBMC”中；WP 不套用任何 `compile.flags`，并把它们列在“compile.flags not applied by Frama-C”中。判定不变 |
 | 无函数体的函数（CBMC） | 允许：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他无函数体的被调函数会使 `cbmc` 无法通过：`<immintrin.h>` 背后的 SIMD builtin，以及完整性关卡允许、但 CBMC 没有模型的 `memchr`、`strnlen`、`strstr`、`fputc`、`putc`。路径用到这类函数返回值的违规是 `unmodelled-callee` 诊断，不是反例；其他违规仍是反例。没有反例时关卡为 `INCONCLUSIVE`（状态 `UNKNOWN`）：把调用改写成普通 C 才能得到判定 |
 | CBMC 内部错误 | 不变式违规报告为 `TOOL_ERROR`（“CBMC internal error”），并附带 File/Condition/Reason 摘录，而不是内存不足提示 |
 | 契约安全检查 | `contract.safety` 中的检查会加入 CBMC 的属性检查；规格哈希不变 |
@@ -342,7 +342,7 @@ python -m scripts.merge_gate                        # 创建或合并 PR 之前�
 
 成功时输出 `MERGE GATE PASS head=<sha> base=<sha>`。合并之前要先获取远端，确认远端基准分支仍等于输出中的 base sha（否则重新运行闸门），然后只合并输出中的 head sha（使用 `expectedHeadSha` 和 merge commit）。之后有任何新 commit，都必须重新运行闸门。
 
-完整测试需要 clang-18、gcc、CBMC、bwrap，以及支持 AVX2 的 x86-64 CPU（两个 SIMD 测试会执行 AVX2 代码）。WP 测试以及 `wp` 规格的完整性测试需要支持 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 测试）；Lean 测试需要 Lean 4。缺少某个工具时相关测试会被跳过，因此合并闸门需要全部工具。
+完整测试需要 clang-18、gcc、CBMC、bwrap，以及支持 AVX2 的 x86-64 CPU（SIMD 测试会执行 AVX2 代码）。WP 测试以及 `wp` 规格的完整性测试需要支持 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 测试）；Lean 测试需要 Lean 4。缺少某个工具时相关测试会被跳过，因此合并闸门需要全部工具。
 
 ## 限制
 

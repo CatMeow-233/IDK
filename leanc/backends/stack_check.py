@@ -21,7 +21,12 @@ from leanc.toolchain.context import BackendContext
 
 STACK_USAGE_DIR = "stack-usage"
 ASSEMBLY_SUFFIX = ".s"
-SUCCESS_EXIT_CODES = (0, None)
+SYNTAX_OUTPUT_SUFFIX = ".syntax"
+INCLUDE_FLAG = "-include"
+OUTPUT_FLAG = "-o"
+ANCHOR_HEADER = "leanc_stack_usage_anchor.h"
+ANCHOR_SOURCE = "void __leanc_stack_usage_anchor(void) {}\n"
+CLEAN_EXIT_CODE = 0
 MAX_UNPARSED_ROWS_SHOWN = 3
 NO_STACK_USAGE = "produced no stack usage (compile.flags stop machine-code generation, e.g. -emit-llvm)"
 
@@ -36,15 +41,18 @@ def _language_args(compiler: str, spec: Spec, include_args: list[str]) -> list[s
     ]
 
 
-def unbounded_stack_argv(compiler: str, spec: Spec, include_args: list[str], rel: str) -> list[str]:
-    return [*_language_args(compiler, spec, include_args), *UNBOUNDED_STACK_CHECK_FLAGS, rel]
+def unbounded_stack_argv(compiler: str, spec: Spec, include_args: list[str], rel: str, assembly: Path) -> list[str]:
+    syntax_output = sandbox_visible_path(assembly.with_suffix(SYNTAX_OUTPUT_SUFFIX))
+    return [*_language_args(compiler, spec, include_args), *UNBOUNDED_STACK_CHECK_FLAGS, OUTPUT_FLAG, syntax_output, rel]
 
 
 def stack_frame_argv(compiler: str, spec: Spec, include_args: list[str], rel: str, assembly: Path) -> list[str]:
     return [
         *_language_args(compiler, spec, include_args),
         *STACK_FRAME_CHECK_FLAGS,
-        "-o",
+        INCLUDE_FLAG,
+        sandbox_visible_path(stack_usage_anchor_path(assembly)),
+        OUTPUT_FLAG,
         sandbox_visible_path(assembly),
         rel,
     ]
@@ -52,6 +60,10 @@ def stack_frame_argv(compiler: str, spec: Spec, include_args: list[str], rel: st
 
 def stack_assembly_path(build_dir: Path, rel: str) -> Path:
     return build_dir / STACK_USAGE_DIR / (safe_name(rel) + ASSEMBLY_SUFFIX)
+
+
+def stack_usage_anchor_path(assembly: Path) -> Path:
+    return assembly.parent / ANCHOR_HEADER
 
 
 @dataclass
@@ -77,7 +89,8 @@ class StackCheck:
         include_args = self.ctx.include_args()
         assembly = stack_assembly_path(self.ctx.build_dir, rel)
         assembly.parent.mkdir(parents=True, exist_ok=True)
-        outcome.argv["stack"] = unbounded_stack_argv(self.compiler, self.ctx.spec, include_args, rel)
+        stack_usage_anchor_path(assembly).write_text(ANCHOR_SOURCE, encoding="utf-8")
+        outcome.argv["stack"] = unbounded_stack_argv(self.compiler, self.ctx.spec, include_args, rel, assembly)
         outcome.argv["stack_frames"] = stack_frame_argv(self.compiler, self.ctx.spec, include_args, rel, assembly)
         unbounded_checked = self.check_unbounded(outcome, rel)
         frames_checked = self.check_frames(outcome, rel, assembly)
@@ -101,7 +114,7 @@ class StackCheck:
             return False
         found = unbounded_stack_violations(rel, proc.stderr, reason=self.unbounded_reason)
         outcome.violations += found
-        if proc.exit_code not in SUCCESS_EXIT_CODES and not found:
+        if proc.exit_code != CLEAN_EXIT_CODE and not found:
             outcome.problems.append(
                 f"stack check of {rel} failed (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"
             )
@@ -113,7 +126,7 @@ class StackCheck:
         if proc is None:
             return False
         usage_file = stack_usage_path(assembly)
-        if proc.exit_code not in SUCCESS_EXIT_CODES or not usage_file.is_file():
+        if proc.exit_code != CLEAN_EXIT_CODE or not usage_file.is_file():
             outcome.problems.append(
                 f"stack-frame check of {rel} {NO_STACK_USAGE} (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"
             )
