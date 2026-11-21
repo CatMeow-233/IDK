@@ -1,4 +1,4 @@
-"""Architecture rules: strict layering, no import cycles, no comments, one-line docstrings."""
+"""Architecture rules: strict layering, no import cycles, no comments, one-line docstrings, no bug-masking handlers."""
 
 from __future__ import annotations
 
@@ -165,3 +165,71 @@ def test_docstrings_are_single_line():
                 if doc is not None and "\n" in doc.strip():
                     offenders.append(f"{path.relative_to(REPO)}:{getattr(node, 'lineno', 1)}")
     assert not offenders, f"{len(offenders)} multi-line docstring(s):\n" + "\n".join(offenders[:200])
+
+
+CATCH_ALL_TYPES = frozenset({"Exception", "BaseException"})
+BENIGN_SWALLOWED_TYPES = frozenset(
+    {"ProcessLookupError", "FileNotFoundError", "FileExistsError", "BlockingIOError", "BrokenPipeError"}
+)
+TOP_LEVEL_ENTRY_POINT = ("leanc/cli.py", "main")
+
+
+def _handler_types(handler: ast.ExceptHandler) -> list[str]:
+    if handler.type is None:
+        return ["<bare>"]
+    elements = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return [ast.unparse(element).rpartition(".")[2] for element in elements]
+
+
+def _swallows(handler: ast.ExceptHandler) -> bool:
+    def is_silent(statement: ast.stmt) -> bool:
+        if isinstance(statement, (ast.Pass, ast.Continue)):
+            return True
+        return isinstance(statement, ast.Return) and (
+            statement.value is None or (isinstance(statement.value, ast.Constant) and statement.value.value is None)
+        )
+
+    return all(is_silent(statement) for statement in handler.body)
+
+
+def _enclosing_functions(tree: ast.Module) -> dict[int, str]:
+    owner: dict[int, str] = {}
+    functions = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    for function in functions:
+        for inner in ast.walk(function):
+            owner[id(inner)] = function.name
+    return owner
+
+
+def _handlers(path: Path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    owners = _enclosing_functions(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler):
+            yield node, owners.get(id(node), "<module>")
+
+
+def test_no_catch_all_exception_handlers():
+    offenders = []
+    for path in _python_files(PACKAGE):
+        rel = str(path.relative_to(REPO))
+        for handler, function in _handlers(path):
+            types = set(_handler_types(handler))
+            if not types & (CATCH_ALL_TYPES | {"<bare>"}):
+                continue
+            if (rel, function) == TOP_LEVEL_ENTRY_POINT and "<bare>" not in types:
+                continue
+            offenders.append(f"{rel}:{handler.lineno}: except {', '.join(sorted(types))} in {function}()")
+    assert not offenders, "catch-all handlers hide bugs:\n" + "\n".join(offenders)
+
+
+def test_exceptions_are_never_silently_swallowed():
+    offenders = []
+    for path in _python_files(PACKAGE):
+        for handler, function in _handlers(path):
+            types = set(_handler_types(handler))
+            if _swallows(handler) and not types <= BENIGN_SWALLOWED_TYPES:
+                offenders.append(
+                    f"{path.relative_to(REPO)}:{handler.lineno}: except {', '.join(sorted(types))}: swallowed in {function}()"
+                )
+    assert not offenders, "silently swallowed exceptions:\n" + "\n".join(offenders)
