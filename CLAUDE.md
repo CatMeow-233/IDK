@@ -26,6 +26,8 @@ foundation < specs, lang < rules, toolchain, reports, llm < backends, repair < p
 - protected files (spec, harness, tests driver, headers, lean spec/vectors) never written by generation/repair.
 
 ## check
+- after a change: `python scripts/affected_tests.py --run` (import-graph selection vs HEAD; `--base <rev>` for a branch). MUST pass.
+- full suite only before merge/release or when affected_tests selects all.
 - `python -m pytest tests/test_architecture.py -q` MUST pass.
 - `python -m pytest -q` MUST pass (~9 min; needs clang-18 cbmc bwrap; wp: frama-c>=27 at /opt/opam/*/bin; lean: /opt/lean/*/bin).
 - `python scripts/run_experiments.py` MUST report N/N.
