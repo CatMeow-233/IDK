@@ -1,5 +1,3 @@
-"""Source-level C++ integrity rules: the editable file itself and its macro expansion."""
-
 from __future__ import annotations
 
 import bisect
@@ -243,7 +241,6 @@ def _directive_findings(spec: Spec, src: CSource, header_macros: set[str]) -> li
 
 
 def _qualified_by_a_class_or_namespace(code: str, offset: int) -> bool:
-    """``X::name`` / ``X<..>::name`` with ``X`` not ``std``: a member, not the C library function."""
     k = space_start_before(code, offset)
     if code[max(0, k - 2) : k] != "::":
         return False
@@ -360,7 +357,6 @@ def _predefined_macro_use_findings(src: CSource) -> list[Finding]:
 def cpp_source_violations(
     spec: Spec, rel: str, text: str, *, headers: dict[str, str] | None = None
 ) -> list[PolicyViolation]:
-    """The C++ counterpart of :func:`leanc.rules.c_rules.c_source_violations` for one editable C++ file."""
     src = CppSource(text)
     facts = header_facts(headers)
     found = [
@@ -374,7 +370,6 @@ def cpp_source_violations(
 
 
 def cpp_preprocessed_violations(rel: str, pp_output: str, facts: HeaderFacts | None = None) -> list[PolicyViolation]:
-    """Rules for the macro-expanded code of ``rel`` (its lines of ``clang++ -E`` output)."""
     text, origin = expanded_view(rel, pp_output)
     src = CppSource(text)
     found = [

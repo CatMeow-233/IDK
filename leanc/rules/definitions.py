@@ -1,5 +1,3 @@
-"""File-scope function definitions of C code, shared by the integrity, ACSL and repair-policy rules."""
-
 from __future__ import annotations
 
 import bisect
@@ -61,8 +59,6 @@ def _match_close(s: str, open_at: int, open_ch: str = "(", close_ch: str = ")") 
 
 @dataclass(frozen=True)
 class FunctionDefinition:
-    """A file-scope definition; ``body`` is the code view between its braces."""
-
     file: str
     line: int
     body: str
@@ -99,7 +95,6 @@ def _without_redundant_braces_and_semicolons(statements: str) -> str:
 
 
 def is_trivial_body(body: str) -> bool:
-    """Does a function body only return a constant, return nothing or call abort/exit?"""
     s = " ".join(_UNUSED_PARAMETER_CAST_RE.sub(" ", body).split())
     if len(s) > _MAX_TRIVIAL_BODY_CHARS:
         return False
@@ -157,7 +152,6 @@ def _skip_attributes(
 
 
 def find_function_definitions(src: CSource, name: str, file: str = "") -> list[FunctionDefinition]:
-    """File-scope definitions with a body of ``name`` (macro-generated ones read as removed)."""
     code = src.code_nodirectives
     pairs = src.pairs_nodirectives
     depth_at = _brace_depth_finder(code)
@@ -177,7 +171,6 @@ def find_function_definitions(src: CSource, name: str, file: str = "") -> list[F
 
 
 def defined_functions(src: CSource) -> list[tuple[str, int]]:
-    """Names (and offsets) of all file-scope function definitions."""
     code = src.code_nodirectives
     pairs = src.pairs_nodirectives
     depth_at = _brace_depth_finder(code)

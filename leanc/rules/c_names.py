@@ -1,5 +1,3 @@
-"""Library, verifier and language names the C and C++ integrity rules allow, forbid or protect."""
-
 from __future__ import annotations
 
 import re
@@ -95,7 +93,6 @@ def is_dangerous_import(name: str) -> bool:
 
 
 def forbidden_definition(name: str) -> str | None:
-    """Why ``name`` may never be defined by code under verification (None if it may)."""
     if name == _HARNESS_ENTRY_POINT:
         return "'main' belongs to the trusted harness / test driver"
     if name.startswith(HARNESS_INPUT_PREFIX):

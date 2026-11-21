@@ -1,5 +1,3 @@
-"""Rule ids and descriptions of the C++ integrity rules: the C rules without ACSL, adapted to C++."""
-
 from __future__ import annotations
 
 from leanc.rules.acsl import ACSL_RULES

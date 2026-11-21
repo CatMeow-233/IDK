@@ -1,5 +1,3 @@
-"""Preprocessor directives, includes, pragmas and ``clang -E`` output, as the C and C++ rules see them."""
-
 from __future__ import annotations
 
 import posixpath
@@ -87,7 +85,6 @@ class Directive(NamedTuple):
     rest_end: int
 
     def body(self, src: CSource) -> str:
-        """The directive's operands with comments blanked."""
         return src.nocomment[self.rest_start : self.rest_end]
 
 
@@ -117,7 +114,6 @@ def is_tool_specific_macro(macro: str) -> bool:
 
 
 def is_irregular(directive: Directive) -> bool:
-    """Malformed, line-control, include-escaping or non-standard: judged by its form alone."""
     return directive.name == LINE_CONTROL_DIRECTIVE or directive.name not in _STANDARD_DIRECTIVES
 
 
@@ -159,7 +155,6 @@ class IncludedHeader(NamedTuple):
 
 
 def included_header(src: CSource, directive: Directive) -> IncludedHeader | None:
-    """The header an ``#include`` names, or None for a computed (macro) header name."""
     header = _HEADER_NAME_RE.match(directive.body(src).strip())
     return IncludedHeader(header.group(1)) if header else None
 
@@ -217,7 +212,6 @@ def _protected_header_spellings(spec: Spec) -> set[str]:
 
 
 def include_path_problem(spec: Spec, name: str, quoted: bool) -> str | None:
-    """What is wrong with an ``#include`` name, apart from the kind of an angle-bracket header."""
     if not name:
         return "empty header name"
     if "\\" in name or name.startswith("/") or _DRIVE_LETTER_RE.match(name):
@@ -257,7 +251,6 @@ def _unescaped_linemarker_file(spelling: str) -> str:
 
 
 def expanded_view(rel: str, pp_output: str) -> tuple[str, list[int]]:
-    """The ``clang -E`` lines attributed to ``rel`` itself, and the source line each comes from."""
     lines: list[str] = []
     origin: list[int] = []
     current_file: str | None = None

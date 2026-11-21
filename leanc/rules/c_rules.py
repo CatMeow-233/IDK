@@ -1,5 +1,3 @@
-"""C rules of the source-integrity gate: source text, macro-expanded text and object symbols."""
-
 from __future__ import annotations
 
 import re
@@ -180,7 +178,6 @@ class CHeaderFacts(NamedTuple):
 
 
 def c_header_facts(headers: dict[str, str] | None) -> CHeaderFacts:
-    """Identifiers and macro names of the protected headers (comments stripped)."""
     facts = CHeaderFacts(set(), set())
     for text in (headers or {}).values():
         code = CSource(text).code
@@ -242,7 +239,6 @@ def _attribute_rule(name: str) -> str | None:
 
 
 def _attribute_findings(src: CSource, where: str) -> list[Finding]:
-    """Forbidden attributes in GNU (``__attribute__``), MS (``__declspec``) and C23 (``[[...]]``) form."""
     out: list[Finding] = []
     covered = -1
     for start in _ATTRIBUTE_START_RE.finditer(src.code):
@@ -275,7 +271,6 @@ def _library_api_findings(src: CSource, where: str) -> list[Finding]:
 
 
 def token_findings(src: CSource, where: str = "") -> list[Finding]:
-    """Rules that apply both to a source text and to its macro expansion."""
     out: list[Finding] = []
     for token_rule in _TOKEN_RULES:
         for use in token_rule.pattern.finditer(src.code):
@@ -367,7 +362,6 @@ def _forbidden_function_findings(src: CSource) -> list[Finding]:
 def c_source_violations(
     spec: Spec, rel: str, text: str, *, headers: dict[str, str] | None = None
 ) -> list[PolicyViolation]:
-    """The C rules of :func:`leanc.rules.source.source_violations` for one editable C file."""
     src = CSource(text)
     header_idents, header_macros = c_header_facts(headers)
     found = [
@@ -382,7 +376,6 @@ def c_source_violations(
 
 
 def preprocessed_violations(rel: str, pp_output: str) -> list[PolicyViolation]:
-    """Rules for the macro-expanded code of ``rel`` (its lines of ``clang -E`` output)."""
     text, origin = expanded_view(rel, pp_output)
     src = CSource(text)
     found = [*token_findings(src, AFTER_EXPANSION), *expanded_pragma_findings(src)]
@@ -394,7 +387,6 @@ def _is_nm_symbol_line(line: str, fields: list[str]) -> bool:
 
 
 def parse_nm(output: str) -> list[tuple[str, str]]:
-    """``(name, type)`` pairs from ``nm -P`` output."""
     out: list[tuple[str, str]] = []
     for line in output.splitlines():
         fields = line.split()
@@ -447,7 +439,6 @@ def check_object_symbols(
     defined_elsewhere: set[str],
     src: CSource | None = None,
 ) -> list[PolicyViolation]:
-    """Symbol-table rules for one editable object."""
     allowed_definitions = header_idents | {spec.target.function}
     out: list[PolicyViolation] = []
     for name, nm_type in symbols:
@@ -463,7 +454,6 @@ def check_object_symbols(
 
 
 def section_violations(rel: str, readelf_output: str, src: CSource | None = None) -> list[PolicyViolation]:
-    """Sections whose code runs before or after the function under test (``readelf -S`` output)."""
     out: list[PolicyViolation] = []
     for name in dict.fromkeys(SECTION_RE.findall(readelf_output)):
         if _CODE_OUTSIDE_TEST_SECTION_RE.match(name):

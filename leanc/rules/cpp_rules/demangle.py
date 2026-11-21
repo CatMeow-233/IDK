@@ -1,5 +1,3 @@
-"""Demangled C++ symbol names, reduced to the qualified-name components the object rules judge."""
-
 from __future__ import annotations
 
 import re
@@ -50,8 +48,6 @@ _WORD_RE = re.compile(r"[A-Za-z_]\w*")
 
 @dataclass(frozen=True)
 class DemangledName:
-    """A demangled symbol: qualified ``components``, the ``owner`` of local entities, any ``special`` wrapper."""
-
     text: str
     components: tuple[str, ...]
     owner: tuple[str, ...]
@@ -221,7 +217,6 @@ def _special_prefix(s: str) -> str | None:
 
 
 def parse_demangled(text: str) -> DemangledName | None:
-    """Parse a demangled C++ symbol name (None if it cannot be interpreted)."""
     s = text.strip()
     if s.startswith(_CONSTRUCTION_VTABLE):
         return _construction_vtable(s)

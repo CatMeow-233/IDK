@@ -1,5 +1,3 @@
-"""Trust rules for ACSL annotations in editable (untrusted) C sources of specs that use the ``wp`` gate."""
-
 from __future__ import annotations
 
 import bisect
@@ -75,8 +73,6 @@ _STATIC_RE = re.compile(r"\bstatic\b")
 
 @dataclass
 class AcslAnnotation:
-    """One ``/*@ ... */`` or ``//@`` comment; ``body`` is ``raw_body`` with nested comments and literals blanked."""
-
     start: int
     end: int
     body_start: int
@@ -99,14 +95,11 @@ def _index_after_colon(tokens: list[str], i: int) -> int:
 
 @dataclass
 class Clause:
-    """The tokens of one clause, with offsets relative to the annotation body."""
-
     tokens: list[str]
     offsets: list[int]
     start: int
 
     def head(self) -> ClauseHead:
-        """The head word after ``behavior b:`` / ``for b1, b2:`` prefixes and ``check`` / ``admit`` modifiers."""
         toks = self.tokens
         modifiers: list[str] = []
         i = 0
@@ -166,7 +159,6 @@ def _line_comment(text: str, start: int) -> tuple[AcslAnnotation | None, int]:
 
 
 def find_annotations(text: str) -> list[AcslAnnotation]:
-    """All ACSL comments of ``text``, skipping literals and plain comments exactly like the C lexer."""
     out: list[AcslAnnotation] = []
     i = 0
     while i < len(text):
@@ -208,7 +200,6 @@ def _annotation(text: str, start: int, body_start: int, body_end: int, end: int,
 
 
 def parse_clauses(body: str) -> list[Clause]:
-    """Split an annotation body into clauses at top-level ``;`` (a binder's own ``;`` does not end one)."""
     clauses: list[Clause] = []
     toks: list[str] = []
     offs: list[int] = []
@@ -242,7 +233,6 @@ def _identifier_tokens(tokens: list[str]) -> set[str]:
 
 
 def header_acsl_identifiers(headers: dict[str, str] | None) -> set[str]:
-    """Identifiers used inside the ACSL annotations of the protected headers."""
     out: set[str] = set()
     for text in (headers or {}).values():
         for annotation in find_annotations(CSource(text).text):
@@ -283,7 +273,6 @@ def _last_ident(tokens: list[str]) -> str | None:
 
 
 def _logic_name(tokens: list[str], head_idx: int) -> tuple[str | None, int | None]:
-    """Name of a ``predicate`` / ``logic`` definition and the index of its top-level ``=`` (None without a body)."""
     depth = 0
     eq = None
     name = None
@@ -338,7 +327,6 @@ def _target_mentioning_macros(src: CSource, target: str) -> list[Finding]:
 
 
 def acsl_violations(spec: Spec, src: CSource, headers: dict[str, str] | None = None) -> list[Finding]:
-    """ACSL findings for one editable C file of a ``wp`` spec, with offsets into ``src.text``."""
     if not _uses_acsl(spec):
         return []
     target = spec.target.function
@@ -493,7 +481,6 @@ def _attachment_findings(
     target: str,
     file_macros: set[str],
 ) -> list[Finding]:
-    """A file-scope contract must directly precede the definition of a static, non-target helper function."""
     last = group[-1]
     at = group[0].start
     following = definitions.first_after(last.end)
@@ -526,8 +513,6 @@ def _attachment_findings(
 
 @dataclass
 class TargetContract:
-    """The approved ACSL contract of the target in a protected header; ``clauses`` counts clauses per head word."""
-
     file: str
     line: int
     text: str
@@ -574,7 +559,6 @@ def _target_contract(rel: str, src: CSource, group: list[AcslAnnotation]) -> Tar
 
 
 def target_contracts(target: str, headers: dict[str, str]) -> list[TargetContract]:
-    """Contracts directly before prototypes of ``target`` in the protected headers (consecutive ``//@`` lines join)."""
     out: list[TargetContract] = []
     for rel, text in sorted(headers.items()):
         src = CSource(text)

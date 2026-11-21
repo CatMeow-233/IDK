@@ -1,5 +1,3 @@
-"""The ``nm -P`` symbol-type letters that the C and C++ object rules distinguish."""
-
 from __future__ import annotations
 
 __all__ = [

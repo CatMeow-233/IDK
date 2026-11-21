@@ -1,5 +1,3 @@
-"""Namespace-scope C++ function definitions and the kind of brace scope every offset lies in."""
-
 from __future__ import annotations
 
 import bisect
@@ -96,8 +94,6 @@ class _ScopeState(NamedTuple):
 
 
 class Scopes:
-    """The kind of every ``{`` of a file: namespace-like (``namespace``, linkage blocks) or class / function / other."""
-
     def __init__(self, src: CSource):
         code = src.code_nodirectives
         noc = _blank_directive_lines(src.nocomment, src.code)
@@ -129,7 +125,6 @@ class Scopes:
         return state.innermost if state else Scope.GLOBAL
 
     def at(self, offset: int) -> Scope | None:
-        """The namespace-like scope at ``offset``, or None inside a class, function or initializer."""
         state = self._state_before(offset)
         if state is None:
             return Scope.GLOBAL
@@ -138,8 +133,6 @@ class Scopes:
 
 @dataclass(frozen=True)
 class CppDefinition:
-    """A namespace-scope function definition; ``body`` is "" for ``= default`` / ``= delete``."""
-
     name: str
     qualifier: str
     offset: int
@@ -175,7 +168,6 @@ def _template_arguments_start_before(code: str, k: int) -> int:
 
 
 def _qualifier_before(code: str, start: int) -> str:
-    """The ``A<..>::B::`` (or ``::``) written right before ``start``, without whitespace."""
     j = start
     parts: list[str] = []
     for _ in range(_MAX_QUALIFIER_PARTS):
@@ -205,8 +197,6 @@ _Defaulted = Literal["defaulted"]
 
 
 class _DeclaratorTail:
-    """Scans what follows a function's parameter list up to its body."""
-
     def __init__(self, code: str, pairs: dict[int, int], ends: list[int]):
         self._code = code
         self._pairs = pairs
@@ -271,7 +261,6 @@ class _DeclaratorTail:
         return None
 
     def body_after(self, j: int) -> _BodySpan | _Defaulted | None:
-        """The body after the parameter list closing at ``j - 1``; "defaulted" for ``= default`` / ``= delete``."""
         code, n = self._code, len(self._code)
         for _ in range(_MAX_DECLARATOR_STEPS):
             j = self._skip_space(j)
@@ -326,7 +315,6 @@ def _normalized_function_name(raw: str) -> str:
 
 
 def cpp_function_definitions(src: CSource) -> list[CppDefinition]:
-    """Function definitions at namespace scope, including out-of-line members (not those in class bodies or macros)."""
     code = src.code_nodirectives
     pairs = src.pairs_nodirectives
     scopes = Scopes(src)
@@ -356,7 +344,6 @@ def cpp_function_definitions(src: CSource) -> list[CppDefinition]:
 
 
 def find_cpp_function_definitions(src: CSource, name: str, file: str = "") -> list[FunctionDefinition]:
-    """C++ counterpart of :func:`leanc.rules.definitions.find_function_definitions` (unqualified ``name``)."""
     if not isinstance(src, CppSource):
         src = CppSource(src.raw)
     return [

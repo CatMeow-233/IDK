@@ -1,5 +1,3 @@
-"""Rule findings in one source text and their conversion into reported policy violations."""
-
 from __future__ import annotations
 
 import re
@@ -36,7 +34,6 @@ def _reported_line(src: CSource, offset: int, line_map: list[int] | None) -> int
 def to_violations(
     src: CSource, rel: str, found: list[Finding], line_map: list[int] | None = None
 ) -> list[PolicyViolation]:
-    """One violation per rule and line, in source order, quoting the offending line of ``src``."""
     out: list[PolicyViolation] = []
     seen: set[tuple[str, int]] = set()
     for finding in sorted(found, key=lambda f: (f.offset, f.rule)):

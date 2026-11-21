@@ -1,5 +1,3 @@
-"""What the protected C++ headers declare: identifiers, macros and operators."""
-
 from __future__ import annotations
 
 import re
@@ -30,8 +28,6 @@ def _demangler_spelling(operator: re.Match[str]) -> str:
 
 @dataclass
 class HeaderFacts:
-    """What the protected headers declare (comment- and literal-free views)."""
-
     idents: set[str] = field(default_factory=set)
     macros: set[str] = field(default_factory=set)
     operators: set[str] = field(default_factory=set)
