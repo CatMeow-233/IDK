@@ -130,8 +130,8 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 |---|---|
 | 完整性未通过 | `sanitizer`、`cbmc`、`wp`、`lean` 一律 `SKIPPED`（“含禁止构造的代码绝不执行、绝不做模型检查、绝不证明”）；`static_analysis` 照常运行；状态取自完整性关卡（`STATIC_ANALYSIS_WARNING`）。修复循环中，让完整性通过的候选算作进展，即使随后解锁的关卡找到反例 |
 | 栈帧大小 | 完整性关卡以 `-Wframe-larger-than=1048576` 编译每个可编辑文件（带上去掉警告控制后的 `compile.flags`）：超过 1 MiB 的栈帧为 `STACK_FRAME_TOO_LARGE` |
-| 预定义宏 | 仅适用于含 `cbmc` 或 `wp` 的规格。把 clang 在编译关卡选项（`-std`、`compile.flags`、`compile.defines`）下的预定义宏，与 gcc 在各验证器预处理方式下的预定义宏比较。CBMC：`-D__CPROVER__ -std=gnuNN`，加上 `-funsigned-char` 和它收到的 `-D`/`-U`。Frama-C：`-D__FRAMAC__ -std=c11` 加上 `compile.defines`，这是对其 machdep 的近似。可编辑代码中用到取值不同的宏即为 `TOOL_DIVERGENCE`。需要 `gcc`；缺少时完整性关卡为 `ERROR` |
-| `compile.flags` | 拒绝 `-fsanitize*` / `-fno-sanitize*`；sanitizer 由 `tests.sanitizers` 决定。静态分析会收到这些参数。CBMC 按顺序收到 `-D`/`-U`，以及 `-I`、`-std=`、`-funsigned-char`/`-fsigned-char`，但绝不会收到 `NDEBUG`。其余参数（例如 `-O2 -ffast-math -mavx2`）列在一条假设中，即“compile.flags not applied by CBMC”，判定不变 |
+| 预定义宏 | 仅适用于含 `cbmc` 或 `wp` 的规格。把 clang 在编译关卡选项（`-std`、`compile.flags`、`compile.defines`）下的预定义宏，与 gcc 在各验证器预处理方式下的预定义宏比较。CBMC：`-D__CPROVER__ -std=gnuNN`，加上 `-funsigned-char` 和它收到的 `-D` 定义。Frama-C：`-D__FRAMAC__ -std=c11` 加上 `compile.defines`，这是对其 machdep 的近似。可编辑代码中用到取值不同的宏即为 `TOOL_DIVERGENCE`。需要 `gcc`；缺少时完整性关卡为 `ERROR` |
+| `compile.flags` | 拒绝 `-fsanitize*` / `-fno-sanitize*`；sanitizer 由 `tests.sanitizers` 决定。静态分析会收到这些参数。CBMC 会收到 `-D`、`-I`、`-std=`、`-funsigned-char`/`-fsigned-char`，但绝不会收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`；其他 `-U` 会被列为未套用。其余参数（例如 `-O2 -ffast-math -mavx2`）列在一条假设中，即“compile.flags not applied by CBMC”，判定不变 |
 | 无函数体的函数（CBMC） | 允许：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他无函数体的被调函数（例如 `<immintrin.h>` 背后的 SIMD builtin）会使 `cbmc` 无法通过。路径经过这类函数的违规是 `unmodelled-callee` 诊断，不是反例；除非有反例避开这类函数，否则关卡为 `INCONCLUSIVE` |
 | CBMC 内部错误 | 不变式违规报告为 `TOOL_ERROR`（“CBMC internal error”），并附带 File/Condition/Reason 摘录，而不是内存不足提示 |
 | 契约安全检查 | `contract.safety` 中的检查会加入 CBMC 的属性检查；规格哈希不变 |

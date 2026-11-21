@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from leanc.backends import integrity
-from leanc.backends.cbmc.compile_flags import cbmc_preprocessor_macro_args
+from leanc.backends.cbmc.compile_flags import (
+    cbmc_preprocessor_macro_args,
+    translate_compile_options,
+)
 from leanc.backends.clang import run_compile
 from leanc.backends.integrity import run_integrity
 from leanc.foundation.status import Outcome, Status
@@ -43,6 +48,14 @@ HUGE_FRAME_READ = (
 )
 FINITE_MATH_READ = "    *out = arr[idx] + __FINITE_MATH_ONLY__;"
 STDC_VERSION_READ = "    *out = arr[idx] + (int)(__STDC_VERSION__ / 100000000L);"
+NDEBUG_READ = "#ifndef NDEBUG\n    *out = arr[idx + 1];\n#else\n    *out = arr[idx];\n#endif"
+NDEBUG_USE_READ = "    *out = arr[idx] + NDEBUG - 1;"
+MIRROR_PROBE = (
+    "long v = __STDC_VERSION__; int a = linux; int c = __CPROVER__; int f = FOO; int u = __CHAR_UNSIGNED__;\n"
+    "#ifdef BAR\nint bar_defined;\n#endif\n"
+    "#ifdef __STRICT_ANSI__\nint strict;\n#endif\n"
+)
+MIRROR_FLAGS = ["-funsigned-char", "-DFOO=3", "-DBAR", "-UBAR", "-O2"]
 LEGACY_MODE_READ = "#ifdef LEGACY_MODE\n    *out = arr[idx + 1];\n#else\n    *out = arr[idx];\n#endif"
 MISSING_GCC = ("leanc-test-no-such-gcc",)
 
@@ -262,3 +275,38 @@ def test_specs_without_gcc_preprocessed_gates_do_not_need_gcc(example_copy, need
     result = _gate(example_copy, tmp_path, spec_edits={DEFAULT_GATES: "gates: [compile, static_analysis, sanitizer]"})
     assert result.outcome is Outcome.PASS, result.summary
     assert result.details["predefined_macros"]["checked"] is False
+
+
+def _code_lines(preprocessed: str) -> list[str]:
+    return [line for line in preprocessed.splitlines() if line.strip() and not line.startswith("#")]
+
+
+@pytest.mark.parametrize("standard", ["c99", "c11", "c17"])
+def test_cbmc_mirror_expands_macros_exactly_like_cbmc(tmp_path, needs_cbmc, standard):
+    gcc = shutil.which("gcc")
+    assert gcc, "gcc is required wherever CBMC runs"
+    probe = tmp_path / "probe.c"
+    probe.write_text(MIRROR_PROBE)
+    compile_config = CompileConfig(flags=MIRROR_FLAGS)
+    translation = translate_compile_options(compile_config, standard)
+    cbmc_args = [*translation.include_args, *translation.macro_args, *translation.semantic_args]
+    cbmc = subprocess.run(
+        ["cbmc", *cbmc_args, "--preprocess", str(probe)], capture_output=True, text=True, check=True, cwd=tmp_path
+    )
+    mirror = subprocess.run(
+        [gcc, *cbmc_preprocessor_macro_args(compile_config, standard), "-E", str(probe)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=tmp_path,
+    )
+    expected = [line for line in _code_lines(cbmc.stdout) if not line.startswith("CBMC version")]
+    assert expected and expected == _code_lines(mirror.stdout)
+
+
+@pytest.mark.parametrize("read", [NDEBUG_READ, NDEBUG_USE_READ], ids=["directive", "use"])
+def test_ndebug_dropped_for_cbmc_keeps_ndebug_tests_rejected(example_copy, needs_clang, tmp_path, read):
+    edits = {DEFAULT_FLAGS: f"{DEFAULT_FLAGS}\n  defines: [NDEBUG]"}
+    result = _gate(example_copy, tmp_path, _shipped().replace(READ_LINE, read), edits)
+    assert result.outcome is Outcome.FAIL
+    assert any("NDEBUG" in d.message for d in _by_rule(result, "TOOL_DIVERGENCE")), result.summary

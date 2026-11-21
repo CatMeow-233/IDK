@@ -130,8 +130,8 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 |---|---|
 | 完整性未通過 | `sanitizer`、`cbmc`、`wp`、`lean` 一律 `SKIPPED`（「含禁止構造的程式碼絕不執行、絕不做模型檢查、絕不證明」）；`static_analysis` 照常執行；狀態取自完整性關卡（`STATIC_ANALYSIS_WARNING`）。修復迴圈中，讓完整性通過的候選算作進展，即使隨後解鎖的關卡找到反例 |
 | 堆疊框大小 | 完整性關卡以 `-Wframe-larger-than=1048576` 編譯每個可編輯檔案（帶上去掉警告控制後的 `compile.flags`）：超過 1 MiB 的堆疊框為 `STACK_FRAME_TOO_LARGE` |
-| 預先定義的巨集 | 僅適用於含 `cbmc` 或 `wp` 的規格。把 clang 在編譯關卡選項（`-std`、`compile.flags`、`compile.defines`）下預先定義的巨集，與 gcc 在各驗證器前處理方式下預先定義的巨集比較。CBMC：`-D__CPROVER__ -std=gnuNN`，加上 `-funsigned-char` 和它收到的 `-D`/`-U`。Frama-C：`-D__FRAMAC__ -std=c11` 加上 `compile.defines`，這是對其 machdep 的近似。可編輯程式碼中用到取值不同的巨集即為 `TOOL_DIVERGENCE`。需要 `gcc`；缺少時完整性關卡為 `ERROR` |
-| `compile.flags` | 拒絕 `-fsanitize*` / `-fno-sanitize*`；sanitizer 由 `tests.sanitizers` 決定。靜態分析會收到這些參數。CBMC 依序收到 `-D`/`-U`，以及 `-I`、`-std=`、`-funsigned-char`/`-fsigned-char`，但絕不會收到 `NDEBUG`。其餘參數（例如 `-O2 -ffast-math -mavx2`）列在一條假設中，即「compile.flags not applied by CBMC」，判定不變 |
+| 預先定義的巨集 | 僅適用於含 `cbmc` 或 `wp` 的規格。把 clang 在編譯關卡選項（`-std`、`compile.flags`、`compile.defines`）下預先定義的巨集，與 gcc 在各驗證器前處理方式下預先定義的巨集比較。CBMC：`-D__CPROVER__ -std=gnuNN`，加上 `-funsigned-char` 和它收到的 `-D` 定義。Frama-C：`-D__FRAMAC__ -std=c11` 加上 `compile.defines`，這是對其 machdep 的近似。可編輯程式碼中用到取值不同的巨集即為 `TOOL_DIVERGENCE`。需要 `gcc`；缺少時完整性關卡為 `ERROR` |
+| `compile.flags` | 拒絕 `-fsanitize*` / `-fno-sanitize*`；sanitizer 由 `tests.sanitizers` 決定。靜態分析會收到這些參數。CBMC 會收到 `-D`、`-I`、`-std=`、`-funsigned-char`/`-fsigned-char`，但絕不會收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`；其他 `-U` 會被列為未套用。其餘參數（例如 `-O2 -ffast-math -mavx2`）列在一條假設中，即「compile.flags not applied by CBMC」，判定不變 |
 | 無函式本體的函式（CBMC） | 允許：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他無函式本體的被呼叫函式（例如 `<immintrin.h>` 背後的 SIMD builtin）會使 `cbmc` 無法通過。路徑經過這類函式的違規是 `unmodelled-callee` 診斷，不是反例；除非有反例避開這類函式，否則關卡為 `INCONCLUSIVE` |
 | CBMC 內部錯誤 | 不變式違規報告為 `TOOL_ERROR`（「CBMC internal error」），並附上 File/Condition/Reason 摘錄，而不是記憶體不足提示 |
 | 契約安全檢查 | `contract.safety` 中的檢查會加入 CBMC 的性質檢查；規格雜湊不變 |
