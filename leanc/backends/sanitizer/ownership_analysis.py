@@ -138,10 +138,11 @@ def build_trace(events: list[Event]) -> TraceRun | str:
 def call_chain(run: TraceRun, allocation: Allocation) -> tuple[int, ...]:
     chain = []
     for index in reversed(allocation.frames):
-        call_site = run.frames[index].call_site
-        if call_site == OUTSIDE_IMAGE:
+        frame = run.frames[index]
+        if frame.call_site == OUTSIDE_IMAGE:
             break
-        chain.append(call_site)
+        if not is_inlined(run, frame):
+            chain.append(frame.call_site)
     return tuple(chain)
 
 

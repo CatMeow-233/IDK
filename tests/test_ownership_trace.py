@@ -400,3 +400,18 @@ def test_compact_replay_reports_keep_two_frames_because_lsan_drops_single_frame_
     assert "malloc_context_size=2" in env["ASAN_OPTIONS"] and "malloc_context_size=2" in env["LSAN_OPTIONS"]
     assert "report_objects=1" in env["LSAN_OPTIONS"] and env["LEANC_OWNERSHIP_CHECKS"] == "3,5"
     assert inputs.env == {"ASAN_OPTIONS": "detect_leaks=1", "LSAN_OPTIONS": "exitcode=88"}
+
+
+def test_inlined_helper_frames_leave_the_chain_and_match_lsan_inline_frames():
+    text = (
+        f"E {CALLER} {CALLER_SITE}\nE {MAKE} {CALLER_SITE}\nA {P1} 6 {ALLOC_SITE}\n"
+        f"X 1 {MAKE} {CALLER_SITE}\nX 2 {CALLER} {CALLER_SITE}\n"
+    )
+    run = _trace(text)
+    [allocation] = leaked_allocations(run, frozenset({int(P1, 16)})).allocations
+    assert call_chain(run, allocation) == (int(CALLER_SITE, 16),)
+    candidate = TraceCandidate(_trace_model(), (("src/join.c", 22), ("tests/test_join.c", 38)))
+    inlined_frame_in_lsan = _failure(callers=("src/join.c:62:5", "tests/test_join.c:38:14"))
+    other_caller = _failure(callers=("src/join.c:62:5", "tests/test_join.c:52:3"), suffix="#2")
+    attach_traces([candidate], [inlined_frame_in_lsan, other_caller], PROJECT_FILES)
+    assert inlined_frame_in_lsan.ownership_trace is not None and other_caller.ownership_trace is None

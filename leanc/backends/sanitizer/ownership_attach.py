@@ -24,11 +24,16 @@ def failure_chain(failure: FailureReport, project_files: set[str]) -> tuple[Sour
     return tuple(lines)
 
 
+def _in_order_within(needle: tuple[SourceLine, ...], haystack: tuple[SourceLine, ...]) -> bool:
+    remaining = iter(haystack)
+    return all(line in remaining for line in needle)
+
+
 def _matches(candidate: TraceCandidate, failure: FailureReport, chain: tuple[SourceLine, ...]) -> bool:
     location = failure.location
     if location is None or not candidate.chain or candidate.chain[0] != (location.file, location.line):
         return False
-    return chain[: len(candidate.chain)] == candidate.chain
+    return bool(chain) and chain[0] == candidate.chain[0] and _in_order_within(candidate.chain[1:], chain[1:])
 
 
 def _evidence_key(trace: MemoryOwnershipTrace) -> str:
