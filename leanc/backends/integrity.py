@@ -64,6 +64,7 @@ from leanc.rules.predefined_macros import (
     divergent_macro_use_violations,
     parse_predefined_macros,
 )
+from leanc.rules.preprocessor import has_linemarker_for
 from leanc.rules.source import source_violations
 from leanc.rules.symbol_types import (
     STRONG_TEXT_TYPE,
@@ -83,6 +84,7 @@ TOOL_TIMEOUT_S = 60
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
 UNRANKED_RULE = 99
 STDERR_SEPARATOR = "\n--- stderr ---\n"
+NO_LINEMARKER = "the output has no GNU linemarker for the file, so the after-expansion rules would see none of its code"
 NULL_SECTION = "NULL"
 
 NM_CANDIDATES = ("llvm-nm-18", "llvm-nm", "nm")
@@ -248,9 +250,13 @@ class _IntegrityGate(ABC):
         ]
         entry["argv"]["preprocess"] = argv
         preprocessed = self.run_tool(self.compiler_name, argv, rel, "preprocess")
-        if preprocessed is not None:
-            self.violations += self.preprocessed_violations(rel, preprocessed)
-            entry["checks"].append("preprocessed")
+        if preprocessed is None:
+            return
+        if not has_linemarker_for(rel, preprocessed):
+            self.problems.append(f"preprocess of {rel}: {NO_LINEMARKER}")
+            return
+        self.violations += self.preprocessed_violations(rel, preprocessed)
+        entry["checks"].append("preprocessed")
 
     def check_unbounded_stack_allocations(self, rel: str, entry: dict) -> None:
         check = StackCheck(

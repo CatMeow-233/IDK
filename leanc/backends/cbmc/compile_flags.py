@@ -11,6 +11,9 @@ from leanc.specs.model import CompileConfig
 DEFINE_FLAG = "-D"
 UNDEFINE_FLAG = "-U"
 INCLUDE_DIR_FLAG = "-I"
+LONG_DEFINE_FLAG = "--define-macro="
+LONG_UNDEFINE_FLAG = "--undefine-macro="
+LONG_INCLUDE_DIR_FLAG = "--include-directory="
 STANDARD_FLAG_PREFIX = "-std="
 LONG_STANDARD_FLAG_PREFIX = "--std="
 ANSI_FLAGS = frozenset({"-ansi", "--ansi"})
@@ -46,8 +49,10 @@ class CharSignedness(Enum):
 CHAR_SIGNEDNESS_FLAGS: dict[str, CharSignedness] = {
     "-fsigned-char": CharSignedness.SIGNED,
     "-fno-unsigned-char": CharSignedness.SIGNED,
+    "--signed-char": CharSignedness.SIGNED,
     "-funsigned-char": CharSignedness.UNSIGNED,
     "-fno-signed-char": CharSignedness.UNSIGNED,
+    "--unsigned-char": CharSignedness.UNSIGNED,
 }
 SIGNED_CHAR_REQUEST = "-fsigned-char"
 SIGNED_CHAR_ARCHITECTURES = frozenset({"x86_64", "i386", "x32"})
@@ -166,8 +171,11 @@ class _Translator:
 OptionHandler = Callable[[_Translator, str, str], None]
 JOINED_OPTIONS: dict[str, OptionHandler] = {
     DEFINE_FLAG: _Translator.define,
+    LONG_DEFINE_FLAG: _Translator.define,
     UNDEFINE_FLAG: _Translator.undefine,
+    LONG_UNDEFINE_FLAG: _Translator.undefine,
     INCLUDE_DIR_FLAG: _Translator.include_dir,
+    LONG_INCLUDE_DIR_FLAG: _Translator.include_dir,
     STANDARD_FLAG_PREFIX: _Translator.select_standard,
     LONG_STANDARD_FLAG_PREFIX: _Translator.select_standard,
 }

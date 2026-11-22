@@ -82,6 +82,9 @@ RULES: dict[str, str] = {
     "verifier-specific identifiers, non-standard directives, optimisation-dependent built-ins)",
     "PRAGMA": "a #pragma / _Pragma other than '#pragma once' (they can disable CBMC checks or diagnostics)",
     "LINE_DIRECTIVE": "#line or GNU linemarkers (they re-attribute code, e.g. mark it as a system header)",
+    "TRIGRAPH": "trigraph sequences (??= ??/ ??' ??( ??) ??! ??< ??> ??-), comments and string literals included: "
+    "clang replaces them in ISO C modes while CBMC and Frama-C preprocess without them, so a `??/` that ends a "
+    "comment hides the next line from one side only",
     "SYMBOL_OVERRIDE": "defines or redefines something it must not (libc / verifier hooks such as __assert_fail, "
     "nondet_*, main, reserved names, weak/alias symbols, external symbols not declared by the protected headers, "
     "macros named after libc functions, keywords or interface macros)",
@@ -114,6 +117,9 @@ _PRAGMA_CONSEQUENCE = "pragmas can disable CBMC checks or diagnostics, or mark c
 _DIVERGENCE_CONSEQUENCE = "make clang, the sanitizer build and CBMC see different code"
 
 
+_TRIGRAPH_RE = re.compile(r"\?\?[=/'()!<>-]")
+
+
 class TokenRule(NamedTuple):
     rule: str
     pattern: re.Pattern[str]
@@ -138,7 +144,7 @@ _TOKEN_RULES: list[TokenRule] = [
     TokenRule("DANGEROUS_IMPORT", re.compile(r"\b__(?:asan|lsan|ubsan|msan|tsan|hwasan|dfsan|sanitizer)_\w+"),
                "sanitizer runtime interface"),
     TokenRule("PRAGMA", re.compile(r"\b__pragma(?=\s*\()"), "MS-style __pragma"),
-    TokenRule("UNBOUNDED_STACK", re.compile(r"(?<![\w.])(?<!->)\b(?:alloca|__builtin_alloca\w*)(?=\s*\()"),
+    TokenRule("UNBOUNDED_STACK", re.compile(r"(?<![\w.])(?<!->)\b(?:_?alloca|__builtin_alloca\w*)(?=\s*\()"),
                "stack allocation (alloca)"),
     TokenRule("TERMINATION", re.compile(r"\b__builtin_(?:setjmp|longjmp|unwind_init|eh_return)(?=\s*\()"),
                "non-local control-flow built-in"),
@@ -290,6 +296,13 @@ def token_findings(src: CSource, where: str = "") -> list[Finding]:
     return out
 
 
+def _trigraph_findings(src: CSource) -> list[Finding]:
+    return [
+        Finding("TRIGRAPH", f"trigraph '{use.group()}' is not allowed: {_DIVERGENCE_CONSEQUENCE}", use.start())
+        for use in _TRIGRAPH_RE.finditer(src.text)
+    ]
+
+
 def _include_problem(spec: Spec, name: str, quoted: bool) -> str | None:
     problem = include_path_problem(spec, name, quoted)
     if problem is None and not quoted and not normalized_header_path(name).endswith(C_HEADER_SUFFIX):
@@ -376,6 +389,7 @@ def c_source_violations(
     found = [
         *_directive_findings(spec, src, header_macros, header_idents),
         *pragma_operator_findings(src),
+        *_trigraph_findings(src),
         *token_findings(src),
         *_predefined_macro_use_findings(src),
         *_forbidden_function_findings(src),

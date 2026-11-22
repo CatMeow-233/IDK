@@ -23,6 +23,7 @@ __all__ = [
     "divergent_macro_findings",
     "expanded_pragma_findings",
     "expanded_view",
+    "has_linemarker_for",
     "identifiers",
     "include_path_problem",
     "included_header",
@@ -250,6 +251,14 @@ def pragma_operator_findings(src: CSource) -> list[Finding]:
 
 def _unescaped_linemarker_file(spelling: str) -> str:
     return spelling.replace('\\"', '"').replace("\\\\", "\\")
+
+
+def has_linemarker_for(rel: str, pp_output: str) -> bool:
+    for line in pp_output.split("\n"):
+        marker = _LINEMARKER_RE.match(line)
+        if marker and posixpath.normpath(_unescaped_linemarker_file(marker.group(2))) == posixpath.normpath(rel):
+            return True
+    return False
 
 
 def expanded_view(rel: str, pp_output: str) -> tuple[str, list[int]]:

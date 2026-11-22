@@ -29,6 +29,7 @@ def integrity_gate(
     spec_edits: dict[str, str] | None = None,
     example: str = EXAMPLE,
     extra_files: dict[str, str] | None = None,
+    options: VerifyOptions | None = None,
 ) -> StageResult:
     root = example_copy(example)
     if source is not None:
@@ -41,7 +42,7 @@ def integrity_gate(
         assert old in text, old
         text = text.replace(old, new)
     spec_file.write_text(text)
-    return compiled_integrity(make_context(load_spec(spec_file), root, tmp_path / "run", VerifyOptions()))
+    return compiled_integrity(make_context(load_spec(spec_file), root, tmp_path / "run", options or VerifyOptions()))
 
 
 def compiled_integrity(ctx) -> StageResult:

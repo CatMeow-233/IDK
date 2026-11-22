@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from cbmc_replay_support import project_with_compile
+from clang_driver_support import cc1_args, minimal_source
 from cbmc_support import _fake_tools
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
@@ -39,6 +40,13 @@ int add(int a, int b)
 }
 """
 UNAPPLIED_LINE = "compile.flags not applied by CBMC: "
+GCC_LONG_ALIASES = [
+    (["-funsigned-char", "--signed-char"], ["-funsigned-char", "-fsigned-char"]),
+    (["--unsigned-char"], ["-funsigned-char"]),
+    (["--define-macro=WIDTH=4"], ["-DWIDTH=4"]),
+    (["-DWIDTH", "--undefine-macro=WIDTH"], ["-DWIDTH", "-UWIDTH"]),
+    (["--include-directory=extra"], ["-Iextra"]),
+]
 
 
 def _translate(flags: list[str], defines: list[str] | None = None, standard: str = "c17"):
@@ -209,3 +217,19 @@ def test_default_flags_add_no_disclosure(tmp_path, needs_cbmc):
     assert "--c11" in res.details["argv"]["verify"]
     assert any("C language standard c17: checked in CBMC's --c11 mode (CBMC has no C17 mode" in a
                for a in res.details["assumptions"])
+
+
+@pytest.mark.parametrize("aliased, canonical", GCC_LONG_ALIASES, ids=lambda flags: " ".join(flags))
+def test_gcc_long_aliases_translate_like_their_short_spellings(aliased, canonical):
+    assert _translate(aliased).details() == _translate(canonical).details()
+
+
+@pytest.mark.parametrize("aliased, canonical", GCC_LONG_ALIASES, ids=lambda flags: " ".join(flags))
+def test_gcc_long_aliases_mean_their_short_spellings_to_clang(needs_clang, tmp_path, aliased, canonical):
+    source = minimal_source(tmp_path, ".c")
+    assert cc1_args(source, aliased) == cc1_args(source, canonical)
+
+
+def test_mutation_signed_char_alias_reaches_cbmc(tmp_path, needs_cbmc):
+    res = run_cbmc(_add_project(tmp_path, ["-funsigned-char", "--signed-char"], CHAR_DEPENDENT_ADD))
+    assert res.outcome is Outcome.FAIL and "--unsigned-char" not in res.details["argv"]["verify"]

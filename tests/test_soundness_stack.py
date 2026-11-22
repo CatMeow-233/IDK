@@ -14,6 +14,7 @@ from leanc.rules.stack_checks import (
     MAX_STACK_FRAME_BYTES,
     STACK_FRAME_RULE,
     UNBOUNDED_STACK_RULE,
+    UnboundedStackScan,
     codegen_flags,
     stack_usage_findings,
 )
@@ -28,7 +29,7 @@ VLA_UNDER_FLAG_READ = (
     "#ifdef USE_VLA\n    int scratch[len + 1];\n    scratch[0] = arr[idx];\n    *out = scratch[0];\n"
     "#else\n    *out = arr[idx];\n#endif"
 )
-STACK_USAGE = "src/a.c:3:big\t16777240\tstatic\nsrc/a.c:7:other\t2097168\tdynamic,bounded\nsrc/a.c:9:small\t64\tstatic\n"
+STACK_USAGE = "src/a.c:3:big\t16777240\tstatic\nsrc/a.c:7:other\t2097168\tstatic\nsrc/a.c:9:small\t64\tstatic\n"
 CPP_STACK_USAGE = "src/a.cpp:2:_Z3bigi\t1999896\tstatic\nsrc/a.cpp:__clang_call_terminate\t8\tstatic\n"
 GENERATED_HUGE_FRAME = "src/a.cpp:__generated_thunk\t2000000\tstatic\n"
 OPTIMISED_AWAY_FRAME_READ = (
@@ -36,6 +37,7 @@ OPTIMISED_AWAY_FRAME_READ = (
     "    *out = arr[idx] + scratch[idx % sizeof scratch] - 1;"
 )
 VLA_READ = "    int scratch[len + 1];\n    scratch[0] = arr[idx];\n    *out = scratch[0];"
+VARIABLY_MODIFIED_READ = "    const int (*view)[len] = (const int (*)[len])arr;\n    *out = (*view)[idx];"
 DATA_ONLY_FILE = "src/table.c"
 DATA_ONLY_SOURCE = '#include "safe_array.h"\nstatic const int unused_table[4] = {1, 2, 3, 4};\n'
 CPP_EXAMPLE = "cpp_ring_buffer"
@@ -173,8 +175,8 @@ def test_diagnostic_layout_flags_cannot_turn_a_vla_into_a_tool_error(example_cop
 
 
 def test_unparsed_failing_vla_check_is_an_error(example_copy, needs_clang, tmp_path, monkeypatch):
-    monkeypatch.setattr(stack_check, "unbounded_stack_violations", lambda rel, stderr, reason: [])
-    result = integrity_gate(example_copy, tmp_path, shipped().replace(READ_LINE, VLA_READ))
+    monkeypatch.setattr(stack_check, "unbounded_stack_scan", lambda stderr, reason, project_files_only: UnboundedStackScan())
+    result = integrity_gate(example_copy, tmp_path, shipped().replace(READ_LINE, VARIABLY_MODIFIED_READ))
     assert result.outcome is Outcome.ERROR and "stack check of src/safe_array.c failed (exit 1)" in result.summary
     assert "stack" not in result.details["files"][0]["checks"]
 

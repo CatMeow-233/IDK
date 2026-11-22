@@ -55,7 +55,10 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 - every instrumented build (sanitizer test, ownership trace project+driver, lean vectors) uses build.instrumented_compile_flags: BUILD_FIDELITY_FLAGS after compile.flags.
 - compile.flags MUST NOT carry -fsanitize*/-fno-sanitize* or tool-control options (specs/compile_options.TOOL_CONTROL_PREFIXES; spec validator); cbmc checks = spec.effective_cbmc_checks() (contract.safety included).
 - compile.flags entry = one option, value joined; non-options/-/-- rejected by spec validator; integrity probes `clang -### <entry>` per entry, missing-value diagnostic or unclean probe -> ERROR. cbmc translator, stack checks, codegen_flags rely on this: read entries standalone, no separate-value parsing.
-- stack frame check -include's an anchor function so every codegen run writes .su; no .su -> ERROR. stack checks accept only exit 0 (signal death -> ERROR).
+- stack frame check -include's a diagnostic-pragma-immune anchor before compile.flags so every codegen run writes .su (-fembed-bitcode=off after compile.flags); no .su -> ERROR. .su qualifier != static -> UNBOUNDED_STACK. frame check accepts only exit 0 (signal death -> ERROR).
+- VLA/alloca check runs twice (backends/stack_check.UNBOUNDED_STACK_SCOPES): every reported file counts; then -Wsystem-headers with relative (snapshot) paths only. exit != 0 accepted only when every error line is a parsed vla/alloca diagnostic.
+- compile.flags validator (specs/compile_options.REJECTED_FLAG_FAMILIES) also rejects preprocessor-output options (integrity reads `-E` with compile.flags; no linemarker for the file -> ERROR), --driver-mode, -Wwrite-strings (-fconst-strings). -Wdeprecated/-Wno-deprecated are not diagnostic-only. tests/test_soundness_flag_semantics scans every clang -W spelling for cc1 effects.
+- C source rule TRIGRAPH: any ??[=/'()!<>-] in editable C text (clang ISO modes replace trigraphs, CBMC/Frama-C gnu preprocessing does not).
 
 ## check
 - `python -m scripts.constraints` MUST exit 0 (run from repo root; rules from constraints.toml; `--fix` removes comments/docstrings only when the AST is unchanged and no encoding cookie, rewrites the layer block; `--json`).

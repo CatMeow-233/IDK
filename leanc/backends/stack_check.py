@@ -10,11 +10,12 @@ from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.text import safe_name
 from leanc.rules.stack_checks import (
     STACK_FRAME_CHECK_FLAGS,
+    SYSTEM_HEADER_WARNINGS_FLAG,
     UNBOUNDED_STACK_CHECK_FLAGS,
     codegen_flags,
     stack_usage_findings,
     stack_usage_path,
-    unbounded_stack_violations,
+    unbounded_stack_scan,
 )
 from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext
@@ -25,33 +26,67 @@ SYNTAX_OUTPUT_SUFFIX = ".syntax"
 INCLUDE_FLAG = "-include"
 OUTPUT_FLAG = "-o"
 ANCHOR_HEADER = "leanc_stack_usage_anchor.h"
-ANCHOR_SOURCE = "void __leanc_stack_usage_anchor(void) {}\n"
+ANCHOR_SOURCE = (
+    "#pragma clang diagnostic push\n"
+    '#pragma clang diagnostic ignored "-Weverything"\n'
+    "void __leanc_stack_usage_anchor(void) {}\n"
+    "#pragma clang diagnostic pop\n"
+)
 CLEAN_EXIT_CODE = 0
 MAX_UNPARSED_ROWS_SHOWN = 3
 NO_STACK_USAGE = "produced no stack usage (compile.flags stop machine-code generation, e.g. -emit-llvm)"
 
 
-def _language_args(compiler: str, spec: Spec, include_args: list[str]) -> list[str]:
+@dataclass(frozen=True)
+class UnboundedStackScope:
+    name: str
+    extra_flags: tuple[str, ...]
+    project_files_only: bool
+
+    @property
+    def log_label(self) -> str:
+        return self.name.replace("_", "-")
+
+
+ALL_REPORTED_FILES = UnboundedStackScope("stack", (), project_files_only=False)
+PROJECT_FILES_AS_USER_CODE = UnboundedStackScope(
+    "stack_system_headers", (SYSTEM_HEADER_WARNINGS_FLAG,), project_files_only=True
+)
+UNBOUNDED_STACK_SCOPES = (ALL_REPORTED_FILES, PROJECT_FILES_AS_USER_CODE)
+
+
+def _language_args(spec: Spec, include_args: list[str]) -> list[str]:
+    return [*codegen_flags(spec.compile.flags), *define_args(spec.compile.defines), *include_args]
+
+
+def _standard_arg(spec: Spec) -> str:
+    return f"-std={spec.language.standard}"
+
+
+def unbounded_stack_argv(
+    compiler: str, spec: Spec, include_args: list[str], rel: str, assembly: Path, scope: UnboundedStackScope
+) -> list[str]:
+    syntax_output = sandbox_visible_path(assembly.with_suffix(SYNTAX_OUTPUT_SUFFIX))
     return [
         compiler,
-        f"-std={spec.language.standard}",
-        *codegen_flags(spec.compile.flags),
-        *define_args(spec.compile.defines),
-        *include_args,
+        _standard_arg(spec),
+        *_language_args(spec, include_args),
+        *UNBOUNDED_STACK_CHECK_FLAGS,
+        *scope.extra_flags,
+        OUTPUT_FLAG,
+        syntax_output,
+        rel,
     ]
-
-
-def unbounded_stack_argv(compiler: str, spec: Spec, include_args: list[str], rel: str, assembly: Path) -> list[str]:
-    syntax_output = sandbox_visible_path(assembly.with_suffix(SYNTAX_OUTPUT_SUFFIX))
-    return [*_language_args(compiler, spec, include_args), *UNBOUNDED_STACK_CHECK_FLAGS, OUTPUT_FLAG, syntax_output, rel]
 
 
 def stack_frame_argv(compiler: str, spec: Spec, include_args: list[str], rel: str, assembly: Path) -> list[str]:
     return [
-        *_language_args(compiler, spec, include_args),
-        *STACK_FRAME_CHECK_FLAGS,
+        compiler,
+        _standard_arg(spec),
         INCLUDE_FLAG,
         sandbox_visible_path(stack_usage_anchor_path(assembly)),
+        *_language_args(spec, include_args),
+        *STACK_FRAME_CHECK_FLAGS,
         OUTPUT_FLAG,
         sandbox_visible_path(assembly),
         rel,
@@ -90,11 +125,14 @@ class StackCheck:
         assembly = stack_assembly_path(self.ctx.build_dir, rel)
         assembly.parent.mkdir(parents=True, exist_ok=True)
         stack_usage_anchor_path(assembly).write_text(ANCHOR_SOURCE, encoding="utf-8")
-        outcome.argv["stack"] = unbounded_stack_argv(self.compiler, self.ctx.spec, include_args, rel, assembly)
+        for scope in UNBOUNDED_STACK_SCOPES:
+            outcome.argv[scope.name] = unbounded_stack_argv(
+                self.compiler, self.ctx.spec, include_args, rel, assembly, scope
+            )
         outcome.argv["stack_frames"] = stack_frame_argv(self.compiler, self.ctx.spec, include_args, rel, assembly)
-        unbounded_checked = self.check_unbounded(outcome, rel)
-        frames_checked = self.check_frames(outcome, rel, assembly)
-        return outcome, unbounded_checked and frames_checked
+        checked = [self.check_unbounded(outcome, rel, scope) for scope in UNBOUNDED_STACK_SCOPES]
+        checked.append(self.check_frames(outcome, rel, assembly))
+        return outcome, all(checked)
 
     def execute(self, outcome: StackCheckOutcome, argv: list[str], rel: str, what: str) -> ProcResult | None:
         proc = self.ctx.run(argv, limits=self.limits, cwd=self.ctx.snapshot_dir)
@@ -108,13 +146,13 @@ class StackCheck:
             return None
         return proc
 
-    def check_unbounded(self, outcome: StackCheckOutcome, rel: str) -> bool:
-        proc = self.execute(outcome, outcome.argv["stack"], rel, "stack")
+    def check_unbounded(self, outcome: StackCheckOutcome, rel: str, scope: UnboundedStackScope) -> bool:
+        proc = self.execute(outcome, outcome.argv[scope.name], rel, scope.log_label)
         if proc is None:
             return False
-        found = unbounded_stack_violations(rel, proc.stderr, reason=self.unbounded_reason)
-        outcome.violations += found
-        if proc.exit_code != CLEAN_EXIT_CODE and not found:
+        scan = unbounded_stack_scan(proc.stderr, self.unbounded_reason, project_files_only=scope.project_files_only)
+        outcome.violations += scan.violations
+        if proc.exit_code != CLEAN_EXIT_CODE and (proc.exit_code is None or not scan.accounts_for_failure):
             outcome.problems.append(
                 f"stack check of {rel} failed (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"
             )
@@ -126,10 +164,13 @@ class StackCheck:
         if proc is None:
             return False
         usage_file = stack_usage_path(assembly)
-        if proc.exit_code != CLEAN_EXIT_CODE or not usage_file.is_file():
+        if proc.exit_code != CLEAN_EXIT_CODE:
             outcome.problems.append(
-                f"stack-frame check of {rel} {NO_STACK_USAGE} (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"
+                f"stack-frame check of {rel} failed (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"
             )
+            return False
+        if not usage_file.is_file():
+            outcome.problems.append(f"stack-frame check of {rel} {NO_STACK_USAGE}: {redacted_excerpt(proc.stderr)}")
             return False
         usage = stack_usage_findings(rel, usage_file.read_text(encoding="utf-8", errors="replace"))
         outcome.violations += usage.violations
