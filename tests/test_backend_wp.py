@@ -10,6 +10,8 @@ from leanc.backends.counterexample import fingerprint
 from leanc.backends.wp import build_wp_argv, goal_kind, parse_console, run_wp
 from leanc.backends.wp import gate as wp_gate
 from leanc.backends.wp.assumptions import compile_statements
+from leanc.backends.wp.build_target import DUMP_MACHINE_FLAG, BuildTarget
+from leanc.backends.wp.compile_flags import classify_wp_compile_flags
 from leanc.foundation.runner import ProcResult
 from leanc.foundation.status import Outcome, Status
 from leanc.rules.source import source_violations
@@ -22,6 +24,7 @@ from leanc.toolchain.framac import (
 )
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
+X86_64_TARGET = BuildTarget("x86_64-pc-linux-gnu", "x86_64")
 
 
 ADD_H = """\
@@ -131,7 +134,8 @@ def test_proved_contract_passes(tmp_path, needs_framac):
     text = " ".join(d["assumptions"])
     assert "ALL inputs" in text and "partial correctness" in text and "Typed memory model" in text
     assert "x86_64" in text and "libc" in text and "alt-ergo" in text
-    assert res.invocations and {i.tool for i in res.invocations} <= {"frama-c", "why3"}
+    assert res.invocations and {i.tool for i in res.invocations} <= {"frama-c", "why3", "clang"}
+    assert [i.argv[-1] for i in res.invocations if i.tool == "clang"] == ["-dumpmachine"]
 
 
 def test_missing_loop_invariant_is_inconclusive_with_unproved_goals(tmp_path, needs_framac):
@@ -311,6 +315,9 @@ class _FakeRun:
         self.exit_code, self.timed_out, self.truncated = exit_code, timed_out, truncated
 
     def __call__(self, ctx_self, argv, **kw):
+        if argv[-1] == DUMP_MACHINE_FLAG:
+            return ProcResult(argv=list(argv), cwd=str(kw.get("cwd")), exit_code=0, signal=None, timed_out=False,
+                              output_truncated=False, duration_s=0.0, stdout=X86_64_TARGET.triple + "\n", stderr="")
         if "-wp-report-json" in argv and self.goals is not None:
             Path(argv[argv.index("-wp-report-json") + 1]).write_text(json.dumps(self.goals))
         return ProcResult(argv=list(argv), cwd=str(kw.get("cwd")), exit_code=self.exit_code, signal=None,
@@ -456,8 +463,9 @@ def test_example_specs_declare_wp_gate():
 def test_wp_discloses_the_compile_flags_and_standard_it_does_not_apply():
     spec = load_spec(EXAMPLES / "wp_safe_array_get" / "spec.yaml")
     spec.compile.flags = ["-Wall", "-funsigned-char", "-O2", "-g"]
-    statements = compile_statements(spec)
+    statements = compile_statements(spec, classify_wp_compile_flags(spec.compile.flags, X86_64_TARGET))
     assert any(s.startswith("compile.flags not applied by Frama-C: -funsigned-char, -O2 - ") for s in statements)
     assert any(s.startswith(f"C language standard {spec.language.standard}: ") and "c11" in s for s in statements)
     spec.compile.flags = ["-Wall", "-Wextra"]
-    assert not any("compile.flags" in s for s in compile_statements(spec))
+    classified = classify_wp_compile_flags(spec.compile.flags, X86_64_TARGET)
+    assert not any("compile.flags" in s for s in compile_statements(spec, classified))

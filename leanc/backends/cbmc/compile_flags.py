@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from leanc.specs.compile_options import (
     CHAR_SIGNEDNESS_FLAGS,
+    SIGNED_CHAR_ARCHITECTURES,
     CharSignedness,
     has_no_semantic_effect,
 )
@@ -42,7 +43,6 @@ C11_REVISION_NOTE = (
 )
 
 SIGNED_CHAR_REQUEST = "-fsigned-char"
-SIGNED_CHAR_ARCHITECTURES = frozenset({"x86_64", "i386", "x32"})
 PLATFORM_ARCHITECTURE_FIELD = 1
 
 

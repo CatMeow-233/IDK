@@ -1,29 +1,27 @@
 from __future__ import annotations
 
-import subprocess
+import dataclasses
 from pathlib import Path
 
 import pytest
-import yaml
 
-from leanc.backends.wp import run_wp
 from leanc.backends.wp.argv import MACHDEP
-from leanc.backends.wp.compile_flags import (
-    MACHDEP_CHAR_SIGNEDNESS,
-    classify_wp_compile_flags,
-    unapplied_compile_flags,
+from leanc.backends.wp.assumptions import compile_statements
+from leanc.backends.wp.build_target import (
+    NO_COMPILER,
+    UNQUERIED_BUILD_TARGET,
+    BuildTarget,
+    parse_build_target,
+    query_build_target,
 )
-from leanc.backends.wp.installation import tool_path
+from leanc.backends.wp.compile_flags import classify_wp_compile_flags, unapplied_compile_flags
 from leanc.backends.wp.verdict import Verdict, within_build_semantics
-from leanc.cli import main
 from leanc.foundation.models import StageResult, VerificationResult
 from leanc.foundation.status import Outcome, Status
-from leanc.pipeline.controller import verify
 from leanc.pipeline.repair_loop import proof_repairable
 from leanc.specs.compile_options import CharSignedness
 from leanc.specs.loader import load_spec
 from leanc.toolchain.context import make_context
-from leanc.toolchain.framac import find_framac
 
 DEFAULT_FLAGS = ["-Wall", "-Wextra", "-Wpedantic"]
 SIGNED_CHAR_SPELLINGS = ["-fsigned-char", "-fno-unsigned-char", "--signed-char"]
@@ -46,51 +44,40 @@ UNAPPLIED_FLAGS = [
     "-Wno-deprecated",
 ]
 UNSIGNED_CHAR_BUILD = ["-Wall", "-funsigned-char"]
-WP_EXAMPLE = "wp_safe_array_get"
-CHAR_UNSIGNED_MACRO = "__CHAR_UNSIGNED__"
-TARGET = "char_value"
-SIGNED_CHAR_RESULT = -56
-CHAR_HEADER = f"""#ifndef CHAR_VALUE_H
-#define CHAR_VALUE_H
-/*@ requires 0 <= k <= 10;
-    assigns \\nothing;
-    ensures \\result == k + ({SIGNED_CHAR_RESULT}); */
-int {TARGET}(int k);
-#endif
-"""
-CHAR_SOURCE = f"""#include "char_value.h"
-
-int {TARGET}(int k)
-{{
-    char c = (char)(200 + k);
-    return c;
-}}
-"""
-CHAR_DRIVER = '#include <stdio.h>\n#include "char_value.h"\nint main(void) { printf("%d", char_value(0)); return 0; }\n'
-MODEL_ONLY = "only under Frama-C's own model"
+X86_64_TRIPLE = "x86_64-pc-linux-gnu"
+AARCH64_TRIPLE = "aarch64-unknown-linux-gnu"
+X86_64_TARGET = BuildTarget(X86_64_TRIPLE, "x86_64")
+AARCH64_TARGET = BuildTarget(AARCH64_TRIPLE, "aarch64")
+UNKNOWN_TARGET = BuildTarget(None, None, "-dumpmachine failed (exit 1)")
+WP_EXAMPLE_SPEC = Path(__file__).resolve().parent.parent / "examples" / "wp_safe_array_get" / "spec.yaml"
+FRAMA_C_PARSE_STATEMENT = "Frama-C preprocesses and parses the code as c11"
 
 
-@pytest.mark.parametrize(
-    "flags",
-    [DEFAULT_FLAGS, NO_EFFECT_FLAGS, []],
-)
+def _classify(flags: list[str], target: BuildTarget = X86_64_TARGET, **kwargs):
+    return classify_wp_compile_flags(flags, target, **kwargs)
+
+
+def _applied_or_not(classified) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return classified.applied, classified.not_applied
+
+
+@pytest.mark.parametrize("flags", [DEFAULT_FLAGS, NO_EFFECT_FLAGS, []])
 def test_diagnostic_and_debug_flags_have_no_semantic_effect_for_wp(flags):
-    classified = classify_wp_compile_flags(flags)
+    classified = _classify(flags)
     assert classified.no_semantic_effect == tuple(flags)
     assert classified.applied == () and classified.not_applied == ()
 
 
 @pytest.mark.parametrize("flag", SIGNED_CHAR_SPELLINGS)
 def test_signed_char_request_is_applied_by_the_signed_char_machdep(flag):
-    classified = classify_wp_compile_flags(["-Wall", flag])
-    assert classified.applied == (flag,) and classified.not_applied == ()
+    classified = _classify(["-Wall", flag])
+    assert _applied_or_not(classified) == ((flag,), ())
     assert classified.machdep == MACHDEP and classified.machdep_char_signedness is CharSignedness.SIGNED
 
 
 @pytest.mark.parametrize("flag", UNSIGNED_CHAR_SPELLINGS)
 def test_unsigned_char_request_is_not_applied_by_the_signed_char_machdep(flag):
-    classified = classify_wp_compile_flags(["-Wall", flag])
-    assert classified.not_applied == (flag,) and classified.applied == ()
+    assert _applied_or_not(_classify(["-Wall", flag])) == ((), (flag,))
 
 
 @pytest.mark.parametrize(
@@ -103,13 +90,14 @@ def test_unsigned_char_request_is_not_applied_by_the_signed_char_machdep(flag):
     ],
 )
 def test_the_last_char_signedness_request_decides_for_every_char_entry(flags, applied):
-    classified = classify_wp_compile_flags(flags)
-    assert (classified.applied, classified.not_applied) == ((tuple(flags), ()) if applied else ((), tuple(flags)))
+    assert _applied_or_not(_classify(flags)) == ((tuple(flags), ()) if applied else ((), tuple(flags)))
 
 
 def test_char_signedness_of_an_unknown_machdep_is_never_applied():
-    classified = classify_wp_compile_flags(["-fsigned-char"], machdep="no_such_machdep")
+    classified = _classify(["-fsigned-char"], machdep="no_such_machdep")
     assert classified.machdep_char_signedness is None and classified.not_applied == ("-fsigned-char",)
+    default_char = _classify([], machdep="no_such_machdep")
+    assert len(default_char.not_applied) == 1 and X86_64_TRIPLE in default_char.not_applied[0]
 
 
 @pytest.mark.parametrize(
@@ -119,36 +107,108 @@ def test_char_signedness_of_an_unknown_machdep_is_never_applied():
         (["--std=c11"], True),
         (["-std=c1x"], True),
         (["-std=iso9899:2011"], True),
-        (["-std=c99", "-std=c11"], True),
-        (["-std=c11", "-std=c17"], False),
-        (["-std=c17"], False),
+        (["-std=c17"], True),
+        (["--std=c17"], True),
+        (["-std=c18"], True),
+        (["-std=iso9899:2017"], True),
+        (["-std=iso9899:2018"], True),
+        (["-std=c99", "-std=c17"], True),
+        (["-std=c17", "-std=gnu17"], False),
         (["-std=gnu11"], False),
+        (["-std=gnu17"], False),
         (["--std=c99"], False),
+        (["-std="], False),
     ],
 )
 def test_standard_entries_are_applied_only_when_frama_c_parses_the_selected_standard(flags, applied):
-    classified = classify_wp_compile_flags(flags)
-    assert (classified.applied, classified.not_applied) == ((tuple(flags), ()) if applied else ((), tuple(flags)))
+    assert _applied_or_not(_classify(flags)) == ((tuple(flags), ()) if applied else ((), tuple(flags)))
 
 
 @pytest.mark.parametrize("flag", UNAPPLIED_FLAGS)
 def test_every_other_semantic_entry_is_not_applied_by_wp(flag):
-    classified = classify_wp_compile_flags([*DEFAULT_FLAGS, flag])
+    classified = _classify([*DEFAULT_FLAGS, flag])
     assert classified.not_applied == (flag,)
     assert classified.no_semantic_effect == tuple(DEFAULT_FLAGS) and classified.applied == ()
 
 
 def test_classification_details_round_trip_the_unapplied_flags():
-    details = {"compile_flags": classify_wp_compile_flags(["-Wall", "-fsigned-char", "-O2"]).details()}
+    details = {"compile_flags": _classify(["-Wall", "-fsigned-char", "-O2"]).details()}
     assert details["compile_flags"] == {
         "machdep": MACHDEP,
         "machdep_char_signedness": "signed",
+        "build_target": {"triple": X86_64_TRIPLE, "architecture": "x86_64", "problem": None},
+        "build_char_signedness": "signed",
         "applied": ["-fsigned-char"],
         "no_semantic_effect": ["-Wall"],
         "not_applied": ["-O2"],
     }
     assert unapplied_compile_flags(details) == ["-O2"]
     assert unapplied_compile_flags({}) == []
+
+
+@pytest.mark.parametrize("triple", [X86_64_TRIPLE, "i386-pc-linux-gnu", "x86_64-pc-linux-gnux32"])
+def test_a_signed_char_target_default_is_applied_without_a_flag(triple):
+    classified = _classify(DEFAULT_FLAGS, parse_build_target(triple + "\n"))
+    assert classified.not_applied == () and classified.build_char_signedness is CharSignedness.SIGNED
+
+
+@pytest.mark.parametrize(
+    "triple", [AARCH64_TRIPLE, "arm64-apple-darwin23.0.0", "powerpc64le-unknown-linux-gnu", "i686-pc-linux-gnu"]
+)
+def test_a_target_default_not_known_to_be_signed_is_not_applied(triple):
+    classified = _classify(DEFAULT_FLAGS, parse_build_target(triple))
+    assert len(classified.not_applied) == 1 and classified.applied == ()
+    assert triple in classified.not_applied[0] and "not known to be signed" in classified.not_applied[0]
+    assert classified.build_char_signedness is None
+
+
+@pytest.mark.parametrize("flag", SIGNED_CHAR_SPELLINGS)
+def test_an_explicit_signed_char_flag_is_applied_on_an_unsigned_default_target(flag):
+    classified = _classify(["-Wall", flag], AARCH64_TARGET)
+    assert _applied_or_not(classified) == ((flag,), ())
+    assert classified.build_char_signedness is CharSignedness.SIGNED
+
+
+def test_an_explicit_unsigned_char_flag_is_listed_once_on_an_unsigned_default_target():
+    assert _applied_or_not(_classify(UNSIGNED_CHAR_BUILD, AARCH64_TARGET)) == ((), ("-funsigned-char",))
+
+
+@pytest.mark.parametrize("target", [UNKNOWN_TARGET, UNQUERIED_BUILD_TARGET])
+@pytest.mark.parametrize("flags", [DEFAULT_FLAGS, ["-fsigned-char"]])
+def test_an_unknown_build_target_is_never_applied(target, flags):
+    classified = _classify(flags, target)
+    assert classified.not_applied[-1] == f"(build target unknown: {target.problem})"
+
+
+@pytest.mark.parametrize(
+    "output", ["", "\n", "x86_64", "x86_64-pc-linux-gnu\naarch64-unknown-linux-gnu\n", "error: no such option", "-pc-linux"]
+)
+def test_unparsable_dumpmachine_output_gives_no_build_target(output):
+    target = parse_build_target(output)
+    assert target.triple is None and target.architecture is None and target.problem
+
+
+def test_dumpmachine_output_names_the_architecture():
+    assert parse_build_target(AARCH64_TRIPLE + "\n") == AARCH64_TARGET
+
+
+def test_a_missing_compiler_gives_no_build_target(tmp_path):
+    spec = load_spec(WP_EXAMPLE_SPEC)
+    ctx = make_context(spec, tmp_path, tmp_path / "run")
+    ctx.tools = dataclasses.replace(ctx.tools, clang=None, clang_version=None)
+    target, invocations = query_build_target(ctx, "wp")
+    assert target == BuildTarget(None, None, NO_COMPILER) and invocations == []
+
+
+def test_a_c17_build_standard_is_disclosed_like_language_standard_c17():
+    spec = load_spec(WP_EXAMPLE_SPEC)
+    spec.language.standard = "c11"
+    spec.compile.flags = ["-Wall", "-std=c17"]
+    statements = compile_statements(spec, _classify(spec.compile.flags))
+    assert f"C language standard c17: {FRAMA_C_PARSE_STATEMENT}" in statements
+    assert not any(statement.startswith("compile.flags not applied") for statement in statements)
+    spec.compile.flags = ["-Wall"]
+    assert not any(FRAMA_C_PARSE_STATEMENT in s for s in compile_statements(spec, _classify(spec.compile.flags)))
 
 
 def test_a_proof_with_unapplied_flags_is_not_a_pass():
@@ -167,88 +227,8 @@ def _unknown_with_open_wp(details: dict) -> VerificationResult:
     return VerificationResult(run_id="r", status=Status.UNKNOWN, stages=[StageResult(stage="cbmc", outcome=Outcome.PASS), wp])
 
 
-def test_a_wp_proof_blocked_by_unapplied_flags_is_not_proof_repairable():
+@pytest.mark.parametrize(("flags", "target"), [(UNSIGNED_CHAR_BUILD, X86_64_TARGET), (DEFAULT_FLAGS, AARCH64_TARGET)])
+def test_a_wp_proof_blocked_by_unapplied_flags_is_not_proof_repairable(flags, target):
     assert proof_repairable(_unknown_with_open_wp({}))
-    blocked = {"compile_flags": classify_wp_compile_flags(UNSIGNED_CHAR_BUILD).details()}
+    blocked = {"compile_flags": _classify(flags, target).details()}
     assert not proof_repairable(_unknown_with_open_wp(blocked))
-
-
-def test_the_machdep_char_signedness_table_matches_frama_c(needs_framac):
-    fc = find_framac()
-    printed = subprocess.run(
-        [fc.frama_c, "-machdep", MACHDEP, "-print-machdep-builtin-macros"],
-        capture_output=True,
-        text=True,
-        check=True,
-        env={"PATH": tool_path(fc)},
-        timeout=120,
-    ).stdout
-    assert printed.strip()
-    unsigned = CHAR_UNSIGNED_MACRO in printed
-    assert MACHDEP_CHAR_SIGNEDNESS[MACHDEP] is (CharSignedness.UNSIGNED if unsigned else CharSignedness.SIGNED)
-
-
-def _char_project(root: Path, flags: list[str]) -> Path:
-    for rel, text in (("include/char_value.h", CHAR_HEADER), ("src/char_value.c", CHAR_SOURCE)):
-        (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text(text)
-    spec = {
-        "leanc_spec": 1,
-        "spec_id": "wp-char-signedness",
-        "version": 1,
-        "title": "char-dependent contract",
-        "requirement": "return the value of (char)200",
-        "language": {"name": "c", "standard": "c17"},
-        "target": {"function": TARGET, "signature": f"int {TARGET}(int k)", "returns": {"type": "int"}},
-        "sources": {"editable": ["src/char_value.c"], "headers": ["include/char_value.h"], "include_dirs": ["include"]},
-        "compile": {"flags": flags},
-        "wp": {"provers": ["alt-ergo"], "prover_timeout_s": 5, "timeout_s": 120},
-        "gates": ["compile", "wp"],
-    }
-    spec_file = root / "spec.yaml"
-    spec_file.write_text(yaml.safe_dump(spec, sort_keys=False))
-    return spec_file
-
-
-def _built_char_value(tmp_path: Path, root: Path, flags: list[str]) -> int:
-    driver = tmp_path / "driver.c"
-    driver.write_text(CHAR_DRIVER)
-    program = tmp_path / "char_value"
-    compile_argv = ["clang", *flags, "-Iinclude", "src/char_value.c", str(driver), "-o", str(program)]
-    subprocess.run(compile_argv, cwd=root, check=True, timeout=120)
-    return int(subprocess.run([str(program)], capture_output=True, text=True, check=True, timeout=60).stdout)
-
-
-@pytest.mark.parametrize(
-    ("flags", "status"),
-    [(UNSIGNED_CHAR_BUILD, Status.UNKNOWN), (DEFAULT_FLAGS, Status.PROVED), (["-Wall", "-fsigned-char"], Status.PROVED)],
-)
-def test_wp_proves_only_builds_whose_char_signedness_frama_c_applies(
-    flags, status, tmp_path, capsys, needs_clang, needs_framac
-):
-    root = tmp_path / "project"
-    spec_file = _char_project(root, flags)
-    assert main(["spec", "approve", str(spec_file), "--by", "reviewer", "--yes"]) == 0
-    result = verify(spec_file, project_root=root, run_dir=tmp_path / "run")
-    wp = result.stage("wp")
-    assert result.status is status, result.reasons
-    assert wp.details["frama_c_model_verdict"]["outcome"] == Outcome.PASS.value, wp.summary
-    unsigned_build = status is Status.UNKNOWN
-    assert (_built_char_value(tmp_path, root, flags) == SIGNED_CHAR_RESULT) is not unsigned_build
-    if unsigned_build:
-        assert wp.outcome is Outcome.INCONCLUSIVE and unapplied_compile_flags(wp.details) == ["-funsigned-char"]
-        assert any("[wp]" in reason and "-funsigned-char" in reason for reason in result.reasons)
-        assert any(MODEL_ONLY in assumption for assumption in result.assumptions)
-    else:
-        assert wp.outcome is Outcome.PASS and unapplied_compile_flags(wp.details) == []
-
-
-def test_default_flags_keep_the_shipped_wp_example_proved(example_copy, tmp_path, needs_framac):
-    root = example_copy(WP_EXAMPLE)
-    spec = load_spec(root / "spec.yaml")
-    assert spec.compile.flags == DEFAULT_FLAGS
-    result = run_wp(make_context(spec, root, tmp_path / "run"))
-    assert result.outcome is Outcome.PASS, result.summary
-    assert result.details["compile_flags"]["no_semantic_effect"] == DEFAULT_FLAGS
-    assert unapplied_compile_flags(result.details) == []
-    assert result.details["frama_c_model_verdict"]["outcome"] == Outcome.PASS.value

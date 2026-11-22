@@ -18,11 +18,8 @@ from leanc.backends.wp.argv import (
     shell_unsafe_preprocessor_argument,
 )
 from leanc.backends.wp.assumptions import wp_assumptions
-from leanc.backends.wp.compile_flags import (
-    COMPILE_FLAGS_DETAIL,
-    WpCompileFlags,
-    classify_wp_compile_flags,
-)
+from leanc.backends.wp.build_target import UNQUERIED_BUILD_TARGET, query_build_target
+from leanc.backends.wp.compile_flags import COMPILE_FLAGS_DETAIL, classify_wp_compile_flags
 from leanc.backends.wp.console import (
     ConsoleSummary,
     contract_merge_warning,
@@ -100,7 +97,7 @@ NON_AUTOMATIC_PROVER_ADVICE = (
 )
 
 
-def _initial_details(ctx: BackendContext, compile_flags: WpCompileFlags) -> dict[str, Any]:
+def _initial_details(ctx: BackendContext) -> dict[str, Any]:
     wp = ctx.spec.wp
     return {
         "frama_c": None,
@@ -113,7 +110,7 @@ def _initial_details(ctx: BackendContext, compile_flags: WpCompileFlags) -> dict
         "prover_timeout_s": None,
         "require_termination": bool(wp and wp.require_termination),
         "machdep": MACHDEP,
-        COMPILE_FLAGS_DETAIL: compile_flags.details(),
+        COMPILE_FLAGS_DETAIL: None,
         "frama_c_model_verdict": None,
         "memory_model": MEMORY_MODEL,
         "rte_checks": list(RTE_CLASSES),
@@ -166,8 +163,8 @@ class _WpRun:
         self.work = ctx.build_dir / STAGE
         self.why3_conf = self.work / "why3.conf"
         self.report = self.raw_root / "wp-report.json"
-        self.compile_flags = classify_wp_compile_flags(ctx.spec.compile.flags)
-        self.details = _initial_details(ctx, self.compile_flags)
+        self.compile_flags = classify_wp_compile_flags(ctx.spec.compile.flags, UNQUERIED_BUILD_TARGET)
+        self.details = _initial_details(ctx)
         self.invocations: list[ToolInvocation] = []
         self.diagnostics: list[Diagnostic] = []
         self.failures: list[FailureReport] = []
@@ -187,7 +184,9 @@ class _WpRun:
     def result(self, model_verdict: Verdict) -> StageResult:
         verdict = within_build_semantics(model_verdict, self.compile_flags.not_applied)
         self.details["frama_c_model_verdict"] = {"outcome": model_verdict.outcome.value, "summary": model_verdict.summary}
-        self.details["assumptions"] = wp_assumptions(self.ctx, self.details, verdict.outcome, model_verdict.outcome)
+        self.details["assumptions"] = wp_assumptions(
+            self.ctx, self.details, self.compile_flags, verdict.outcome, model_verdict.outcome
+        )
         return StageResult(
             stage=STAGE,
             outcome=verdict.outcome,
@@ -211,6 +210,7 @@ class _WpRun:
             self._prepare_run,
             self._detect_why3_provers,
             self._remove_stale_report,
+            self._classify_compile_flags,
             self._run_framac,
             self._check_process,
             self._read_console,
@@ -255,6 +255,13 @@ class _WpRun:
             return Verdict(Outcome.ERROR, "the spec has no 'wp' section")
         if self.spec.language.is_cpp:
             return Verdict(Outcome.ERROR, "Frama-C/WP supports C only; the spec is C++")
+        return None
+
+    def _classify_compile_flags(self) -> Verdict | None:
+        target, invocations = query_build_target(self.ctx, STAGE)
+        self.invocations += invocations
+        self.compile_flags = classify_wp_compile_flags(self.spec.compile.flags, target)
+        self.details[COMPILE_FLAGS_DETAIL] = self.compile_flags.details()
         return None
 
     def _locate_framac(self) -> Verdict | None:

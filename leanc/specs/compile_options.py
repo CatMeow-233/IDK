@@ -192,6 +192,12 @@ CHAR_SIGNEDNESS_FLAGS: dict[str, CharSignedness] = {
     "--unsigned-char": CharSignedness.UNSIGNED,
 }
 
+SIGNED_CHAR_ARCHITECTURES = frozenset({"x86_64", "i386", "x32"})
+
+
+def default_char_signedness(architecture: str | None) -> CharSignedness | None:
+    return CharSignedness.SIGNED if architecture in SIGNED_CHAR_ARCHITECTURES else None
+
 
 def is_char_signedness_option(flag: str) -> bool:
     return flag in CHAR_SIGNEDNESS_FLAGS
