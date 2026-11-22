@@ -69,7 +69,9 @@ COMPILE_FLAGS_AS_GIVEN = UnboundedStackScope("stack", _as_given, only_adds_viola
 SYSTEM_INCLUDES_AS_USER_INCLUDES = UnboundedStackScope(
     "stack_user_includes", _system_includes_as_user_includes, only_adds_violations=True
 )
-WITHOUT_COMPILE_FLAGS = UnboundedStackScope("stack_without_compile_flags", _without_compile_flags, only_adds_violations=True)
+WITHOUT_COMPILE_FLAGS = UnboundedStackScope(
+    "stack_without_compile_flags", _without_compile_flags, only_adds_violations=False
+)
 UNBOUNDED_STACK_SCOPES = (COMPILE_FLAGS_AS_GIVEN, SYSTEM_INCLUDES_AS_USER_INCLUDES, WITHOUT_COMPILE_FLAGS)
 
 
@@ -171,7 +173,7 @@ class StackCheck:
             return True
         if proc.exit_code != CLEAN_EXIT_CODE and (proc.exit_code is None or not scan.accounts_for_failure):
             outcome.problems.append(
-                f"stack check of {rel} failed (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"
+                f"{scope.log_label} check of {rel} failed (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"
             )
             return False
         return True

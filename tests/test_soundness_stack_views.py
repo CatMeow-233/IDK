@@ -25,6 +25,8 @@ SYSTEM_MODULE_MAP = f'module safe_array_scratch [system] {{\n  header "{SCRATCH}
 DIAGNOSTICS_OFF = '#pragma clang diagnostic ignored "-Wvla"\n#pragma clang diagnostic ignored "-Walloca"\n'
 EDITABLE_UNUSED_VLA = "static int safe_array_scratch(size_t n)\n{\n    volatile int scratch[n + 1];\n    scratch[0] = 0;\n    return scratch[0];\n}\n"
 VENDOR_CONFIG = "#define VENDOR_CONFIG 1\n"
+INCLUDE_DIRS = "include_dirs: [include]"
+SHADOWED_ONLY_AFTER_SYSTEM = '#error "searched only after the system headers"\n'
 
 
 def _header_including(text: str) -> str:
@@ -79,8 +81,34 @@ def test_forced_include_pragma_cannot_hide_an_editable_vla(example_copy, needs_c
     assert "src/safe_array.c" in _vla_files(result)
 
 
-def test_views_that_do_not_compile_add_nothing(example_copy, needs_clang, tmp_path):
+def test_rewritten_view_that_does_not_compile_adds_nothing(example_copy, needs_clang, tmp_path):
+    files = {"vendor/stdint.h": SHADOWED_ONLY_AFTER_SYSTEM}
+    edits = {**with_flags("-Wall", "-idiraftervendor"), **_headers("vendor/stdint.h")}
+    source = "#include <stdint.h>\n" + shipped()
+    result = integrity_gate(example_copy, tmp_path, source, edits, extra_files=files)
+    assert result.outcome is Outcome.PASS, result.summary
+
+
+def test_check_without_compile_flags_fails_closed_like_main(example_copy, needs_clang, tmp_path):
     files = {HEADER: _header_including("#include <vendor_config.h>\n"), "vendor/vendor_config.h": VENDOR_CONFIG}
     edits = {**with_flags("-Wall", "-Ivendor"), **_headers("vendor/vendor_config.h")}
     result = integrity_gate(example_copy, tmp_path, spec_edits=edits, extra_files=files)
+    assert result.outcome is Outcome.ERROR, result.summary
+    assert "stack-without-compile-flags check of src/safe_array.c failed" in result.summary
+
+
+def test_header_dirs_belong_in_include_dirs(example_copy, needs_clang, tmp_path):
+    files = {HEADER: _header_including("#include <vendor_config.h>\n"), "vendor/vendor_config.h": VENDOR_CONFIG}
+    edits = {**_headers("vendor/vendor_config.h"), INCLUDE_DIRS: "include_dirs: [include, vendor]"}
+    result = integrity_gate(example_copy, tmp_path, spec_edits=edits, extra_files=files)
     assert result.outcome is Outcome.PASS, result.summary
+
+
+def test_forced_include_pragma_cannot_hide_a_vla_in_a_file_that_needs_flags(example_copy, needs_clang, tmp_path):
+    source = shipped().replace('#include "safe_array.h"\n', '#include "safe_array.h"\n' + EDITABLE_UNUSED_VLA, 1)
+    files = {"include/build.h": DIAGNOSTICS_OFF, HEADER: _header_including("#include <vendor_config.h>\n"),
+             "vendor/vendor_config.h": VENDOR_CONFIG}
+    edits = {**with_flags("-Wall", "-Ivendor", "-includeinclude/build.h"),
+             **_headers("include/build.h", "vendor/vendor_config.h")}
+    result = integrity_gate(example_copy, tmp_path, source, edits, extra_files=files)
+    assert result.outcome is not Outcome.PASS, result.summary
