@@ -103,3 +103,15 @@ def test_file_name_macro_is_tool_dependent():
     spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
     found = c_source_violations(spec, SOURCE, "static const char WHERE[] = __FILE__;\n")
     assert [v.rule for v in found] == ["TOOL_DIVERGENCE"]
+
+
+@pytest.mark.parametrize("text", ['const char *s = R"(x)";\n', 'const char *s = u8R"x(y)x";\n', "int r = LR\"(z)\";\n"])
+def test_raw_string_prefixes_are_rejected(text):
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    assert ["TOOL_DIVERGENCE"] == [v.rule for v in c_source_violations(spec, SOURCE, text)]
+
+
+@pytest.mark.parametrize("text", ['const char *s = "COLOR";\n', 'const char *s = "x R";\n', "/* R\"(y)\" */\n"])
+def test_r_before_a_quote_inside_literals_and_comments_passes(text):
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    assert [v for v in c_source_violations(spec, SOURCE, text) if v.rule == "TOOL_DIVERGENCE"] == []

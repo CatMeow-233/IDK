@@ -9,6 +9,7 @@ ANALYZER_MODE_PREFIXES = ("--analyze",)
 INDIRECTION_PREFIXES = ("@", "--config")
 CODE_LOADING_PREFIXES = ("-fplugin", "-fpass-plugin")
 DRIVER_MODE_PREFIXES = ("--driver-mode",)
+FILE_SYSTEM_OVERLAY_PREFIXES = ("-ivfsoverlay", "-vfsoverlay", "--vfsoverlay")
 TOOLCHAIN_REPLACEMENT_PREFIXES = (
     "-B",
     "--prefix",
@@ -33,6 +34,7 @@ TOOL_CONTROL_PREFIXES = (
     *INDIRECTION_PREFIXES,
     *CODE_LOADING_PREFIXES,
     *DRIVER_MODE_PREFIXES,
+    *FILE_SYSTEM_OVERLAY_PREFIXES,
     *TOOLCHAIN_REPLACEMENT_PREFIXES,
 )
 PREPROCESSOR_OUTPUT_FLAGS = frozenset({
@@ -64,6 +66,8 @@ CONST_STRING_FLAG = "-Wwrite-strings"
 DIGRAPH_CONTROL_FLAGS = frozenset({"-fdigraphs", "-fno-digraphs"})
 STRICT_C89_ALIASES = frozenset({"-ansi", "--ansi"})
 STRICT_C89_STANDARDS = frozenset({"c89", "c90", "iso9899:1990", "iso9899:199409"})
+C23_STANDARDS = frozenset({"c23", "c2x", "gnu23", "gnu2x"})
+TOKENISATION_CHANGING_STANDARDS = STRICT_C89_STANDARDS | C23_STANDARDS
 STANDARD_OPTION_PREFIXES = ("-std=", "--std=")
 OPTION_VALUE_SEPARATOR = "="
 MACRO_DEFINING_WARNING_FLAGS = frozenset({"-Wdeprecated", "-Wno-deprecated"})
@@ -72,7 +76,8 @@ NON_OPTION_ENTRIES = frozenset({"-", "--"})
 SANITIZER_CONTROL_MESSAGE = "sanitizers are chosen by tests.sanitizers, not compile.flags"
 TOOL_CONTROL_MESSAGE = (
     "compile.flags must not pass options to an internal tool (frontend, analyzer, LLVM, preprocessor, assembler, "
-    "linker), read options from a file, load plugins, switch the driver mode or replace the toolchain"
+    "linker), read options from a file, load plugins, switch the driver mode, overlay the file system or replace the "
+    "toolchain"
 )
 PREPROCESSOR_OUTPUT_MESSAGE = (
     "compile.flags must not change what the preprocessor prints or stop before code generation: integrity reads "
@@ -80,8 +85,9 @@ PREPROCESSOR_OUTPUT_MESSAGE = (
 )
 LEXICAL_MESSAGE = (
     "compile.flags must not change how C source is split into tokens: strict C89/C90 (-std=c89, -std=c90, "
-    "-std=iso9899:1990, -std=iso9899:199409, -ansi) has no // comments and -fdigraphs / -fno-digraphs switch "
-    "digraphs, while CBMC and Frama-C preprocess in gcc's gnu modes"
+    "-std=iso9899:1990, -std=iso9899:199409, -ansi) has no // comments, C23 (-std=c23, -std=c2x, -std=gnu23, "
+    "-std=gnu2x) has digit separators and -fdigraphs / -fno-digraphs switch digraphs, while CBMC and Frama-C "
+    "preprocess in gcc's gnu modes up to gnu11"
 )
 CONST_STRING_MESSAGE = (
     f"{CONST_STRING_FLAG} gives C string literals the type const char[N] (clang passes -fconst-strings to the "
@@ -109,14 +115,15 @@ def preprocessor_output_flags(flags: list[str]) -> list[str]:
     return [flag for flag in flags if flag in PREPROCESSOR_OUTPUT_FLAGS or flag.startswith(PREPROCESSOR_DUMP_PREFIX)]
 
 
-def _selects_strict_c89(flag: str) -> bool:
+def _selects_tokenisation_changing_standard(flag: str) -> bool:
     if flag in STRICT_C89_ALIASES:
         return True
-    return flag.startswith(STANDARD_OPTION_PREFIXES) and flag.partition(OPTION_VALUE_SEPARATOR)[2] in STRICT_C89_STANDARDS
+    standard = flag.partition(OPTION_VALUE_SEPARATOR)[2]
+    return flag.startswith(STANDARD_OPTION_PREFIXES) and standard in TOKENISATION_CHANGING_STANDARDS
 
 
 def lexical_flags(flags: list[str]) -> list[str]:
-    return [flag for flag in flags if flag in DIGRAPH_CONTROL_FLAGS or _selects_strict_c89(flag)]
+    return [flag for flag in flags if flag in DIGRAPH_CONTROL_FLAGS or _selects_tokenisation_changing_standard(flag)]
 
 
 def const_string_flags(flags: list[str]) -> list[str]:

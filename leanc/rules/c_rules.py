@@ -118,6 +118,11 @@ _DIVERGENCE_CONSEQUENCE = "make clang, the sanitizer build and CBMC see differen
 
 
 _TRIGRAPH_RE = re.compile(r"\?\?[=/'()!<>-]")
+_RAW_STRING_PREFIX_RE = re.compile(r'(?<!\w)(?:u8|u|U|L)?R"')
+_RAW_STRING_MEANING = (
+    "a raw string literal to CBMC's gcc gnu preprocessing but an identifier followed by a string literal to clang "
+    "in C"
+)
 
 
 class TokenRule(NamedTuple):
@@ -296,11 +301,16 @@ def token_findings(src: CSource, where: str = "") -> list[Finding]:
     return out
 
 
-def _trigraph_findings(src: CSource) -> list[Finding]:
-    return [
+def _lexical_divergence_findings(src: CSource) -> list[Finding]:
+    trigraphs = [
         Finding("TRIGRAPH", f"trigraph '{use.group()}' is not allowed: {_DIVERGENCE_CONSEQUENCE}", use.start())
         for use in _TRIGRAPH_RE.finditer(src.text)
     ]
+    raw_strings = [
+        Finding("TOOL_DIVERGENCE", f"'{use.group()}' is {_RAW_STRING_MEANING}: {_DIVERGENCE_CONSEQUENCE}", use.start())
+        for use in _RAW_STRING_PREFIX_RE.finditer(src.code)
+    ]
+    return trigraphs + raw_strings
 
 
 def _include_problem(spec: Spec, name: str, quoted: bool) -> str | None:
@@ -389,7 +399,7 @@ def c_source_violations(
     found = [
         *_directive_findings(spec, src, header_macros, header_idents),
         *pragma_operator_findings(src),
-        *_trigraph_findings(src),
+        *_lexical_divergence_findings(src),
         *token_findings(src),
         *_predefined_macro_use_findings(src),
         *_forbidden_function_findings(src),

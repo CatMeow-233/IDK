@@ -35,6 +35,7 @@ def integrity_gate(
     if source is not None:
         (root / SOURCE).write_text(source)
     for rel, text in (extra_files or {}).items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
     spec_file = root / "spec.yaml"
     text = spec_file.read_text()

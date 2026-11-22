@@ -13,15 +13,13 @@ __all__ = [
     "MAX_STACK_FRAME_BYTES",
     "STACK_FRAME_CHECK_FLAGS",
     "STACK_FRAME_RULE",
-    "SYSTEM_HEADER_WARNINGS_FLAG",
     "UNBOUNDED_STACK_CHECK_FLAGS",
     "UNBOUNDED_STACK_RULE",
     "StackUsage",
     "UnboundedStackScan",
     "codegen_flags",
-    "default_system_dirs",
-    "in_dirs",
     "project_relative",
+    "system_includes_as_user_includes",
     "stack_usage_findings",
     "stack_usage_path",
     "unbounded_stack_scan",
@@ -45,7 +43,6 @@ DIAGNOSTIC_LAYOUT_FLAGS: tuple[str, ...] = (
     "-fshow-source-location",
     "-fdiagnostics-format=clang",
     "-fmessage-length=0",
-    "-ferror-limit=0",
 )
 UNBOUNDED_STACK_CHECK_FLAGS: tuple[str, ...] = (
     "-fsyntax-only",
@@ -56,7 +53,23 @@ UNBOUNDED_STACK_CHECK_FLAGS: tuple[str, ...] = (
     "-Werror=vla",
     "-Werror=alloca",
 )
-SYSTEM_HEADER_WARNINGS_FLAG = "-Wsystem-headers"
+USER_INCLUDE_FLAG = "-I"
+USER_FRAMEWORK_FLAG = "-F"
+SYSTEM_INCLUDE_REWRITES: tuple[tuple[str, str], ...] = (
+    ("-isystem-after", USER_INCLUDE_FLAG),
+    ("-isystem", USER_INCLUDE_FLAG),
+    ("-idirafter", USER_INCLUDE_FLAG),
+    ("-iwithsysroot", USER_INCLUDE_FLAG),
+    ("-cxx-isystem", USER_INCLUDE_FLAG),
+    ("-stdlib++-isystem", USER_INCLUDE_FLAG),
+    ("--include-directory-after=", USER_INCLUDE_FLAG),
+    ("-iframeworkwithsysroot", USER_FRAMEWORK_FLAG),
+    ("-iframework", USER_FRAMEWORK_FLAG),
+)
+USER_PREFIXED_INCLUDE_SPELLINGS = ("-iwithprefixbefore", "--include-with-prefix-before=")
+INCLUDE_PREFIX_SPELLINGS = ("-iprefix", "--include-prefix=")
+PREFIXED_SYSTEM_INCLUDE_SPELLINGS = ("-iwithprefix", "--include-with-prefix-after=", "--include-with-prefix=")
+SYSTEM_HEADER_PREFIX_FLAG = "--system-header-prefix="
 STACK_FRAME_CHECK_FLAGS: tuple[str, ...] = (
     "-O0",
     "-fno-lto",
@@ -72,9 +85,6 @@ _STACK_DIAG_RE = re.compile(
     re.MULTILINE,
 )
 _ERROR_LINE_RE = re.compile(r"(?:^|: )(?:fatal )?error: ")
-SEARCH_LIST_START = "#include <...> search starts here:"
-SEARCH_LIST_END = "End of search list."
-_LOCATED_ERROR_RE = re.compile(r"^(?P<file>[^:\n]+):\d+:\d+:(?:(?:\{[^}\n]*\})+:)? error: ")
 _STACK_USAGE_ROW_RE = re.compile(
     r"^(?P<file>.+?)(?::(?P<line>\d+))?:(?P<function>[^\t:]+)\t(?P<size>\d+)\t(?P<qualifier>\S+)$"
 )
@@ -83,33 +93,11 @@ _STACK_USAGE_ROW_RE = re.compile(
 @dataclass(frozen=True)
 class UnboundedStackScan:
     violations: list[PolicyViolation] = field(default_factory=list)
-    outside_snapshot: list[str] = field(default_factory=list)
     unparsed_errors: list[str] = field(default_factory=list)
 
     @property
     def accounts_for_failure(self) -> bool:
-        return bool(self.violations or self.outside_snapshot) and not self.unparsed_errors
-
-
-def default_system_dirs(verbose_stderr: str) -> tuple[str, ...] | None:
-    lines = [line.strip() for line in verbose_stderr.splitlines()]
-    if SEARCH_LIST_START not in lines:
-        return None
-    start = lines.index(SEARCH_LIST_START) + 1
-    if SEARCH_LIST_END not in lines[start:]:
-        return None
-    dirs = tuple(posixpath.normpath(line) for line in lines[start : lines.index(SEARCH_LIST_END, start)])
-    return dirs if dirs and all(posixpath.isabs(line) for line in dirs) else None
-
-
-def in_dirs(file: str, dirs: tuple[str, ...]) -> bool:
-    normalized = posixpath.normpath(file)
-    return posixpath.isabs(normalized) and any(posixpath.commonpath([normalized, d]) == d for d in dirs)
-
-
-def _is_recoverable_error_in(line: str, tolerated_dirs: tuple[str, ...]) -> bool:
-    located = _LOCATED_ERROR_RE.match(line)
-    return located is not None and in_dirs(located.group("file"), tolerated_dirs)
+        return bool(self.violations) and not self.unparsed_errors
 
 
 @dataclass(frozen=True)
@@ -140,26 +128,47 @@ def project_relative(file: str, project_root: str) -> str | None:
     return None
 
 
-def unbounded_stack_scan(
-    stderr: str, reason: str, *, project_root: str, tolerated_dirs: tuple[str, ...]
-) -> UnboundedStackScan:
+def _option_value(flag: str, spellings: tuple[str, ...]) -> str | None:
+    for spelling in spellings:
+        if flag.startswith(spelling):
+            return flag[len(spelling) :]
+    return None
+
+
+def _as_user_include(flag: str, include_prefix: str) -> list[str]:
+    if flag.startswith(SYSTEM_HEADER_PREFIX_FLAG):
+        return []
+    if flag.startswith(USER_PREFIXED_INCLUDE_SPELLINGS):
+        return [flag]
+    prefixed = _option_value(flag, PREFIXED_SYSTEM_INCLUDE_SPELLINGS)
+    if prefixed is not None:
+        return [USER_INCLUDE_FLAG + include_prefix + prefixed]
+    for prefix, user_flag in SYSTEM_INCLUDE_REWRITES:
+        if flag.startswith(prefix):
+            return [user_flag + flag[len(prefix) :]]
+    return [flag]
+
+
+def system_includes_as_user_includes(flags: list[str]) -> list[str]:
+    rewritten: list[str] = []
+    include_prefix = ""
+    for flag in flags:
+        include_prefix = _option_value(flag, INCLUDE_PREFIX_SPELLINGS) or include_prefix
+        rewritten.extend(_as_user_include(flag, include_prefix))
+    return rewritten
+
+
+def unbounded_stack_scan(stderr: str, reason: str, *, project_root: str) -> UnboundedStackScan:
     scan = UnboundedStackScan()
     for found in _STACK_DIAG_RE.finditer(stderr):
-        if in_dirs(found.group("file"), tolerated_dirs):
-            scan.outside_snapshot.append(found.group())
-            continue
         relative = project_relative(found.group("file"), project_root)
         file = relative if relative is not None else posixpath.normpath(found.group("file"))
         scan.violations.append(
             violation(UNBOUNDED_STACK_RULE, f"{found.group('msg').strip()} ({reason})", file, int(found.group("line")))
         )
-    for line in stderr.splitlines():
-        if not _ERROR_LINE_RE.search(line) or _STACK_DIAG_RE.match(line):
-            continue
-        if _is_recoverable_error_in(line, tolerated_dirs):
-            scan.outside_snapshot.append(line)
-        else:
-            scan.unparsed_errors.append(line)
+    scan.unparsed_errors.extend(
+        line for line in stderr.splitlines() if _ERROR_LINE_RE.search(line) and not _STACK_DIAG_RE.match(line)
+    )
     return scan
 
 

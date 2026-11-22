@@ -124,12 +124,12 @@ def test_standards_map_to_cbmc_modes(standard, mode, approximate):
 
 
 def test_unsupported_standard_and_semantic_flags_are_not_applied():
-    flags = ["-Wall", "-Wextra", "-Wpedantic", "-pedantic", "-g", "-std=c2x", "-O2", "-ffast-math", "-mavx2",
+    flags = ["-Wall", "-Wextra", "-Wpedantic", "-pedantic", "-g", "-std=c2y", "-O2", "-ffast-math", "-mavx2",
              "-fwrapv", "-m32", "-includepre.h", "-isystemsys", "-D"]
     translation = _translate(flags)
     assert translation.no_semantic_effect == ("-Wall", "-Wextra", "-Wpedantic", "-pedantic", "-g")
     assert translation.not_applied == ("-O2", "-ffast-math", "-mavx2", "-fwrapv", "-m32",
-                                       "-includepre.h", "-isystemsys", "-D", "-std=c2x")
+                                       "-includepre.h", "-isystemsys", "-D", "-std=c2y")
     assert translation.standard_mode is None and translation.macro_args == ()
 
 

@@ -102,8 +102,10 @@ def test_write_strings_is_rejected():
     assert flag_rejection(["-Wno-write-strings", "--warn-write-strings"]) is None
 
 
-@pytest.mark.parametrize("flag", ["--driver-mode=cl", "--driver-mode=g++", "--driver-mode"])
-def test_driver_mode_is_rejected(flag):
+@pytest.mark.parametrize(
+    "flag", ["--driver-mode=cl", "--driver-mode=g++", "--driver-mode", "-ivfsoverlayo.yaml", "-vfsoverlayo.yaml"]
+)
+def test_driver_mode_and_file_system_overlays_are_rejected(flag):
     assert flag_rejection(["-Wall", flag]).message == TOOL_CONTROL_MESSAGE
 
 
@@ -117,7 +119,7 @@ def test_options_that_change_the_preprocessor_output_are_rejected(flag):
 @pytest.mark.parametrize(
     "flag",
     ["-std=c89", "-std=c90", "-std=iso9899:1990", "-std=iso9899:199409", "--std=c89", "-ansi", "--ansi",
-     "-fdigraphs", "-fno-digraphs"],
+     "-std=c23", "-std=c2x", "-std=gnu23", "--std=gnu2x", "-fdigraphs", "-fno-digraphs"],
 )
 def test_options_that_change_tokenisation_are_rejected(flag):
     with pytest.raises(SpecError, match="must not change how C source is split into tokens"):
