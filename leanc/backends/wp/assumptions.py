@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from leanc.backends.wp.argv import FRAMA_C_STANDARD_ARG, RTE_CLASSES
+from leanc.backends.wp.argv import RTE_CLASSES
+from leanc.backends.wp.compile_flags import FRAMA_C_STANDARD, classify_wp_compile_flags
 from leanc.foundation.status import Outcome
-from leanc.specs.compile_options import semantic_flags
 from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext
 
 WHY3_VERSION_PREFIX = "Why3 platform, version "
 NOT_CHECKED_BY_RTE = "reads of uninitialised memory, pointer alignment (\\aligned), function-pointer validity"
 MACHINE_MODEL_FACTS = "32-bit int, 64-bit long and pointers, signed char, little-endian"
-FRAMA_C_STANDARD = FRAMA_C_STANDARD_ARG.removeprefix("-std=")
 UNAPPLIED_FLAGS_CONSEQUENCE = (
     "Frama-C preprocesses with its own machdep, C11, the include directories and compile.defines only; "
     "behaviour that depends on these flags is not covered by the proof"
@@ -20,6 +19,15 @@ def _no_guarantee(target: str, outcome: Outcome) -> list[str]:
     return [
         f"Frama-C/WP did not establish the approved contract of {target}() (outcome {outcome.value}): "
         "no deductive guarantee is claimed"
+    ]
+
+
+def _model_only_proof(spec: Spec, outcome: Outcome) -> list[str]:
+    unapplied = classify_wp_compile_flags(spec.compile.flags).not_applied
+    return [
+        f"Frama-C/WP proved the approved contract of {spec.target.function}() only under Frama-C's own model "
+        f"(outcome {outcome.value}): compile.flags not applied by Frama-C ({', '.join(unapplied)}) change the "
+        "semantics of the built program, so no deductive guarantee is claimed for it"
     ]
 
 
@@ -49,7 +57,7 @@ def compile_statements(spec: Spec) -> list[str]:
             f"C language standard {spec.language.standard}: Frama-C preprocesses and parses the code as "
             f"{FRAMA_C_STANDARD}"
         )
-    unapplied = semantic_flags(spec.compile.flags)
+    unapplied = classify_wp_compile_flags(spec.compile.flags).not_applied
     if unapplied:
         statements.append(
             "compile.flags not applied by Frama-C: " + ", ".join(unapplied) + f" - {UNAPPLIED_FLAGS_CONSEQUENCE}"
@@ -57,10 +65,12 @@ def compile_statements(spec: Spec) -> list[str]:
     return statements
 
 
-def wp_assumptions(ctx: BackendContext, details: dict, outcome: Outcome) -> list[str]:
+def wp_assumptions(ctx: BackendContext, details: dict, outcome: Outcome, model_outcome: Outcome) -> list[str]:
     spec = ctx.spec
     wp = spec.wp
     target = spec.target.function
+    if outcome is not Outcome.PASS and model_outcome is Outcome.PASS:
+        return _model_only_proof(spec, outcome) + compile_statements(spec)
     if outcome is not Outcome.PASS:
         return _no_guarantee(target, outcome)
     contracts = ", ".join(f"{c['file']}:{c['line']}" for c in details.get("contract", [])) or "?"

@@ -114,3 +114,14 @@ def _proved(evidence: ProofEvidence) -> Verdict:
         f"obligations incl. RTE guards, {tally.smoke_total} smoke tests passed) for the approved contract of "
         f"{evidence.target}(); {termination}; provers {', '.join(evidence.provers)}",
     )
+
+
+def within_build_semantics(verdict: Verdict, unapplied_flags: tuple[str, ...]) -> Verdict:
+    if verdict.outcome is not Outcome.PASS or not unapplied_flags:
+        return verdict
+    return Verdict(
+        Outcome.INCONCLUSIVE,
+        f"{verdict.summary} - under Frama-C's own model only: compile.flags {', '.join(unapplied_flags)} change the "
+        "semantics of the built program and are not applied by Frama-C, so the proof does not cover the build "
+        "(not PROVED)",
+    )

@@ -7,11 +7,11 @@ from clang_driver_support import cc1_args, minimal_source
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
 from leanc.backends.cbmc.compile_flags import (
-    CharSignedness,
     platform_architecture,
     translate_compile_options,
 )
 from leanc.foundation.status import Outcome
+from leanc.specs.compile_options import CharSignedness
 from leanc.specs.model import CompileConfig
 
 GUARD = "LEANC_FLAG_GUARD"

@@ -3,9 +3,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 
-from leanc.specs.compile_options import has_no_semantic_effect
+from leanc.specs.compile_options import (
+    CHAR_SIGNEDNESS_FLAGS,
+    CharSignedness,
+    has_no_semantic_effect,
+)
 from leanc.specs.model import CompileConfig
 
 DEFINE_FLAG = "-D"
@@ -38,20 +41,6 @@ C11_REVISION_NOTE = (
     "CBMC has no C17 mode; C17 only resolves defects of C11, but __STDC_VERSION__ is 201112L instead of 201710L"
 )
 
-
-class CharSignedness(Enum):
-    SIGNED = "signed"
-    UNSIGNED = "unsigned"
-
-
-CHAR_SIGNEDNESS_FLAGS: dict[str, CharSignedness] = {
-    "-fsigned-char": CharSignedness.SIGNED,
-    "-fno-unsigned-char": CharSignedness.SIGNED,
-    "--signed-char": CharSignedness.SIGNED,
-    "-funsigned-char": CharSignedness.UNSIGNED,
-    "-fno-signed-char": CharSignedness.UNSIGNED,
-    "--unsigned-char": CharSignedness.UNSIGNED,
-}
 SIGNED_CHAR_REQUEST = "-fsigned-char"
 SIGNED_CHAR_ARCHITECTURES = frozenset({"x86_64", "i386", "x32"})
 PLATFORM_ARCHITECTURE_FIELD = 1

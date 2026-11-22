@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 SANITIZER_FLAG_PREFIXES = ("-fsanitize", "-fno-sanitize")
 TOOL_PASS_THROUGH_PREFIXES = ("-X", "-mllvm", "-Wp,", "-Wa,", "-Wl,", "--for-linker")
@@ -177,5 +178,40 @@ def has_no_semantic_effect(flag: str) -> bool:
     return is_diagnostic_option(flag) or is_debug_info_option(flag)
 
 
-def semantic_flags(flags: list[str]) -> list[str]:
-    return [flag for flag in flags if not has_no_semantic_effect(flag)]
+class CharSignedness(Enum):
+    SIGNED = "signed"
+    UNSIGNED = "unsigned"
+
+
+CHAR_SIGNEDNESS_FLAGS: dict[str, CharSignedness] = {
+    "-fsigned-char": CharSignedness.SIGNED,
+    "-fno-unsigned-char": CharSignedness.SIGNED,
+    "--signed-char": CharSignedness.SIGNED,
+    "-funsigned-char": CharSignedness.UNSIGNED,
+    "-fno-signed-char": CharSignedness.UNSIGNED,
+    "--unsigned-char": CharSignedness.UNSIGNED,
+}
+
+
+def is_char_signedness_option(flag: str) -> bool:
+    return flag in CHAR_SIGNEDNESS_FLAGS
+
+
+def requested_char_signedness(flags: list[str]) -> CharSignedness | None:
+    requested = None
+    for flag in flags:
+        requested = CHAR_SIGNEDNESS_FLAGS.get(flag, requested)
+    return requested
+
+
+def is_standard_option(flag: str) -> bool:
+    return flag.startswith(STANDARD_OPTION_PREFIXES)
+
+
+def option_value(flag: str) -> str:
+    return flag.partition(OPTION_VALUE_SEPARATOR)[2]
+
+
+def requested_standard(flags: list[str]) -> str | None:
+    standards = [option_value(flag) for flag in flags if is_standard_option(flag)]
+    return standards[-1] if standards else None

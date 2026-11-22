@@ -45,7 +45,7 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 
 ## verification invariants
 - success only if every required gate ran and passed. timeout/unparsable/skipped/tool error != success.
-- VERIFIED_BOUNDED never -> PROVED. PROVED only from required wp gate PASS on approved ACSL contract.
+- VERIFIED_BOUNDED never -> PROVED. PROVED only from required wp gate PASS on approved ACSL contract, and only if every semantic compile.flags entry is applied by WP (backends/wp/compile_flags: applied = last char-signedness entry == machdep char signedness, last -std= in C11 spellings; diagnostics/-g = no effect; everything else incl. -D/-U/-I = not applied -> wp INCONCLUSIVE, Frama-C-model verdict kept in details.frama_c_model_verdict, not proof-repairable).
 - protected files (spec, harness, tests driver, headers, lean spec/vectors) never written by generation/repair.
 - sanitizer cbmc wp lean run only after integrity PASS; integrity absent or non-PASS -> SKIPPED (unchecked code never executed/model-checked/proved). repair_loop: integrity non-PASS -> PASS is progress only if every gate that ran before keeps its PASS and gains no failure.
 - cbmc: body-less callee outside bodiless.MODELLED_BODILESS_* -> gate never PASS; violation whose trace assigns its return value (return_value_<f>) -> diagnostic, never counterexample; other violations stay counterexamples.
