@@ -11,7 +11,7 @@ from leanc.backends.cbmc import run_cbmc
 from leanc.backends.clang import run_compile
 from leanc.backends.integrity import run_integrity
 from leanc.backends.lean import run_lean
-from leanc.backends.sanitizer import run_sanitizer_tests
+from leanc.backends.sanitizer import run_sanitizer_tests, sanitizer_plan
 from leanc.backends.wp import run_wp
 from leanc.foundation.errors import LeanCError, WorkspaceError
 from leanc.foundation.models import (
@@ -56,6 +56,21 @@ LEAN_LIMITATION = (
     "Lean 4 proofs are about the trusted MODEL; the model is linked to the C code only by differential "
     "test vectors, so they never make the C verdict PROVED."
 )
+LEAK_SANITIZER_LIMITATION = (
+    "LeakSanitizer reports only heap blocks that are unreachable at exit; memory still referenced from globals, "
+    "statics or stale stack words is not reported"
+)
+TEST_PATHS_ONLY_LEAK_LIMITATION = (
+    "memory leaks are checked only on the executed test paths (no CBMC memory-leak check reached a verdict)"
+)
+NO_LEAK_CHECK_LIMITATION = "no memory-leak check reached a verdict"
+CBMC_MEMORY_MODEL_LIMITATION = (
+    "CBMC does not check pointer alignment, strict aliasing, restrict, or overflows between sub-objects of one "
+    "allocation"
+)
+LEAK_SANITIZER = "leak"
+VERDICT_OUTCOMES = (Outcome.PASS, Outcome.FAIL)
+CBMC_MEMORY_LEAK_CHECK = "memory-leak"
 UNAPPROVED_LIMITATION = "the specification is not approved: no result in this report is a verification result"
 PROVED_REASON = (
     "all required gates passed; Frama-C/WP discharged every proof obligation of the approved contract "
@@ -70,11 +85,17 @@ FORMAL_GATE_DID_NOT_PASS_REASON = "formal gate did not pass"
 
 MANDATORY_GATE_AFTER_COMPILE = "integrity"
 FORMAL_GATES = ("cbmc", "wp", "lean")
-GATES_EXECUTING_CANDIDATE_CODE = ("sanitizer",)
+GATES_ANALYSING_OR_EXECUTING_CANDIDATE_CODE = ("sanitizer", "cbmc", "wp", "lean")
 EXCLUDED_BY_GATES_OPTION = "excluded by --gates (the result cannot be VERIFIED_BOUNDED)"
 PROTECTED_FILE_CHANGED = "a protected file changed during verification"
 COMPILATION_FAILED = "compilation did not succeed"
-INTEGRITY_FAILED = "the integrity gate did not pass; code with forbidden constructs is never executed"
+INTEGRITY_FAILED = (
+    "the integrity gate did not pass; code with forbidden constructs is never executed, model-checked or proved"
+)
+INTEGRITY_NOT_RUN = (
+    "the integrity gate did not run (it runs after a passing compile gate); code it has not checked is never "
+    "executed, model-checked or proved"
+)
 
 _GATE_RUNNERS: dict[str, Callable[[BackendContext], StageResult]] = {
     "compile": run_compile,
@@ -198,11 +219,6 @@ def _approval_stage(spec: Spec, approval: ApprovalCheck, duration_s: float) -> S
     )
 
 
-def _executes_candidate_code(gate: str, spec: Spec) -> bool:
-    runs_differential_vectors = gate == "lean" and bool(spec.lean and spec.lean.vectors)
-    return gate in GATES_EXECUTING_CANDIDATE_CODE or runs_differential_vectors
-
-
 def _reject_unknown_gate_selection(spec: Spec, options: VerifyOptions) -> None:
     if options.gates is None:
         return
@@ -224,7 +240,7 @@ class _GateSequence:
     approval: ApprovalCheck
     stages: list[StageResult]
     blocked_reason: str | None = None
-    execution_blocked_reason: str | None = None
+    integrity_blocked_reason: str | None = INTEGRITY_NOT_RUN
 
     def run(self) -> None:
         for gate in sorted(self.spec.gates, key=GATE_ORDER.index):
@@ -239,8 +255,8 @@ class _GateSequence:
         if self.blocked_reason:
             self.stages.append(_skipped(gate, self.blocked_reason))
             return
-        if self.execution_blocked_reason and _executes_candidate_code(gate, self.spec):
-            self.stages.append(_skipped(gate, self.execution_blocked_reason))
+        if self.integrity_blocked_reason and gate in GATES_ANALYSING_OR_EXECUTING_CANDIDATE_CODE:
+            self.stages.append(_skipped(gate, self.integrity_blocked_reason))
             return
         if gate in FORMAL_GATES and self.approval.approved:
             if self._recheck_approval(f"before the {gate} gate"):
@@ -269,8 +285,7 @@ class _GateSequence:
         integrity = _run_gate(MANDATORY_GATE_AFTER_COMPILE, self.ctx)
         integrity.required = True
         self.stages.append(integrity)
-        if integrity.outcome is not Outcome.PASS:
-            self.execution_blocked_reason = INTEGRITY_FAILED
+        self.integrity_blocked_reason = None if integrity.outcome is Outcome.PASS else INTEGRITY_FAILED
         log.info("gate integrity: %s %s", integrity.outcome.value, integrity.summary)
         if self.options.fail_fast and integrity.outcome is not Outcome.PASS:
             self.blocked_reason = f"--fail-fast after integrity {integrity.outcome.value}"
@@ -295,12 +310,32 @@ def _assumptions(spec: Spec, stages: list[StageResult], approval: ApprovalCheck)
     return assumptions
 
 
-def _limitations(spec: Spec, ctx: BackendContext, approval: ApprovalCheck) -> list[str]:
+def _reached_verdict(stages: list[StageResult], gate: str) -> bool:
+    stage = _stage(stages, gate)
+    return stage is not None and stage.outcome in VERDICT_OUTCOMES
+
+
+def memory_limitations(spec: Spec, stages: list[StageResult]) -> list[str]:
+    cbmc_decided = _reached_verdict(stages, "cbmc")
+    leak_sanitizer_decided = (
+        _reached_verdict(stages, "sanitizer") and LEAK_SANITIZER in sanitizer_plan(spec.tests.sanitizers).effective
+    )
+    cbmc_decided_leaks = cbmc_decided and CBMC_MEMORY_LEAK_CHECK in spec.effective_cbmc_checks()
+    limitations = [LEAK_SANITIZER_LIMITATION] if leak_sanitizer_decided else []
+    if not cbmc_decided_leaks:
+        limitations.append(TEST_PATHS_ONLY_LEAK_LIMITATION if leak_sanitizer_decided else NO_LEAK_CHECK_LIMITATION)
+    if cbmc_decided:
+        limitations.append(CBMC_MEMORY_MODEL_LIMITATION)
+    return limitations
+
+
+def _limitations(spec: Spec, ctx: BackendContext, approval: ApprovalCheck, stages: list[StageResult]) -> list[str]:
     limitations = list(STANDARD_LIMITATIONS)
     if "wp" in spec.gates:
         limitations.append(WP_LIMITATION)
     if "lean" in spec.gates:
         limitations.append(LEAN_LIMITATION)
+    limitations.extend(memory_limitations(spec, stages))
     if not ctx.sandbox.active:
         limitations.append(f"no sandbox available: {ctx.sandbox.note}")
     if not approval.approved:
@@ -354,7 +389,7 @@ def verify(
         source_hashes=snapshot_hashes(ctx),
         environment=environment_info(ctx.sandbox, ctx.tools),
         assumptions=_assumptions(spec, stages, approval),
-        limitations=_limitations(spec, ctx, approval),
+        limitations=_limitations(spec, ctx, approval, stages),
         started_at=started,
         finished_at=utcnow(),
     )

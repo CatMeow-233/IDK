@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+from leanc.backends.cbmc.bodiless import UNMODELLED_CONSEQUENCE
+from leanc.backends.cbmc.compile_flags import CompileFlagTranslation
 from leanc.specs.model import InputBound
 from leanc.toolchain.context import BackendContext
+
+UNAPPLIED_FLAGS_CONSEQUENCE = (
+    "CBMC checks the program without them: strict IEEE-754 floating-point semantics (no fast-math, no FP "
+    "contraction), no -m ISA/target features, no optimisation effects, default C semantics for every other "
+    "option; behaviour that depends on these flags is not covered"
+)
 
 
 def _bound_text(bound: InputBound) -> str:
@@ -46,20 +54,59 @@ def _model_statements(ctx: BackendContext) -> list[str]:
     return [malloc, pointer]
 
 
+def _standard_statement(compile_options: CompileFlagTranslation) -> str:
+    mode = compile_options.standard_mode
+    if mode is None:
+        return f"C language standard {compile_options.standard}: no CBMC mode, checked in CBMC's default C11 mode"
+    statement = f"C language standard {compile_options.standard}: checked in CBMC's {mode.flag} mode"
+    return statement + (f" ({mode.approximation})" if mode.approximation else "")
+
+
+def _compile_statements(compile_options: CompileFlagTranslation, unapplied_flags: list[str]) -> list[str]:
+    statements = [_standard_statement(compile_options)]
+    if unapplied_flags:
+        statements.append(
+            "compile.flags not applied by CBMC: " + ", ".join(unapplied_flags) + f" - {UNAPPLIED_FLAGS_CONSEQUENCE}"
+        )
+    if compile_options.dropped_defines:
+        statements.append(
+            "compile define(s) not passed to CBMC because they would disable harness assertions: "
+            + ", ".join(compile_options.dropped_defines)
+        )
+    return statements
+
+
+def _bodiless_statements(bodiless: dict[str, list[str]]) -> list[str]:
+    statements = []
+    if bodiless.get("modelled"):
+        statements.append(
+            "functions without a body modelled by CBMC as built-ins or nondeterministic inputs: "
+            + ", ".join(sorted(bodiless["modelled"]))
+        )
+    if bodiless.get("unmodelled"):
+        statements.append(
+            "functions without a body NOT modelled by CBMC: "
+            + ", ".join(sorted(bodiless["unmodelled"]))
+            + f" - {UNMODELLED_CONSEQUENCE}, so no verified verdict is possible"
+        )
+    return statements
+
+
 def scope_assumptions(
     ctx: BackendContext,
     *,
     version: str | None,
     platform: str | None = None,
     vacuity: dict | None = None,
-    no_body: list[str] | None = None,
-    dropped_defines: list[str] | None = None,
+    bodiless: dict[str, list[str]] | None = None,
+    compile_options: CompileFlagTranslation | None = None,
+    unapplied_flags: list[str] | None = None,
 ) -> list[str]:
     verification = ctx.spec.verification
     statements = [
         _unwinding_statement(ctx, version),
         "checked property classes: "
-        + ", ".join(verification.effective_checks())
+        + ", ".join(ctx.spec.effective_cbmc_checks())
         + " - plus every assertion of the approved harness; other properties are not checked",
         (
             f"inputs as constrained by the approved harness {verification.harness} (its LEANC_ASSUME preconditions) "
@@ -76,13 +123,7 @@ def scope_assumptions(
     if vacuity is not None and vacuity.get("status") == "ok":
         probe_count = len(vacuity.get("properties") or vacuity.get("probes") or {})
         statements.append(f"non-vacuity: all {probe_count} LEANC_REACH probe(s) of the harness are reachable")
-    if no_body:
-        statements.append(
-            "functions without a body are treated by CBMC as returning arbitrary values: " + ", ".join(sorted(no_body))
-        )
-    if dropped_defines:
-        statements.append(
-            "compile define(s) not passed to CBMC because they would disable harness assertions: "
-            + ", ".join(dropped_defines)
-        )
+    statements += _bodiless_statements(bodiless or {})
+    if compile_options is not None:
+        statements += _compile_statements(compile_options, list(unapplied_flags or []))
     return statements

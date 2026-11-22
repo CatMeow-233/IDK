@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import dataclasses
+
+import pytest
+from integrity_support import (
+    EXAMPLES,
+    READ_LINE,
+    SOURCE,
+    by_rule,
+    integrity_gate,
+    shipped,
+)
+
+from leanc.backends.integrity import NO_LINEMARKER
+from leanc.foundation.status import Outcome
+from leanc.rules.c_rules import c_source_violations
+from leanc.rules.preprocessor import has_linemarker_for
+from leanc.specs.loader import load_spec
+from leanc.toolchain.context import BackendContext
+
+PREPROCESS_FLAG = "-E"
+LINEMARKER_START = "#"
+TRIGRAPH_RULE = "TRIGRAPH"
+TRIGRAPH_HIDDEN_LINE_READ = (
+    "    size_t pos = idx;\n    if (len == 4) {\n        pos = idx + 1;\n        // keep pos in range ??/\n"
+    "        pos = idx;\n    }\n    *out = arr[pos];"
+)
+TRIGRAPH_TEXTS = ["// end ??/\nx = 1;\n", 'const char *s = "??=";\n', "int a ??( 2 ??);\n", "/* ??! */\n"]
+NOT_TRIGRAPH_TEXTS = ["int x = a ? b : c;\n", 'const char *s = "??";\n', 'const char *s = "?" "?/";\n']
+
+
+def _without_linemarkers(original):
+    def run(self, argv, **kwargs):
+        proc = original(self, argv, **kwargs)
+        if PREPROCESS_FLAG not in argv:
+            return proc
+        kept = [line for line in proc.stdout.splitlines() if not line.startswith(LINEMARKER_START)]
+        return dataclasses.replace(proc, stdout="\n".join(kept))
+
+    return run
+
+
+def test_preprocessed_output_without_a_linemarker_for_the_file_is_an_error(
+    example_copy, needs_clang, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(BackendContext, "run", _without_linemarkers(BackendContext.run))
+    result = integrity_gate(example_copy, tmp_path)
+    assert result.outcome is Outcome.ERROR and NO_LINEMARKER in result.summary, result.summary
+    assert "preprocessed" not in result.details["files"][0]["checks"]
+
+
+@pytest.mark.parametrize(
+    "output, marked",
+    [
+        ('# 1 "src/a.c"\nint x;\n', True),
+        ('# 1 "./src/a.c" 1\nint x;\n', True),
+        ('#line 1 "src/a.c"\nint x;\n', False),
+        ('# 1 "src/b.c"\nint x;\n', False),
+        ('# 1 "src/caf\\303\\251.c"\nint x;\n', "src/café.c"),
+        ('# 1 "src/a\\tb.c"\nint x;\n', "src/a\tb.c"),
+        ("int x;\n", False),
+    ],
+)
+def test_linemarker_presence(output, marked):
+    if isinstance(marked, str):
+        assert has_linemarker_for(marked, output) and not has_linemarker_for("src/a.c", output)
+    else:
+        assert has_linemarker_for("src/a.c", output) is marked
+
+
+@pytest.mark.parametrize("text", TRIGRAPH_TEXTS)
+def test_trigraphs_are_rejected_anywhere(text):
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    assert [v.rule for v in c_source_violations(spec, SOURCE, text) if v.rule == TRIGRAPH_RULE] != []
+
+
+@pytest.mark.parametrize("text", NOT_TRIGRAPH_TEXTS)
+def test_question_marks_that_are_not_trigraphs_pass(text):
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    assert [v for v in c_source_violations(spec, SOURCE, text) if v.rule == TRIGRAPH_RULE] == []
+
+
+def test_trigraph_that_hides_a_line_from_clang_fails_integrity(example_copy, needs_clang, tmp_path):
+    result = integrity_gate(example_copy, tmp_path, shipped().replace(READ_LINE, TRIGRAPH_HIDDEN_LINE_READ))
+    assert result.outcome is Outcome.FAIL, result.summary
+    assert [d.location.line for d in by_rule(result, TRIGRAPH_RULE)] == [14]
+
+
+
+def test_non_ascii_source_name_is_read_after_expansion(example_copy, needs_clang, tmp_path):
+    renamed = "src/safe_arrayé.c"
+    source = shipped().replace(READ_LINE, "#define PASTE(a, b) a##b\n    *out = arr[idx];\n    PASTE(__builtin_, trap)();")
+    edits = {f"editable: [{SOURCE}]": f"editable: [{renamed}]"}
+    result = integrity_gate(example_copy, tmp_path, spec_edits=edits, extra_files={renamed: source})
+    assert result.outcome is Outcome.FAIL, result.summary
+    [entry] = result.details["files"]
+    assert "preprocessed" in entry["checks"]
+    assert any("after macro expansion" in d.message for d in by_rule(result, "TERMINATION"))
+
+
+def test_file_name_macro_is_tool_dependent():
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    found = c_source_violations(spec, SOURCE, "static const char WHERE[] = __FILE__;\n")
+    assert [v.rule for v in found] == ["TOOL_DIVERGENCE"]
+
+
+@pytest.mark.parametrize("text", ['const char *s = R"(x)";\n', 'const char *s = u8R"x(y)x";\n', "int r = LR\"(z)\";\n"])
+def test_raw_string_prefixes_are_rejected(text):
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    assert ["TOOL_DIVERGENCE"] == [v.rule for v in c_source_violations(spec, SOURCE, text)]
+
+
+@pytest.mark.parametrize("text", ['const char *s = "COLOR";\n', 'const char *s = "x R";\n', "/* R\"(y)\" */\n"])
+def test_r_before_a_quote_inside_literals_and_comments_passes(text):
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    assert [v for v in c_source_violations(spec, SOURCE, text) if v.rule == "TOOL_DIVERGENCE"] == []

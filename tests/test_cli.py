@@ -58,7 +58,7 @@ def test_invalid_spec_is_readable_error(capsys, tmp_path):
 def test_doctor_json(capsys, needs_toolchain):
     rc, data = run(capsys, "doctor", "--json")
     names = {c["name"]: c for c in data["checks"]}
-    for n in ("python", "clang", "clang-static-analyzer", "sanitizers", "cbmc", "sandbox"):
+    for n in ("python", "clang", "clang-static-analyzer", "sanitizers", "gcc", "cbmc", "sandbox"):
         assert names[n]["ok"], names[n]
     assert rc == 0 and data["ok"]
     assert names["llm-provider"]["required"] is False

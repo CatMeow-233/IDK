@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from leanc.foundation.errors import WorkspaceError
 from leanc.foundation.text import NUL, has_lone_surrogate
 from leanc.foundation.workspace import normalize_relpath
+from leanc.specs.compile_options import flag_rejection
 
 SPEC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 C_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -187,6 +188,14 @@ class CompileConfig(_M):
     defines: list[str] = Field(default_factory=list)
     warnings_policy: Literal["report", "block"] = "report"
     timeout_s: float = Field(default=60, gt=0, le=3600)
+
+    @field_validator("flags")
+    @classmethod
+    def _only_ordinary_options(cls, v: list[str]) -> list[str]:
+        rejection = flag_rejection(v)
+        if rejection is not None:
+            raise ValueError(f"{rejection.message}: {rejection.flags}")
+        return v
 
 
 class StaticAnalysisConfig(_M):
@@ -425,6 +434,11 @@ class Spec(_M):
         names = [c.name for c in self.tests.cases]
         if len(set(names)) != len(names):
             raise ValueError("duplicate test case names")
+
+    def effective_cbmc_checks(self) -> list[str]:
+        configured = self.verification.effective_checks() if self.verification else []
+        claimed = [c for s in self.contract.safety for c in s.checks]
+        return configured + [c for c in dict.fromkeys(claimed) if c not in configured]
 
     def protected_paths(self) -> list[str]:
         out = [*([self.verification.harness] if self.verification else []), *self.sources.headers]

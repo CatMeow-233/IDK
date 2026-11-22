@@ -23,6 +23,7 @@ __all__ = [
     "divergent_macro_findings",
     "expanded_pragma_findings",
     "expanded_view",
+    "has_linemarker_for",
     "identifiers",
     "include_path_problem",
     "included_header",
@@ -64,11 +65,16 @@ _PLAIN_STRING_ARGUMENT_RE = re.compile(r'\(\s*"((?:[^"\\\n]|\\.)*)"\s*\)')
 _TOOL_SPECIFIC_IDENT_RE = re.compile(r"\b(__\w+|_[A-Z]\w*|LEANC_\w*|NDEBUG)\b")
 _IDENTIFIER_RE = re.compile(r"\b[A-Za-z_]\w*\b")
 _LINEMARKER_RE = re.compile(r'^#\s*(\d+)\s+"((?:[^"\\]|\\.)*)"')
+_LINEMARKER_ESCAPE_RE = re.compile(r'\\(\\|"|t|n|[0-7]{3})')
+_LINEMARKER_SIMPLE_ESCAPES = {"\\": b"\\", '"': b'"', "t": b"\t", "n": b"\n"}
+OCTAL_BASE = 8
+FILE_NAME_ENCODING = "utf-8"
+FILE_NAME_ERRORS = "surrogateescape"
 _DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:")
 
 TOOL_DEPENDENT_PREDEFINED_MACRO_RE = re.compile(
     r"\b(__clang\w*|__GNUC\w*|__OPTIMIZE\w*|__llvm\w*|__TIME__|__DATE__|__TIMESTAMP__|__COUNTER__|"
-    r"__INCLUDE_LEVEL__|__BASE_FILE__|__FILE_NAME__|__VERSION__|__SANITIZE_\w+|__has_\w+|__is_identifier|"
+    r"__INCLUDE_LEVEL__|__FILE__|__BASE_FILE__|__FILE_NAME__|__VERSION__|__SANITIZE_\w+|__has_\w+|__is_identifier|"
     r"__NO_INLINE__|__STDC_HOSTED__)\b"
 )
 
@@ -249,7 +255,23 @@ def pragma_operator_findings(src: CSource) -> list[Finding]:
 
 
 def _unescaped_linemarker_file(spelling: str) -> str:
-    return spelling.replace('\\"', '"').replace("\\\\", "\\")
+    unescaped = bytearray()
+    position = 0
+    for escape in _LINEMARKER_ESCAPE_RE.finditer(spelling):
+        unescaped += spelling[position : escape.start()].encode(FILE_NAME_ENCODING, FILE_NAME_ERRORS)
+        code = escape.group(1)
+        unescaped += _LINEMARKER_SIMPLE_ESCAPES.get(code) or bytes([int(code, OCTAL_BASE)])
+        position = escape.end()
+    unescaped += spelling[position:].encode(FILE_NAME_ENCODING, FILE_NAME_ERRORS)
+    return unescaped.decode(FILE_NAME_ENCODING, FILE_NAME_ERRORS)
+
+
+def has_linemarker_for(rel: str, pp_output: str) -> bool:
+    for line in pp_output.split("\n"):
+        marker = _LINEMARKER_RE.match(line)
+        if marker and posixpath.normpath(_unescaped_linemarker_file(marker.group(2))) == posixpath.normpath(rel):
+            return True
+    return False
 
 
 def expanded_view(rel: str, pp_output: str) -> tuple[str, list[int]]:

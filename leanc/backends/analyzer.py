@@ -79,6 +79,7 @@ def analyzer_command(
         raise ValueError(f"unknown analyzer output format {output_format!r}")
     argv += [
         f"-std={spec.language.standard}",
+        *spec.compile.flags,
         *define_args(spec.compile.defines),
         *ctx.include_args(),
         *DIAGNOSTIC_FLAGS,

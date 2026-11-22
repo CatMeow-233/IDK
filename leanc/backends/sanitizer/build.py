@@ -12,6 +12,7 @@ from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler
 
 BASE_FLAGS: tuple[str, ...] = ("-g", "-O1", "-fno-omit-frame-pointer")
+BUILD_FIDELITY_FLAGS: tuple[str, ...] = ("-fno-builtin", "-fno-optimize-sibling-calls")
 BUILD_TOOL = "clang"
 UNDEFINED_REFERENCE_RULE = "undefined-reference"
 MULTIPLE_DEFINITION_RULE = "multiple-definition"
@@ -41,25 +42,39 @@ _COMPILER_CRASH_RE = re.compile(
 )
 
 
-def build_command(ctx: BackendContext, binary: Path, plan: SanitizerPlan) -> list[str]:
+def instrumented_compile_flags(ctx: BackendContext, plan: SanitizerPlan) -> list[str]:
     spec = ctx.spec
-    language_driver = compiler(ctx)
-    assert language_driver and spec.tests.driver
     return [
-        language_driver,
         f"-std={spec.language.standard}",
         *BASE_FLAGS,
-        *plan.compile_flags,
         *spec.compile.flags,
+        *BUILD_FIDELITY_FLAGS,
+        *plan.compile_flags,
         *define_args(spec.compile.defines),
         *ctx.include_args(),
         f"-I{os.path.realpath(ctx.include_dir)}",
         *DIAGNOSTIC_FLAGS,
-        *spec.sources.editable,
-        spec.tests.driver,
+    ]
+
+
+def instrumented_program_argv(
+    language_driver: str, ctx: BackendContext, plan: SanitizerPlan, test_driver: str, binary: Path
+) -> list[str]:
+    return [
+        language_driver,
+        *instrumented_compile_flags(ctx, plan),
+        *ctx.spec.sources.editable,
+        test_driver,
         "-o",
         str(binary),
     ]
+
+
+def build_command(ctx: BackendContext, binary: Path, plan: SanitizerPlan) -> list[str]:
+    language_driver = compiler(ctx)
+    test_driver = ctx.spec.tests.driver
+    assert language_driver and test_driver
+    return instrumented_program_argv(language_driver, ctx, plan, test_driver, binary)
 
 
 def compiler_crash_reported(stderr: str) -> bool:

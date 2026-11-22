@@ -13,7 +13,7 @@
   -> 反例 -> AI 修復（政策檢查，最多 N 回合）-> 重新驗證 -> JSON / Markdown 報告
 ```
 
-目錄：[安裝](#安裝) · [快速開始](#快速開始) · [概念](#概念) · [指令](#指令) · [狀態與結束代碼](#狀態與結束代碼) · [機器介面（AI agent / CI）](#機器介面ai-agent--ci) · [LLM provider](#llm-provider) · [設定](#設定) · [V2 工具](#v2-可選工具) · [範例](#範例) · [開發 Lean C](#開發-lean-c) · [限制](#限制)
+目錄：[安裝](#安裝) · [快速開始](#快速開始) · [概念](#概念) · [指令](#指令) · [狀態與結束代碼](#狀態與結束代碼) · [關卡規則](#關卡規則) · [機器介面（AI agent / CI）](#機器介面ai-agent--ci) · [LLM provider](#llm-provider) · [設定](#設定) · [V2 工具](#v2-可選工具) · [範例](#範例) · [開發 Lean C](#開發-lean-c) · [限制](#限制)
 
 ---
 
@@ -22,9 +22,9 @@
 需要 Linux 或 WSL2（以下指令以 Ubuntu 24.04 為例），以及 Python 3.11 以上。
 
 ```bash
-sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc bubblewrap
+sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap
 pip install -e ".[dev]"          # 執行相依：pydantic、PyYAML；開發：pytest
-leanc doctor                     # 實測 clang、分析器、sanitizers、CBMC、bwrap 沙箱與網路隔離、LLM 設定
+leanc doctor                     # 實測 clang、分析器、sanitizers、gcc、CBMC、bwrap 沙箱與網路隔離、LLM 設定
 ```
 
 `leanc doctor` 會實際執行每個工具，並為每項失敗的檢查給出修復方式。加上 `--json` 可取得機器可讀輸出（`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`）。若 bubblewrap 沙箱不可用，sanitizer 測試會被略過，整體狀態最多只能是 `UNKNOWN`（見 [安全性](docs/security.md)）。
@@ -66,7 +66,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 可編輯檔 | `sources.editable`：生成與修復唯一能寫入的檔案 |
 | 批准 | `leanc spec approve` 把規格的語意雜湊與每個受保護檔的 SHA-256 綁進一筆紀錄，並用 `LEANC_HOME`（預設 `~/.config/leanc`）中的金鑰簽章。任何變更都會導致 `SPEC_UNAPPROVED`，直到重新批准為止，而且 `version` 必須遞增。回滾帳本會拒絕已被取代的批准 |
 | 規格草案 | `leanc spec draft` 寫入 `drafts/<id>/`，並標記為 `provenance: ai-draft`。在人工審查並批准之前，它永遠不受信任 |
-| 關卡（gate） | 一個驗證階段：`compile`、`integrity`（強制，每次都執行）、`static_analysis`、`sanitizer`、`cbmc`，V2 另有 `wp`、`lean`。必須每個必要關卡都執行且通過，才算成功 |
+| 關卡（gate） | 一個驗證階段：`compile`、`integrity`（強制；在編譯關卡通過後執行）、`static_analysis`、`sanitizer`、`cbmc`，V2 另有 `wp`、`lean`。必須每個必要關卡都執行且通過，才算成功 |
 | 執行（run） | 每次 `generate` / `verify` / `repair` / `run` 都會建立 `.leanc/runs/<run_id>/` |
 
 給所有 agent 的規則：不得修改受保護檔，也不得代替人執行 `spec approve`。批准就是信任邊界。
@@ -121,6 +121,23 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 70 | — | 內部錯誤（traceback 寫到 stderr） |
 
 「沒找到反例」不等於成功。逾時、工具錯誤、無法解析的結果、被略過的關卡，都不算成功。彙總規則見 [docs/status-semantics.md](docs/status-semantics.md)。
+
+## 關卡規則
+
+這些規則堵住了「關卡通過、但程式碼其實沒被真正檢查」的漏洞；仍未堵住的列在[限制](#限制)中。它們都不會把失敗變成成功。
+
+| 規則 | 行為 |
+|---|---|
+| 完整性未通過 | `sanitizer`、`cbmc`、`wp`、`lean` 只在完整性關卡通過後執行，否則為 `SKIPPED`（報告原文：「never executed, model-checked or proved」）；`gates` 不含 `compile` 時同樣如此，因為完整性關卡在編譯關卡通過後才執行。`static_analysis` 照常執行。狀態取自完整性關卡：`FAIL` 得 `STATIC_ANALYSIS_WARNING`，`ERROR` 得 `TOOL_ERROR`，`TIMEOUT` 得 `TIMEOUT`；完整性關卡沒有執行時，狀態為 `UNKNOWN`。修復迴圈中，讓完整性通過的候選算作進展，即使隨後解鎖的關卡找到反例，前提是先前已執行的關卡（`compile`、`static_analysis`）沒有失去通過、也沒有新增失敗 |
+| 堆疊框大小 | 完整性關卡以 `-fstack-usage` 編譯每個可編輯檔案（先以 `-include` 加入一個錨點函式，再加去掉警告控制後的 `compile.flags`，最後是 `-O0 -fno-lto -fembed-bitcode=off`），讀取 clang 寫出的堆疊框大小：超過 1 MiB 的堆疊框為 `STACK_FRAME_TOO_LARGE`，clang 標為 `dynamic` 的堆疊框（執行期才配置的堆疊：VLA、`alloca`、`_alloca`）為 `UNBOUNDED_STACK`。錨點讓 clang 為每個產生程式碼的檔案寫出堆疊用量檔；沒有寫出時（例如 `-emit-llvm`）或編譯的結束碼不是 0，完整性關卡為 `ERROR`。VLA / `alloca` 檢查（`UNBOUNDED_STACK`）對每個檔案編譯三次。第一次帶上 `compile.flags`，失敗即關閉：只有每一行錯誤都是解析得出的 VLA / `alloca` 診斷時才算通過。第二次把 `compile.flags` 中的系統 include 選項（`-isystem`、`-idirafter`、`-iwithsysroot` 等）改成放在規格 include 目錄之後的 `-I`，保持搜尋順序，並去掉 `--system-header-prefix=`。第三次不帶 `compile.flags`，與舊版相同，同樣失敗即關閉，所以只靠某個 `compile.flags` 項才能編譯的檔案會得到 `ERROR`：include 目錄請放在 `sources.include_dirs`，巨集請放在 `compile.defines`。只有第二次執行只增加違規而不會失敗；它編譯不過時不增加任何東西。因此系統 include 選項、module map 與強制引入標頭中的 pragma，都無法隱藏不帶它們時會被回報的 VLA，而編譯器自己的系統標頭（libstdc++）仍是系統標頭 |
+| 三字元序列 | 可編輯的 C 程式碼中任何位置（包括註解與字串常值）出現三字元序列（`??/`、`??=` 等）即為 `TRIGRAPH`：clang 在 ISO C 模式（`-std=c17`）下會替換三字元序列，CBMC 與 Frama-C 的前處理則不會，所以註解結尾的 `??/` 只會對其中一方隱藏下一行。原始字串前綴（`R"`、`u8R"`、`LR"` 等）為 `TOOL_DIVERGENCE`：gcc 的 gnu 模式把它讀成原始字串常值，clang 在 C 中讀成識別字加字串。`__FILE__` 也是 `TOOL_DIVERGENCE`，因為 `-fmacro-prefix-map=` 只改變 clang 的值 |
+| 預先定義的巨集 | 僅適用於含 `cbmc` 或 `wp` 的規格。把 clang 在編譯關卡選項（`-std`、`compile.flags`、`compile.defines`）下預先定義的巨集，與 gcc 在各驗證器自身前處理方式下預先定義的巨集比較。CBMC：`-D__CPROVER__ -m64 -std=gnuNN`、`-funsigned-char`、它收到的 `-D` 定義，然後是它的 x86-64 定義（`__LP64__`、`__x86_64__` 等），順序與 CBMC 呼叫 gcc 時相同。Frama-C：`-undef -nostdinc` 加 machdep 的內建巨集（`frama-c -print-machdep-builtin-macros`，其中定義了 `unix` 與 `linux`）、`-D__FRAMAC__ -std=c11` 與 `compile.defines`。可編輯程式碼中用到取值不同的巨集即為 `TOOL_DIVERGENCE`。需要 `gcc`，`wp` 還需要 `frama-c`；缺少時完整性關卡為 `ERROR` |
+| `compile.flags` | 每一項都是一個選項，值直接接在選項後面（`-Iinclude`、`-DNAME=1`、`-std=c17`、`-includepre.h`）。規格驗證拒絕輸入檔、`-` 與 `--`。完整性關卡會詢問 clang（`clang -### <項>`）某一項是否把下一項當作自己的值（`-I include`、`-iprefix -funsigned-char`）；這樣的項得 `TOOL_ERROR`，因為 CBMC 轉換與堆疊檢查把每一項都當作獨立選項讀取。另外拒絕：`-fsanitize*` / `-fno-sanitize*`（sanitizer 由 `tests.sanitizers` 決定），以及把參數交給內部工具或替換工具鏈的選項：`-X...`（`-Xclang`、`-Xanalyzer`、`-Xlinker` 等）、`--for-linker`、`-mllvm`、`-Wp,` / `-Wa,` / `-Wl,`、`--analyze...`、`@file`、`--config`、`-fplugin` / `-fpass-plugin`、`-ccc-*`、`-B` / `--prefix`、`--ld-path` / `-fuse-ld=<path>`、`-resource-dir` / `--resource-dir`、`--sysroot` / `-isysroot`、`-ivfsoverlay` / `-vfsoverlay`、`--gcc-toolchain` / `--gcc-install-dir`、`-nostdlib` / `--no-standard-libraries` / `-nodefaultlibs` / `-nostartfiles`、`--driver-mode`。改變前處理器輸出或在產生程式碼之前就停止的選項也會被拒絕，因為完整性關卡以 `compile.flags` 讀取前處理後的原始碼：`-E`、`-P` / `--no-line-commands`、`-C` / `-CC`、`-d*`（`-dM`、`-dD` 等）、`-M` / `-MM`、`-fdirectives-only`、`-frewrite-includes`、`-fuse-line-directives`、`-fkeep-system-includes`、`-fminimize-whitespace`、`-traditional-cpp`、`-fsyntax-only`、`-fdriver-only`；前處理輸出中沒有該檔案的 linemarker 時為 `ERROR`。改變 C 原始碼斷詞方式的選項也會被拒絕，因為 CBMC 與 Frama-C 以 gcc 的 gnu 模式前處理：strict C89/C90（`-std=c89`、`-std=c90`、`-std=iso9899:1990`、`-std=iso9899:199409`、`-ansi`，它們沒有 `//` 註解）、C23（`-std=c23`、`-std=c2x`、`-std=gnu23`、`-std=gnu2x`，它們有數字分隔符），以及 `-fdigraphs` / `-fno-digraphs`。`-Wwrite-strings` 會被拒絕：clang 把它轉成 `-fconst-strings`，讓字串常值的型別變成 `const char[N]`，而沒有任何驗證器套用這一點。靜態分析收到其餘參數。CBMC 會收到 `-D`、`-I`、`-std=` / `--std=` 與 `-funsigned-char`（有號 `char` 是 CBMC 在 x86 上的預設），GCC 的長拼法（`--define-macro=`、`--undefine-macro=`、`--include-directory=`、`--unsigned-char`、`--signed-char`）也一樣，但絕不會收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`（函式型巨集也一樣）；其他 `-U` 會被列為未套用。警告與 `-g` 參數沒有語意影響，但 `-Wdeprecated` / `-Wno-deprecated` 除外：它們在 C++ 中決定 `__DEPRECATED`，因此會保留給堆疊檢查。其餘參數（例如 `-O2 -ffast-math -mavx2`）列在假設「compile.flags not applied by CBMC」中；WP 不套用任何 `compile.flags`，並把它們列在「compile.flags not applied by Frama-C」中。判定不變 |
+| 無函式本體的函式（CBMC） | 允許：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他無函式本體的被呼叫函式會使 `cbmc` 無法通過：`<immintrin.h>` 背後的 SIMD builtin，以及完整性關卡允許、但 CBMC 沒有模型的 `memchr`、`strnlen`、`strstr`、`fputc`、`putc`。路徑用到這類函式回傳值的違規是 `unmodelled-callee` 診斷，不是反例；其他違規仍是反例。沒有反例時關卡為 `INCONCLUSIVE`（狀態 `UNKNOWN`）：把呼叫改寫成一般 C 才能得到判定 |
+| CBMC 內部錯誤 | 不變式違規報告為 `TOOL_ERROR`（「CBMC internal error」），並附上 File/Condition/Reason 摘錄，而不是記憶體不足提示 |
+| 契約安全檢查 | `contract.safety` 中的檢查會加入 CBMC 的性質檢查；規格雜湊不變 |
+| sanitizer 建置 | 測試、所有權追蹤和 Lean 向量的建置都在 `compile.flags` 之後加上 `-fno-builtin -fno-optimize-sibling-calls`，這樣 clang `-O1` 無法刪除未使用的配置（`malloc`、`strdup`、`aligned_alloc`、C++ `new`），也無法刪除包裝函式的堆疊框 |
+| 記憶體檢查的侷限 | `limitations` 列出洩漏檢查看不到的部分；只有關卡得出判定（`PASS` 或 `FAIL`）的檢查才算數。LeakSanitizer 只回報不可達的區塊。沒有 CBMC `memory-leak` 判定時，只在測試路徑上檢查洩漏。CBMC 不檢查對齊、嚴格別名、`restrict`，也不檢查同一配置內子物件之間的溢位 |
 
 ## 機器介面（AI agent / CI）
 
@@ -326,12 +343,16 @@ python -m scripts.merge_gate                        # 建立或合併 PR 之前�
 
 成功時輸出 `MERGE GATE PASS head=<sha> base=<sha>`。合併之前要先取得遠端，確認遠端基準分支仍等於輸出中的 base sha（否則重新執行閘門），然後只合併輸出中的 head sha（使用 `expectedHeadSha` 和 merge commit）。之後有任何新 commit，都必須重新執行閘門。
 
-完整測試需要 clang-18、CBMC 與 bwrap；WP 測試需要 Frama-C >= 27，Lean 測試需要 Lean 4。缺少某個工具時，相關測試會被略過。
+完整測試需要 clang-18、gcc、CBMC、bwrap，以及支援 AVX2 的 x86-64 CPU（SIMD 測試會執行 AVX2 程式碼）。WP 測試以及 `wp` 規格的完整性測試需要支援 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 測試）；Lean 測試需要 Lean 4。缺少某個工具時相關測試會被略過，因此合併閘門需要全部工具。
 
 ## 限制
 
 - `VERIFIED_BOUNDED` 受限於已批准的 harness；harness 是否忠實表達需求，仍需由人判斷。
 - sanitizer 只涵蓋可信測試實際執行到的路徑。
+- CBMC 不對無函式本體的函式（如 SIMD intrinsic）建模，也無法套用部分參數（如 `-ffast-math`、`-O2`、`-m*`）：前者使結果不確定，後者作為假設揭露。WP 不套用任何 `compile.flags`：它們會被揭露，而以 `-funsigned-char` 建置的程式碼在 Frama-C 有號 `char` 的 machdep 下仍可能得到 `PROVED`。
+- 巨集比較只看按名稱使用的預先定義巨集。用記號拼接（`##`）拼出的預先定義巨集名，以及兩邊工具中由系統標頭定義且取值不同的巨集（例如 `M_PI`：glibc 在 `-std=gnu11` 下定義它，在 `-std=c17` 下不定義），都不會被比較：依據它們分支的程式碼可能讓編譯關卡與驗證器看到不同的程式碼。
+- `compile.flags` 的檢查是一份拒絕清單，而不是允許清單。
+- 堆疊框大小檢查以 `-O0` 度量每個函式。較高 `-O` 下的內聯可能合併堆疊框，呼叫鏈的總深度也不檢查。受保護標頭若依 `__OPTIMIZE__` 選擇函式本體，度量的是 `-O0` 下的版本（可編輯程式碼不能使用 `__OPTIMIZE__`）。受保護標頭若把自己標為系統標頭（`#pragma GCC system_header`，或旗標為 3 的 linemarker），會像以前一樣隱藏自身的 VLA 警告；受保護標頭中的診斷 pragma 也能關閉之後程式碼的 VLA 警告，此時堆疊框檢查只看得到 `-O0` 下產生的函式中的 VLA。
 - `PROVED` 只相對於已批准的 ACSL 契約成立，且以 WP 的記憶體與機器模型為前提。
 - 修復政策是縱深防禦（文字規則）；真正的防線是受保護的 harness 加上獨立驗證器。
 - C++20 沒有形式化關卡（CBMC 無法解析現代 C++，ESBMC 尚未整合），因此 C++ 的最佳結果是 `UNKNOWN`。

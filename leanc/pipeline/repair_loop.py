@@ -50,6 +50,7 @@ CRLF = "\r\n"
 LF = "\n"
 
 _DEFINITE_OUTCOMES = (Outcome.PASS, Outcome.FAIL)
+INTEGRITY_STAGE = "integrity"
 _LINE_NUMBER_IN_FINGERPRINT_RE = re.compile(r"@(.*?):(?:\d+|\?):")
 
 
@@ -125,6 +126,31 @@ def _is_proof_improvement(before: VerificationResult, after: VerificationResult)
     return bool(fixed) and not introduced
 
 
+def _passes(vr: VerificationResult, stage: str) -> bool:
+    result = vr.stage(stage)
+    return result is not None and result.outcome is Outcome.PASS
+
+
+def _stage_failure_counter(vr: VerificationResult, stages: frozenset[str]) -> Counter:
+    return Counter(_compare_key(f) for s in vr.stages if s.stage in stages for f in s.failures)
+
+
+def _gates_run_despite_integrity(vr: VerificationResult) -> frozenset[str]:
+    return frozenset(s.stage for s in vr.stages if s.stage != INTEGRITY_STAGE and s.outcome is not Outcome.SKIPPED)
+
+
+def _holds_ground(before: VerificationResult, after: VerificationResult, stages: frozenset[str]) -> bool:
+    if any(_passes(before, stage) and not _passes(after, stage) for stage in stages):
+        return False
+    return not _stage_failure_counter(after, stages) - _stage_failure_counter(before, stages)
+
+
+def _unblocks_integrity(before: VerificationResult, after: VerificationResult) -> bool:
+    if _passes(before, INTEGRITY_STAGE) or not _passes(after, INTEGRITY_STAGE):
+        return False
+    return _holds_ground(before, after, _gates_run_despite_integrity(before))
+
+
 def is_improvement(before: VerificationResult, after: VerificationResult) -> bool:
     if _goal_reached(after):
         return True
@@ -134,6 +160,8 @@ def is_improvement(before: VerificationResult, after: VerificationResult) -> boo
         return False
     if stage_regressions(before, after):
         return False
+    if _unblocks_integrity(before, after):
+        return True
     if rank(after.status) > rank(before.status):
         return True
     if rank(after.status) < rank(before.status):

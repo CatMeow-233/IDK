@@ -17,8 +17,6 @@ from leanc.backends.lean.steps import (
     run_relative,
 )
 from leanc.backends.sanitizer import (
-    BASE_FLAGS,
-    DIAGNOSTIC_FLAGS,
     SanitizerFinding,
     SanitizerPlan,
     find_llvm_symbolizer,
@@ -28,6 +26,7 @@ from leanc.backends.sanitizer import (
     sanitizer_plan,
     scan_sanitizer_control,
 )
+from leanc.backends.sanitizer.build import instrumented_program_argv
 from leanc.backends.termination import untrusted_program_terminating_signal
 from leanc.foundation.models import CounterexampleInput, Diagnostic, FailureReport
 from leanc.foundation.redact import redact
@@ -205,13 +204,8 @@ class VectorCheck:
         )
 
     def _build_argv(self) -> list[str]:
-        spec, ctx = self.spec, self.ctx
-        defines = [define if define.startswith("-D") else f"-D{define}" for define in spec.compile.defines]
-        return [
-            self.cc, f"-std={spec.language.standard}", *BASE_FLAGS, *self.plan.compile_flags, *spec.compile.flags,
-            *defines, *ctx.include_args(), f"-I{os.path.realpath(ctx.include_dir)}", *DIAGNOSTIC_FLAGS,
-            *spec.sources.editable, self.vectors.driver, "-o", str(self.binary),
-        ]
+        assert self.cc
+        return instrumented_program_argv(self.cc, self.ctx, self.plan, self.vectors.driver, self.binary)
 
     def _build_failed(self, build: ProcResult, build_log: Path) -> dict:
         build_diagnostics = parse_build_diagnostics(build.stderr, base_dir=str(self.snapshot))

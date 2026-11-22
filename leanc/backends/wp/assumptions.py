@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from leanc.backends.wp.argv import RTE_CLASSES
+from leanc.backends.wp.argv import FRAMA_C_STANDARD_ARG, RTE_CLASSES
 from leanc.foundation.status import Outcome
+from leanc.specs.compile_options import semantic_flags
+from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext
 
 WHY3_VERSION_PREFIX = "Why3 platform, version "
 NOT_CHECKED_BY_RTE = "reads of uninitialised memory, pointer alignment (\\aligned), function-pointer validity"
-MACHINE_MODEL_FACTS = "32-bit int, 64-bit long and pointers, little-endian"
+MACHINE_MODEL_FACTS = "32-bit int, 64-bit long and pointers, signed char, little-endian"
+FRAMA_C_STANDARD = FRAMA_C_STANDARD_ARG.removeprefix("-std=")
+UNAPPLIED_FLAGS_CONSEQUENCE = (
+    "Frama-C preprocesses with its own machdep, C11, the include directories and compile.defines only; "
+    "behaviour that depends on these flags is not covered by the proof"
+)
 
 
 def _no_guarantee(target: str, outcome: Outcome) -> list[str]:
@@ -33,6 +40,21 @@ def _library_scope(generated_clauses: list[str]) -> str:
     )
     assumed = "library calls are justified by Frama-C's libc ACSL specifications, which are assumed, not proved"
     return assumed + generated
+
+
+def compile_statements(spec: Spec) -> list[str]:
+    statements = []
+    if spec.language.standard != FRAMA_C_STANDARD:
+        statements.append(
+            f"C language standard {spec.language.standard}: Frama-C preprocesses and parses the code as "
+            f"{FRAMA_C_STANDARD}"
+        )
+    unapplied = semantic_flags(spec.compile.flags)
+    if unapplied:
+        statements.append(
+            "compile.flags not applied by Frama-C: " + ", ".join(unapplied) + f" - {UNAPPLIED_FLAGS_CONSEQUENCE}"
+        )
+    return statements
 
 
 def wp_assumptions(ctx: BackendContext, details: dict, outcome: Outcome) -> list[str]:
@@ -64,5 +86,6 @@ def wp_assumptions(ctx: BackendContext, details: dict, outcome: Outcome) -> list
         "the result concerns the C source as preprocessed and parsed by Frama-C; compiler correctness and the "
         "platform's actual libc are outside its scope",
     ]
+    statements += compile_statements(spec)
     statements += [f"WP memory-model hypothesis (assumed): {h}" for h in details.get("memory_model_hypotheses") or []]
     return statements

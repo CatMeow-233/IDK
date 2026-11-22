@@ -19,7 +19,7 @@ from leanc.backends.termination import (
     untrusted_program_terminating_signal,
 )
 from leanc.foundation.runner import ProcResult
-from leanc.specs.model import CheckName
+from leanc.specs.model import CheckName, SafetyProperty
 
 
 def test_check_flags_cover_every_spec_check():
@@ -149,3 +149,11 @@ def test_unsandboxed_exit_status_128_plus_n_counts_as_killed():
                         output_truncated=False, duration_s=0.0, stdout="", stderr="", sandbox="none")
     assert trusted_tool_terminating_signal(killed) == 9
     assert untrusted_program_terminating_signal(killed) is None
+
+
+def test_contract_safety_checks_reach_the_cbmc_verify_run(tmp_path):
+    ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
+    ctx.spec.contract.safety.append(SafetyProperty(id="SAFE9", text="no leaks", checks=["memory-leak"]))
+    _fake_tools(ctx)
+    assert "memory-leak" not in ctx.spec.verification.effective_checks()
+    assert CHECK_FLAGS["memory-leak"] in build_cbmc_argv(ctx, mode="verify")

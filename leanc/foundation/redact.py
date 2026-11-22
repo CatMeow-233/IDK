@@ -21,6 +21,7 @@ _PATTERNS = (
 )
 
 REDACTED = "[REDACTED]"
+MAX_EXCERPT_CHARS = 300
 
 
 def _is_secret_env_name(name: str) -> bool:
@@ -51,3 +52,7 @@ def redact(text: str, extra_secrets: list[str] | None = None) -> str:
     for pattern in _PATTERNS:
         text = _mask_keeping_label(pattern, text)
     return text
+
+
+def redacted_excerpt(text: str, limit: int = MAX_EXCERPT_CHARS) -> str:
+    return redact(text.strip())[:limit]

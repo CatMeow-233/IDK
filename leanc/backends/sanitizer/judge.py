@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import zip_longest
 
-from leanc.backends.clang import unique_id
 from leanc.backends.sanitizer.plan import SANITIZER_EXIT_CODES
 from leanc.backends.sanitizer.runtime_reports import (
     TOOL_TITLES,
@@ -20,6 +19,7 @@ from leanc.foundation.models import (
     FailureReport,
 )
 from leanc.foundation.runner import ProcResult
+from leanc.rules.findings import unique_id
 from leanc.specs.model import TestCase
 
 ORACLE_TOOL = "test-oracle"

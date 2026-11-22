@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import os
-from typing import Literal, NamedTuple
+from typing import Literal
 
-from leanc.specs.model import VerificationConfig
+from leanc.backends.cbmc.compile_flags import (
+    CompileFlagTranslation,
+    translate_compile_options,
+)
+from leanc.specs.model import Spec, VerificationConfig
 from leanc.toolchain.context import BackendContext
 
 CHECK_FLAGS: dict[str, str] = {
@@ -23,7 +27,6 @@ CHECK_FLAGS: dict[str, str] = {
 }
 
 VACUITY_DEFINE = "-DLEANC_VACUITY_CHECK"
-DEFINES_DISABLING_HARNESS_ASSERTIONS = frozenset({"NDEBUG"})
 COVERAGE_CRITERION = ("--cover", "location")
 MALLOC_MAY_FAIL_FLAGS = ("--malloc-may-fail", "--malloc-fail-null")
 
@@ -31,27 +34,13 @@ Mode = Literal["verify", "vacuity", "coverage"]
 MODES: tuple[str, ...] = ("verify", "vacuity", "coverage")
 
 
-class ForwardedDefines(NamedTuple):
-    args: list[str]
-    dropped: list[str]
+def compile_translation(spec: Spec) -> CompileFlagTranslation:
+    return translate_compile_options(spec.compile, spec.language.standard)
 
 
-def forwarded_defines(defines: list[str]) -> ForwardedDefines:
-    args: list[str] = []
-    dropped: list[str] = []
-    for define in defines:
-        arg = define if define.startswith("-D") else f"-D{define}"
-        name = arg[2:].split("=", 1)[0].strip()
-        if name in DEFINES_DISABLING_HARNESS_ASSERTIONS:
-            dropped.append(define)
-            continue
-        args.append(arg)
-    return ForwardedDefines(args, dropped)
-
-
-def _property_check_flags(verification: VerificationConfig) -> list[str]:
+def _property_check_flags(spec: Spec) -> list[str]:
     flags = []
-    for check in verification.effective_checks():
+    for check in spec.effective_cbmc_checks():
         flag = CHECK_FLAGS.get(check)
         if flag is None:
             raise ValueError(f"no CBMC flag known for check {check!r}")
@@ -59,11 +48,11 @@ def _property_check_flags(verification: VerificationConfig) -> list[str]:
     return flags
 
 
-def _mode_args(verification: VerificationConfig, mode: Mode) -> list[str]:
+def _mode_args(spec: Spec, mode: Mode) -> list[str]:
     if mode == "vacuity":
         return [VACUITY_DEFINE]
     if mode == "verify":
-        return _property_check_flags(verification)
+        return _property_check_flags(spec)
     return list(COVERAGE_CRITERION)
 
 
@@ -96,14 +85,17 @@ def build_cbmc_argv(ctx: BackendContext, *, mode: Mode = "verify") -> list[str]:
         raise ValueError("cbmc is not available (ctx.tools.cbmc is None)")
     spec = ctx.spec
     verification = spec.verification
+    compile_options = compile_translation(spec)
     argv: list[str] = [
         cbmc,
         *spec.sources.editable,
         verification.harness,
+        *compile_options.include_args,
         *ctx.include_args(),
         f"-I{os.path.abspath(ctx.include_dir)}",
-        *forwarded_defines(spec.compile.defines).args,
-        *_mode_args(verification, mode),
+        *compile_options.macro_args,
+        *compile_options.semantic_args,
+        *_mode_args(spec, mode),
         *_unwind_args(verification),
     ]
     if _cbmc_accepts_unwinding_assertions(mode):

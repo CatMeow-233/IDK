@@ -23,6 +23,7 @@ from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome, outcome_to_status
 from leanc.foundation.text import safe_name
+from leanc.rules.findings import unique_id
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
 
@@ -63,15 +64,6 @@ def compile_command(ctx: BackendContext, source_rel: str, obj_path: Path) -> lis
         "-o",
         sandbox_visible_path(obj_path),
     ]
-
-
-def unique_id(base: str, seen: set[str]) -> str:
-    candidate, suffix = base, 2
-    while candidate in seen:
-        candidate = f"{base}#{suffix}"
-        suffix += 1
-    seen.add(candidate)
-    return candidate
 
 
 def _location_key(location: Location | None) -> str:

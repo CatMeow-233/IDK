@@ -5,10 +5,21 @@ import os
 import re
 from pathlib import Path
 
+from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.framac import FramaC
 
 MACHDEP = "x86_64"
+FRAMA_C_UNDEFINED_MACROS: tuple[str, ...] = (
+    "-U__STDC_IEC_559_COMPLEX__",
+    "-U__STDC_IEC_60559_COMPLEX__",
+    "-U__STDC_ISO_10646__",
+    "-U__STDC_UTF16__",
+    "-U__STDC_UTF32__",
+)
+FRAMA_C_PREPROCESSOR_MODE_ARGS: tuple[str, ...] = ("-D__FRAMAC__", "-nostdinc", "-undef")
+FRAMA_C_IMACROS_FLAG = "-imacros"
+FRAMA_C_STANDARD_ARG = "-std=c11"
 ALWAYS_ON_RTE_FLAG = "-warn-invalid-pointer"
 FATAL_KERNEL_WARNINGS = ("annot-error=abort", "typing:implicit-function-declaration=abort")
 DESELECT_TERMINATION_GOALS = "-wp-prop=-@terminates,-@decreases"
@@ -57,8 +68,22 @@ def preprocessor_args(ctx: BackendContext) -> list[str]:
         raise ValueError(problem)
     spec = ctx.spec
     includes = [f"-I{directory}" for directory in spec.sources.include_dirs]
-    defines = [define if define.startswith("-D") else f"-D{define}" for define in spec.compile.defines]
-    return includes + defines
+    return includes + preprocessor_define_args(spec.compile.defines)
+
+
+def preprocessor_define_args(defines: list[str]) -> list[str]:
+    return [define if define.startswith("-D") else f"-D{define}" for define in defines]
+
+
+def frama_c_preprocessor_macro_args(spec: Spec, builtin_macros: str) -> list[str]:
+    return [
+        *FRAMA_C_UNDEFINED_MACROS,
+        *FRAMA_C_PREPROCESSOR_MODE_ARGS,
+        FRAMA_C_IMACROS_FLAG,
+        builtin_macros,
+        FRAMA_C_STANDARD_ARG,
+        *preprocessor_define_args(spec.compile.defines),
+    ]
 
 
 def rte_flags(ctx: BackendContext) -> tuple[list[str], list[str]]:

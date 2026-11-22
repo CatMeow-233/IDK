@@ -182,7 +182,7 @@ def test_pass_details_record_what_was_checked(example_copy, needs_clang, tmp_pat
         assert "-E" in f["argv"]["preprocess"]
     assert "ring_push" in files["src/ring.c"]["defined"]
     assert res.details["tools"]["nm"] and res.details["tools"]["readelf"]
-    assert res.invocations and all(i.tool in ("clang", "nm", "readelf") for i in res.invocations)
+    assert res.invocations and all(i.tool in ("clang", "gcc", "nm", "readelf") for i in res.invocations)
 
 
 def test_macro_built_termination_is_seen_after_expansion(example_copy, needs_clang, tmp_path):

@@ -6,7 +6,7 @@ from typing import NamedTuple
 from leanc.foundation.models import PolicyViolation
 from leanc.lang.c_lexer import CSource
 
-__all__ = ["Finding", "Problem", "first_mention_line", "to_violations", "violation"]
+__all__ = ["Finding", "Problem", "dedupe_key", "first_mention_line", "to_violations", "unique_id", "violation"]
 
 
 class Finding(NamedTuple):
@@ -22,6 +22,18 @@ class Problem(NamedTuple):
 
 def violation(rule: str, message: str, rel: str | None, line: int | None) -> PolicyViolation:
     return PolicyViolation(rule=rule, message=message, file=rel, line=line)
+
+
+def dedupe_key(found: PolicyViolation) -> tuple:
+    return (found.rule, found.file, found.line) if found.line else (found.rule, found.file, found.message)
+
+
+def unique_id(base: str, taken: set[str]) -> str:
+    candidate, suffix = base, 2
+    while candidate in taken:
+        candidate, suffix = f"{base}#{suffix}", suffix + 1
+    taken.add(candidate)
+    return candidate
 
 
 def _reported_line(src: CSource, offset: int, line_map: list[int] | None) -> int:

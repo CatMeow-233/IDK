@@ -1,12 +1,24 @@
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from leanc.backends.cbmc.argv import Mode, forwarded_defines
+from leanc.backends.cbmc.argv import Mode, compile_translation
 from leanc.backends.cbmc.assumptions import scope_assumptions
+from leanc.backends.cbmc.bodiless import (
+    DependentViolation,
+    ViolationSplit,
+    bodiless_function,
+    call_list,
+    is_modelled_bodiless,
+    split_violations,
+    unmodelled_reason,
+)
+from leanc.backends.cbmc.compile_flags import (
+    CompileFlagTranslation,
+    platform_architecture,
+)
 from leanc.backends.cbmc.coverage import coverage_by_file
 from leanc.backends.cbmc.execution import (
     MAX_LISTED_ITEMS,
@@ -58,11 +70,10 @@ CBMC_NOT_FOUND = (
 VACUITY_DISABLED = "vacuity check disabled in spec; cannot exclude vacuous verification"
 NOTHING_CHECKED = "CBMC generated no property to check for this harness and code; nothing was verified"
 UNWIND_CUTOFF_SUFFIX = " (possibly only because executions beyond the unwind bound were cut off)"
+UNMODELLED_RULE = "unmodelled-callee"
 
-_NO_BODY_RE = re.compile(r"no body for (?:function|callee) '?([A-Za-z_][\w$]*)'?")
 
-
-def _initial_details(ctx: BackendContext) -> dict[str, Any]:
+def _initial_details(ctx: BackendContext, compile_options: CompileFlagTranslation) -> dict[str, Any]:
     verification = ctx.spec.verification
     return {
         "cbmc": ctx.tools.cbmc,
@@ -70,7 +81,7 @@ def _initial_details(ctx: BackendContext) -> dict[str, Any]:
         "sandbox": ctx.sandbox.kind,
         "argv": {},
         "raw": {},
-        "checks": verification.effective_checks(),
+        "checks": ctx.spec.effective_cbmc_checks(),
         "unwind": verification.unwind,
         "unwindset": dict(verification.unwindset),
         "malloc_may_fail": verification.malloc_may_fail,
@@ -79,7 +90,11 @@ def _initial_details(ctx: BackendContext) -> dict[str, Any]:
         "properties_passed": 0,
         "properties_failed": 0,
         "properties_unresolved": 0,
+        "properties_unmodelled": 0,
         "unwind_failures": [],
+        "unmodelled_violations": [],
+        "bodiless_functions": {"modelled": [], "unmodelled": []},
+        "compile_flags": compile_options.details(),
         "vacuity": {"status": "skipped", "probes": {}},
         "coverage": None,
         "cbmc_warnings": [],
@@ -92,7 +107,7 @@ def _initial_details(ctx: BackendContext) -> dict[str, Any]:
 class _Gate:
     ctx: BackendContext
     limits: Limits
-    dropped_defines: list[str]
+    compile_options: CompileFlagTranslation
     details: dict[str, Any]
     started: float
     invocations: list[ToolInvocation] = field(default_factory=list)
@@ -104,25 +119,42 @@ class _Gate:
     @classmethod
     def start(cls, ctx: BackendContext) -> _Gate:
         started = time.monotonic()
-        dropped = forwarded_defines(ctx.spec.compile.defines).dropped
-        gate = cls(ctx=ctx, limits=cbmc_limits(ctx), dropped_defines=dropped, details=_initial_details(ctx), started=started)
-        if dropped:
+        compile_options = compile_translation(ctx.spec)
+        gate = cls(
+            ctx=ctx,
+            limits=cbmc_limits(ctx),
+            compile_options=compile_options,
+            details=_initial_details(ctx, compile_options),
+            started=started,
+        )
+        if compile_options.dropped_defines:
             gate.note(
-                f"compile.defines {dropped} not passed to CBMC: NDEBUG would disable the harness's assert() checks"
+                f"compile define(s) {list(compile_options.dropped_defines)} not passed to CBMC: "
+                "NDEBUG would disable the harness's assert() checks"
             )
         return gate
 
     def note(self, text: str) -> None:
         self.details["notes"].append(text)
 
+    def unmodelled_functions(self) -> list[str]:
+        return [function for function in self.bodiless_functions if not is_modelled_bodiless(function)]
+
     def finish(self, outcome: Outcome, summary: str) -> StageResult:
+        unapplied = self.compile_options.not_applied_on(platform_architecture(self.platform))
+        self.details["compile_flags"]["not_applied"] = unapplied
+        self.details["bodiless_functions"] = {
+            "modelled": [function for function in self.bodiless_functions if is_modelled_bodiless(function)],
+            "unmodelled": self.unmodelled_functions(),
+        }
         self.details["assumptions"] = scope_assumptions(
             self.ctx,
             version=self.details.get("cbmc_version"),
             platform=self.platform,
             vacuity=self.details.get("vacuity"),
-            no_body=self.bodiless_functions,
-            dropped_defines=self.dropped_defines,
+            bodiless=self.details["bodiless_functions"],
+            compile_options=self.compile_options,
+            unapplied_flags=unapplied,
         )
         return StageResult(
             stage=STAGE,
@@ -158,20 +190,60 @@ class _Gate:
             text = str(warning.get("messageText", "")).strip()
             if len(self.details["cbmc_warnings"]) < MAX_RECORDED_WARNINGS:
                 self.details["cbmc_warnings"].append(text)
-            bodiless = _NO_BODY_RE.search(text)
-            if bodiless and bodiless.group(1) not in self.bodiless_functions:
-                self.bodiless_functions.append(bodiless.group(1))
-                self.diagnostics.append(_no_body_diagnostic(bodiless.group(1), warning))
+            function = bodiless_function(text)
+            if function is not None and function not in self.bodiless_functions:
+                self.bodiless_functions.append(function)
+                self.diagnostics.append(_no_body_diagnostic(function, warning))
 
 
 def _no_body_diagnostic(function: str, warning: dict) -> Diagnostic:
+    location = location_from_cbmc(warning.get("sourceLocation"))
+    if is_modelled_bodiless(function):
+        return Diagnostic(
+            tool=TOOL,
+            rule_id="no-body",
+            severity="note",
+            message=f"no body for function {function}: modelled by CBMC as a built-in or nondeterministic input",
+            location=location,
+        )
     return Diagnostic(
         tool=TOOL,
         rule_id="no-body",
         severity="warning",
-        message=f"no body for function {function}: CBMC treats calls to it as returning arbitrary values",
-        location=location_from_cbmc(warning.get("sourceLocation")),
+        message=(
+            f"no body for function {function}: CBMC does not model it (arbitrary return value, writes through its "
+            "pointer arguments dropped, its memory accesses unchecked); the CBMC result cannot be a verified verdict"
+        ),
+        location=location,
     )
+
+
+def _record_dependent_violations(gate: _Gate, dependent: list[DependentViolation]) -> None:
+    gate.details["properties_unmodelled"] = len(dependent)
+    for item in dependent:
+        location = location_from_cbmc(item.result.get("sourceLocation"))
+        property_id = item.result.get("property")
+        description = item.result.get("description")
+        gate.details["unmodelled_violations"].append(
+            {
+                "property": property_id,
+                "description": description,
+                "location": location.short() if location else None,
+                "functions": list(item.functions),
+            }
+        )
+        gate.diagnostics.append(
+            Diagnostic(
+                tool=TOOL,
+                rule_id=UNMODELLED_RULE,
+                severity="warning",
+                message=(
+                    f"{description} [{property_id}] is not a counterexample: its trace passes through "
+                    f"{call_list(item.functions)}, which CBMC does not model (no body)"
+                ),
+                location=location,
+            )
+        )
 
 
 def _missing_inputs(ctx: BackendContext) -> list[str]:
@@ -209,7 +281,6 @@ def _reject_neutralised_harness_assertions(gate: _Gate, results: list[dict], har
 def _record_tally(gate: _Gate, tally: PropertyTally, verify_run: CbmcRun) -> None:
     gate.details["properties_total"] = tally.checked
     gate.details["properties_passed"] = tally.holding
-    gate.details["properties_failed"] = len(tally.violated)
     gate.details["properties_unresolved"] = len(tally.undecided)
     gate.details["unwinding_assertions_total"] = tally.unwinding_total
     gate.details["cprover_status"] = verify_run.output.cprover_status
@@ -219,6 +290,7 @@ def _record_tally(gate: _Gate, tally: PropertyTally, verify_run: CbmcRun) -> Non
 
 def _target_without_body(gate: _Gate, tally: PropertyTally) -> StageResult:
     target = gate.ctx.spec.target.function
+    gate.details["properties_unmodelled"] = len(tally.violated)
     gate.note(
         f"{len(tally.violated)} reported violation(s) discarded: they depend on arbitrary return values of the "
         f"undefined {target}()"
@@ -230,10 +302,11 @@ def _target_without_body(gate: _Gate, tally: PropertyTally) -> StageResult:
     )
 
 
-def _report_counterexamples(gate: _Gate, tally: PropertyTally, verify_run: CbmcRun) -> list[FailureReport]:
+def _report_counterexamples(gate: _Gate, violated: list[dict], verify_run: CbmcRun) -> list[FailureReport]:
     spec = gate.ctx.spec
+    gate.details["properties_failed"] = len(violated)
     reports = []
-    for result in tally.violated:
+    for result in violated:
         failure = failure_from_cbmc_property(
             result, raw_ref=verify_run.raw_ref, harness=spec.verification.harness, target_function=spec.target.function
         )
@@ -309,9 +382,17 @@ def _counterexample_summary(failure: FailureReport) -> str:
     return summary
 
 
+@dataclass(frozen=True)
+class _ViolationFindings:
+    counterexamples: list[FailureReport]
+    split: ViolationSplit
+    unwind_text: str
+
+
 def _counterexample_verdict(
-    gate: _Gate, counterexamples: list[FailureReport], unwind_text: str, tally: PropertyTally, verify_run: CbmcRun
+    gate: _Gate, findings: _ViolationFindings, tally: PropertyTally, verify_run: CbmcRun
 ) -> StageResult:
+    counterexamples, unwind_text = findings.counterexamples, findings.unwind_text
     gate.details["vacuity"] = {"status": "skipped", "probes": {}, "note": "not run: real property violations found"}
     summary = f"CBMC found {len(counterexamples)} property violation(s) (counterexamples): " + "; ".join(
         _counterexample_summary(failure) for failure in counterexamples[:MAX_LISTED_ITEMS]
@@ -320,6 +401,7 @@ def _counterexample_verdict(
         summary += f"; and {len(counterexamples) - MAX_LISTED_ITEMS} more"
     if unwind_text:
         summary += f". In addition, {unwind_text}"
+    summary += "".join(f". In addition, {reason}" for reason in _unmodelled_reasons(gate, findings.split))
     if tally.undecided:
         summary += f". {len(tally.undecided)} property(ies) could not be decided"
         if ran_out_of_memory(verify_run):
@@ -393,13 +475,18 @@ def _record_informational_coverage(gate: _Gate) -> None:
         )
 
 
+def _unmodelled_reasons(gate: _Gate, split: ViolationSplit) -> list[str]:
+    unmodelled = gate.unmodelled_functions()
+    return [unmodelled_reason(unmodelled, split.dependent)] if unmodelled else []
+
+
 def _pass_summary(gate: _Gate, tally: PropertyTally) -> str:
     verification = gate.ctx.spec.verification
     probe_count = len(gate.details["vacuity"].get("properties", {}))
     return (
         f"CBMC: all {tally.checked} properties hold for the approved harness within unwind {verification.unwind} "
         f"(all loops fully unwound; all {probe_count} vacuity probe(s) reachable; "
-        f"checks: {', '.join(verification.effective_checks())})"
+        f"checks: {', '.join(gate.ctx.spec.effective_cbmc_checks())})"
     )
 
 
@@ -427,16 +514,18 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
     if ctx.spec.target.function in gate.bodiless_functions:
         return _target_without_body(gate, tally)
 
-    counterexamples = _report_counterexamples(gate, tally, verify_run)
+    split = split_violations(tally.violated, frozenset(gate.unmodelled_functions()))
+    _record_dependent_violations(gate, split.dependent)
+    counterexamples = _report_counterexamples(gate, split.real, verify_run)
     unwind_reports = _report_unwind_failures(gate, tally, verify_run)
     unwind_text = _insufficient_unwind_text(unwind_reports, verification.unwind)
     if counterexamples:
-        return _counterexample_verdict(gate, counterexamples, unwind_text, tally, verify_run)
+        return _counterexample_verdict(gate, _ViolationFindings(counterexamples, split, unwind_text), tally, verify_run)
     if tally.undecided:
         return _undecided_verdict(gate, tally, verify_run)
 
     vacuity_problem, vacuity_reasons = _check_vacuity(gate, harness_text, unwind_insufficient=bool(unwind_reports))
-    inconclusive = ([unwind_text] if unwind_text else []) + vacuity_reasons
+    inconclusive = _unmodelled_reasons(gate, split) + ([unwind_text] if unwind_text else []) + vacuity_reasons
     if vacuity_problem is not None:
         also = ". Also: " + "; ".join(inconclusive) if inconclusive else ""
         return gate.fail_with(vacuity_problem, vacuity_problem.summary + also)
