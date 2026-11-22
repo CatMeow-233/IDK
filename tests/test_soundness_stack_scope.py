@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import pytest
-from integrity_support import EXAMPLES, READ_LINE, by_rule, integrity_gate, shipped, with_flags
+from integrity_support import (
+    EXAMPLES,
+    READ_LINE,
+    by_rule,
+    integrity_gate,
+    shipped,
+    with_flags,
+)
 
 from leanc.backends import stack_check
 from leanc.foundation.status import Outcome
 from leanc.lang.c_lexer import CSource
 from leanc.rules.c_rules import token_findings
-from leanc.rules.stack_checks import UNBOUNDED_STACK_RULE, stack_usage_findings, unbounded_stack_scan
+from leanc.rules.stack_checks import (
+    UNBOUNDED_STACK_RULE,
+    project_relative,
+    stack_usage_findings,
+    unbounded_stack_scan,
+)
 from leanc.toolchain.context import VerifyOptions
 
 HEADER = "include/safe_array.h"
@@ -23,8 +35,14 @@ MS_ALLOCA_READ = "    int *scratch = _alloca((len + 1) * sizeof *scratch);\n    
 PROMOTING_PRAGMAS = (
     '#pragma clang diagnostic error "-Wmissing-prototypes"\n#pragma clang diagnostic error "-Wreserved-identifier"\n'
 )
-SYSTEM_HEADER_FLAGS = ["-isysteminclude", "-idirafterinclude", "--system-header-prefix=safe_array.h",
-                       "-iwithsysrootinclude"]
+SYSTEM_HEADER_FLAGS = [
+    ["-isysteminclude"],
+    ["-idirafterinclude"],
+    ["--system-header-prefix=safe_array.h"],
+    ["-iwithsysrootinclude"],
+    ["-isysteminclude", "-fdiagnostics-absolute-paths"],
+]
+PROJECT_ROOT = "/run/snapshot"
 FORCED_INCLUDE_FLAGS = [f"-include{DIAG_HEADER}", f"-imacros{DIAG_HEADER}"]
 HEADERS = f"headers: [{HEADER}]"
 RUNTIME_STACK = "allocates stack space at run time"
@@ -34,6 +52,12 @@ SYSTEM_HEADER_ALLOCA = (
     "[-Werror,-Walloca]\n"
 )
 UNRELATED_ERROR = "src/a.c:3:4: error: unknown type name 'foo'\n"
+SYSTEM_HEADER_EXTENSION_ERROR = (
+    "/usr/lib/llvm-18/lib/clang/18/include/stdint.h:52:3: error: #include_next is a language extension "
+    "[-Werror,-Wgnu-include-next]\n"
+)
+SYSTEM_HEADER_FATAL_ERROR = "/usr/include/stdio.h:27:10: fatal error: 'bits/libc-header-start.h' file not found\n"
+PEDANTIC_AS_ERROR = '#pragma clang diagnostic error "-Wpedantic"\n'
 UNSANDBOXED = VerifyOptions(allow_unsandboxed=True, sandbox_preference="none")
 CPP_EXAMPLE = "cpp_ring_buffer"
 CPP_EDITABLE = "editable: [src/ring_buffer.cpp]"
@@ -46,10 +70,10 @@ def _with_header(text: str) -> dict[str, str]:
     return {HEADER: SHIPPED_HEADER.replace(HEADER_GUARD_END, "\n" + text + HEADER_GUARD_END)}
 
 
-@pytest.mark.parametrize("flag", SYSTEM_HEADER_FLAGS)
-def test_system_header_flags_cannot_hide_a_vla_in_a_protected_header(example_copy, needs_clang, tmp_path, flag):
+@pytest.mark.parametrize("flags", SYSTEM_HEADER_FLAGS, ids=" ".join)
+def test_system_header_flags_cannot_hide_a_vla_in_a_protected_header(example_copy, needs_clang, tmp_path, flags):
     result = integrity_gate(
-        example_copy, tmp_path, spec_edits=with_flags("-Wall", flag), extra_files=_with_header(UNUSED_HEADER_VLA)
+        example_copy, tmp_path, spec_edits=with_flags("-Wall", *flags), extra_files=_with_header(UNUSED_HEADER_VLA)
     )
     assert result.outcome is Outcome.FAIL, result.summary
     assert [d.location.file for d in by_rule(result, UNBOUNDED_STACK_RULE)] == [HEADER]
@@ -81,14 +105,17 @@ def test_non_static_stack_usage_rows_are_unbounded_stack():
 
 
 def test_project_scope_ignores_only_parsed_diagnostics_outside_the_snapshot():
-    outside = unbounded_stack_scan(SYSTEM_HEADER_ALLOCA, "r", project_files_only=True)
+    outside = unbounded_stack_scan(SYSTEM_HEADER_ALLOCA, "r", project_root=PROJECT_ROOT, project_files_only=True)
     assert outside.violations == [] and outside.accounts_for_failure
-    mixed = unbounded_stack_scan(SYSTEM_HEADER_ALLOCA + UNRELATED_ERROR, "r", project_files_only=True)
+    mixed = unbounded_stack_scan(
+        SYSTEM_HEADER_ALLOCA + UNRELATED_ERROR, "r", project_root=PROJECT_ROOT, project_files_only=True
+    )
     assert mixed.unparsed_errors == [UNRELATED_ERROR.strip()] and not mixed.accounts_for_failure
 
 
 def test_default_scope_counts_every_reported_file():
-    [found] = unbounded_stack_scan(SYSTEM_HEADER_ALLOCA, "r", project_files_only=False).violations
+    scan = unbounded_stack_scan(SYSTEM_HEADER_ALLOCA, "r", project_root=PROJECT_ROOT, project_files_only=False)
+    [found] = scan.violations
     assert found.file.startswith("/usr/include/") and found.line == 107
 
 
@@ -133,3 +160,35 @@ def test_alloca_inside_library_headers_does_not_fail_the_vla_check(example_copy,
     )
     assert result.outcome is Outcome.PASS, result.summary
     assert all("stack" in entry["checks"] for entry in result.details["files"])
+
+
+@pytest.mark.parametrize(
+    "file, relative",
+    [
+        ("include/a.h", "include/a.h"),
+        ("./include/../include/a.h", "include/a.h"),
+        (f"{PROJECT_ROOT}/include/a.h", "include/a.h"),
+        (f"{PROJECT_ROOT}-other/include/a.h", None),
+        ("/usr/include/stdio.h", None),
+    ],
+)
+def test_project_files_are_recognised_by_location_not_spelling(file, relative):
+    assert project_relative(file, PROJECT_ROOT) == relative
+
+
+def test_project_scope_tolerates_recoverable_errors_in_library_headers():
+    recoverable = unbounded_stack_scan(SYSTEM_HEADER_EXTENSION_ERROR, "r", project_root=PROJECT_ROOT,
+                                       project_files_only=True)
+    assert recoverable.unparsed_errors == [] and recoverable.accounts_for_failure
+    fatal = unbounded_stack_scan(SYSTEM_HEADER_FATAL_ERROR, "r", project_root=PROJECT_ROOT, project_files_only=True)
+    assert not fatal.accounts_for_failure
+    default = unbounded_stack_scan(SYSTEM_HEADER_EXTENSION_ERROR, "r", project_root=PROJECT_ROOT,
+                                   project_files_only=False)
+    assert not default.accounts_for_failure
+
+
+def test_promoting_pragma_before_library_headers_passes_the_vla_check(example_copy, needs_clang, tmp_path):
+    edits = {**with_flags("-Wall", f"-include{DIAG_HEADER}"), HEADERS: f"headers: [{HEADER}, {DIAG_HEADER}]"}
+    source = "#include <stdint.h>\n#include <limits.h>\n" + shipped()
+    result = integrity_gate(example_copy, tmp_path, source, edits, extra_files={DIAG_HEADER: PEDANTIC_AS_ERROR})
+    assert result.outcome is Outcome.PASS, result.summary

@@ -3,7 +3,15 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-from integrity_support import EXAMPLES, READ_LINE, SOURCE, by_rule, integrity_gate, shipped
+from integrity_support import (
+    EXAMPLES,
+    READ_LINE,
+    SOURCE,
+    by_rule,
+    integrity_gate,
+    shipped,
+    with_flags,
+)
 
 from leanc.backends.integrity import NO_LINEMARKER
 from leanc.foundation.status import Outcome
@@ -19,6 +27,7 @@ TRIGRAPH_HIDDEN_LINE_READ = (
     "    size_t pos = idx;\n    if (len == 4) {\n        pos = idx + 1;\n        // keep pos in range ??/\n"
     "        pos = idx;\n    }\n    *out = arr[pos];"
 )
+C89_SLASH_STAR_READ = "    size_t extra = 2 //* halve */ 2\n        - 1;\n    *out = arr[len == 4 ? idx + 1 - extra : idx];"
 TRIGRAPH_TEXTS = ["// end ??/\nx = 1;\n", 'const char *s = "??=";\n', "int a ??( 2 ??);\n", "/* ??! */\n"]
 NOT_TRIGRAPH_TEXTS = ["int x = a ? b : c;\n", 'const char *s = "??";\n', 'const char *s = "?" "?/";\n']
 
@@ -73,3 +82,17 @@ def test_trigraph_that_hides_a_line_from_clang_fails_integrity(example_copy, nee
     result = integrity_gate(example_copy, tmp_path, shipped().replace(READ_LINE, TRIGRAPH_HIDDEN_LINE_READ))
     assert result.outcome is Outcome.FAIL, result.summary
     assert [d.location.line for d in by_rule(result, TRIGRAPH_RULE)] == [14]
+
+
+@pytest.mark.parametrize("text", ["int x = 2 //* halve */ 2\n;\n", "#define HALF(v) v //**/ 2\n"])
+def test_slash_star_after_a_slash_is_rejected(text):
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    found = [v for v in c_source_violations(spec, SOURCE, text) if v.rule == "TOOL_DIVERGENCE"]
+    assert len(found) == 1 and "strict C89" in found[0].message
+
+
+def test_c89_slash_star_that_changes_an_expression_fails_integrity(example_copy, needs_clang, tmp_path):
+    source = shipped().replace(READ_LINE, C89_SLASH_STAR_READ)
+    result = integrity_gate(example_copy, tmp_path, source, with_flags("-Wall", "-std=c89"))
+    assert result.outcome is Outcome.FAIL, result.summary
+    assert any("strict C89" in d.message for d in by_rule(result, "TOOL_DIVERGENCE"))

@@ -175,7 +175,7 @@ def test_diagnostic_layout_flags_cannot_turn_a_vla_into_a_tool_error(example_cop
 
 
 def test_unparsed_failing_vla_check_is_an_error(example_copy, needs_clang, tmp_path, monkeypatch):
-    monkeypatch.setattr(stack_check, "unbounded_stack_scan", lambda stderr, reason, project_files_only: UnboundedStackScan())
+    monkeypatch.setattr(stack_check, "unbounded_stack_scan", lambda stderr, reason, project_root, project_files_only: UnboundedStackScan())
     result = integrity_gate(example_copy, tmp_path, shipped().replace(READ_LINE, VARIABLY_MODIFIED_READ))
     assert result.outcome is Outcome.ERROR and "stack check of src/safe_array.c failed (exit 1)" in result.summary
     assert "stack" not in result.details["files"][0]["checks"]

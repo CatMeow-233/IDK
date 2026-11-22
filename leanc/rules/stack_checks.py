@@ -19,6 +19,7 @@ __all__ = [
     "StackUsage",
     "UnboundedStackScan",
     "codegen_flags",
+    "project_relative",
     "stack_usage_findings",
     "stack_usage_path",
     "unbounded_stack_scan",
@@ -68,6 +69,7 @@ _STACK_DIAG_RE = re.compile(
     re.MULTILINE,
 )
 _ERROR_LINE_RE = re.compile(r": (?:fatal )?error: ")
+_LOCATED_ERROR_RE = re.compile(r"^(?P<file>[^:\n]+):\d+:\d+:(?:(?:\{[^}\n]*\})+:)? error: ")
 _STACK_USAGE_ROW_RE = re.compile(
     r"^(?P<file>.+?)(?::(?P<line>\d+))?:(?P<function>[^\t:]+)\t(?P<size>\d+)\t(?P<qualifier>\S+)$"
 )
@@ -82,6 +84,11 @@ class UnboundedStackScan:
     @property
     def accounts_for_failure(self) -> bool:
         return bool(self.violations or self.outside_snapshot) and not self.unparsed_errors
+
+
+def _is_recoverable_error_outside(line: str, project_root: str) -> bool:
+    located = _LOCATED_ERROR_RE.match(line)
+    return located is not None and project_relative(located.group("file"), project_root) is None
 
 
 @dataclass(frozen=True)
@@ -103,19 +110,35 @@ def _line_in(rel: str, file: str, line: str | None) -> int | None:
     return int(line) if line is not None and same_file else None
 
 
-def unbounded_stack_scan(stderr: str, reason: str, *, project_files_only: bool) -> UnboundedStackScan:
+def project_relative(file: str, project_root: str) -> str | None:
+    normalized = posixpath.normpath(file)
+    if not posixpath.isabs(normalized):
+        return normalized
+    if posixpath.commonpath([normalized, project_root]) == project_root:
+        return posixpath.relpath(normalized, project_root)
+    return None
+
+
+def unbounded_stack_scan(
+    stderr: str, reason: str, *, project_root: str, project_files_only: bool
+) -> UnboundedStackScan:
     scan = UnboundedStackScan()
     for found in _STACK_DIAG_RE.finditer(stderr):
-        file = posixpath.normpath(found.group("file"))
-        if project_files_only and posixpath.isabs(file):
+        relative = project_relative(found.group("file"), project_root)
+        if relative is None and project_files_only:
             scan.outside_snapshot.append(found.group())
+            continue
+        file = relative if relative is not None else posixpath.normpath(found.group("file"))
+        scan.violations.append(
+            violation(UNBOUNDED_STACK_RULE, f"{found.group('msg').strip()} ({reason})", file, int(found.group("line")))
+        )
+    for line in stderr.splitlines():
+        if not _ERROR_LINE_RE.search(line) or _STACK_DIAG_RE.match(line):
+            continue
+        if project_files_only and _is_recoverable_error_outside(line, project_root):
+            scan.outside_snapshot.append(line)
         else:
-            scan.violations.append(
-                violation(UNBOUNDED_STACK_RULE, f"{found.group('msg').strip()} ({reason})", file, int(found.group("line")))
-            )
-    scan.unparsed_errors.extend(
-        line for line in stderr.splitlines() if _ERROR_LINE_RE.search(line) and not _STACK_DIAG_RE.match(line)
-    )
+            scan.unparsed_errors.append(line)
     return scan
 
 

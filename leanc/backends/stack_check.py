@@ -150,7 +150,12 @@ class StackCheck:
         proc = self.execute(outcome, outcome.argv[scope.name], rel, scope.log_label)
         if proc is None:
             return False
-        scan = unbounded_stack_scan(proc.stderr, self.unbounded_reason, project_files_only=scope.project_files_only)
+        scan = unbounded_stack_scan(
+            proc.stderr,
+            self.unbounded_reason,
+            project_root=sandbox_visible_path(self.ctx.snapshot_dir),
+            project_files_only=scope.project_files_only,
+        )
         outcome.violations += scan.violations
         if proc.exit_code != CLEAN_EXIT_CODE and (proc.exit_code is None or not scan.accounts_for_failure):
             outcome.problems.append(

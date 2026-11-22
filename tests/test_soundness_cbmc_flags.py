@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from cbmc_replay_support import project_with_compile
-from clang_driver_support import cc1_args, minimal_source
 from cbmc_support import _fake_tools
+from clang_driver_support import cc1_args, minimal_source
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
 from leanc.backends.cbmc.compile_flags import (

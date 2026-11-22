@@ -118,6 +118,11 @@ _DIVERGENCE_CONSEQUENCE = "make clang, the sanitizer build and CBMC see differen
 
 
 _TRIGRAPH_RE = re.compile(r"\?\?[=/'()!<>-]")
+_C89_SLASH_STAR_RE = re.compile(r"//\*")
+_C89_SLASH_STAR_MEANING = (
+    "a division followed by a block comment in strict C89 (-std=c89, -ansi) but a line comment in every later "
+    "standard and in CBMC's gnu89 preprocessing"
+)
 
 
 class TokenRule(NamedTuple):
@@ -296,11 +301,16 @@ def token_findings(src: CSource, where: str = "") -> list[Finding]:
     return out
 
 
-def _trigraph_findings(src: CSource) -> list[Finding]:
-    return [
+def _lexical_divergence_findings(src: CSource) -> list[Finding]:
+    trigraphs = [
         Finding("TRIGRAPH", f"trigraph '{use.group()}' is not allowed: {_DIVERGENCE_CONSEQUENCE}", use.start())
         for use in _TRIGRAPH_RE.finditer(src.text)
     ]
+    slash_stars = [
+        Finding("TOOL_DIVERGENCE", f"'//*' is {_C89_SLASH_STAR_MEANING}: {_DIVERGENCE_CONSEQUENCE}", use.start())
+        for use in _C89_SLASH_STAR_RE.finditer(src.text)
+    ]
+    return trigraphs + slash_stars
 
 
 def _include_problem(spec: Spec, name: str, quoted: bool) -> str | None:
@@ -389,7 +399,7 @@ def c_source_violations(
     found = [
         *_directive_findings(spec, src, header_macros, header_idents),
         *pragma_operator_findings(src),
-        *_trigraph_findings(src),
+        *_lexical_divergence_findings(src),
         *token_findings(src),
         *_predefined_macro_use_findings(src),
         *_forbidden_function_findings(src),
