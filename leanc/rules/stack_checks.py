@@ -15,13 +15,14 @@ __all__ = [
     "STACK_FRAME_RULE",
     "UNBOUNDED_STACK_CHECK_FLAGS",
     "UNBOUNDED_STACK_RULE",
+    "IncludeSplit",
     "StackUsage",
     "UnboundedStackScan",
     "codegen_flags",
     "project_relative",
-    "system_includes_as_user_includes",
     "stack_usage_findings",
     "stack_usage_path",
+    "system_includes_as_user_includes",
     "unbounded_stack_scan",
 ]
 
@@ -135,27 +136,35 @@ def _option_value(flag: str, spellings: tuple[str, ...]) -> str | None:
     return None
 
 
-def _as_user_include(flag: str, include_prefix: str) -> list[str]:
-    if flag.startswith(SYSTEM_HEADER_PREFIX_FLAG):
-        return []
+def _as_user_include(flag: str, include_prefix: str) -> str | None:
     if flag.startswith(USER_PREFIXED_INCLUDE_SPELLINGS):
-        return [flag]
+        return None
     prefixed = _option_value(flag, PREFIXED_SYSTEM_INCLUDE_SPELLINGS)
     if prefixed is not None:
-        return [USER_INCLUDE_FLAG + include_prefix + prefixed]
+        return USER_INCLUDE_FLAG + include_prefix + prefixed
     for prefix, user_flag in SYSTEM_INCLUDE_REWRITES:
         if flag.startswith(prefix):
-            return [user_flag + flag[len(prefix) :]]
-    return [flag]
+            return user_flag + flag[len(prefix) :]
+    return None
 
 
-def system_includes_as_user_includes(flags: list[str]) -> list[str]:
-    rewritten: list[str] = []
+@dataclass(frozen=True)
+class IncludeSplit:
+    kept: list[str]
+    system_as_user: list[str]
+
+
+def system_includes_as_user_includes(flags: list[str]) -> IncludeSplit:
+    split = IncludeSplit(kept=[], system_as_user=[])
     include_prefix = ""
     for flag in flags:
         include_prefix = _option_value(flag, INCLUDE_PREFIX_SPELLINGS) or include_prefix
-        rewritten.extend(_as_user_include(flag, include_prefix))
-    return rewritten
+        rewritten = _as_user_include(flag, include_prefix)
+        if rewritten is not None:
+            split.system_as_user.append(rewritten)
+        elif not flag.startswith(SYSTEM_HEADER_PREFIX_FLAG):
+            split.kept.append(flag)
+    return split
 
 
 def unbounded_stack_scan(stderr: str, reason: str, *, project_root: str) -> UnboundedStackScan:

@@ -38,30 +38,39 @@ MAX_UNPARSED_ROWS_SHOWN = 3
 NO_STACK_USAGE = "produced no stack usage (compile.flags stop machine-code generation, e.g. -emit-llvm)"
 
 
-FlagView = Callable[[list[str]], list[str]]
+LanguageArgs = Callable[[Spec, list[str]], list[str]]
 
 
-def _as_given(flags: list[str]) -> list[str]:
-    return flags
+def _as_given(spec: Spec, include_args: list[str]) -> list[str]:
+    return [*codegen_flags(spec.compile.flags), *define_args(spec.compile.defines), *include_args]
+
+
+def _system_includes_as_user_includes(spec: Spec, include_args: list[str]) -> list[str]:
+    split = system_includes_as_user_includes(codegen_flags(spec.compile.flags))
+    return [*split.kept, *define_args(spec.compile.defines), *include_args, *split.system_as_user]
+
+
+def _without_compile_flags(spec: Spec, include_args: list[str]) -> list[str]:
+    return [*define_args(spec.compile.defines), *include_args]
 
 
 @dataclass(frozen=True)
 class UnboundedStackScope:
     name: str
-    flag_view: FlagView
+    language_args: LanguageArgs
+    only_adds_violations: bool
 
     @property
     def log_label(self) -> str:
         return self.name.replace("_", "-")
 
 
-COMPILE_FLAGS_AS_GIVEN = UnboundedStackScope("stack", _as_given)
-SYSTEM_INCLUDES_AS_USER_INCLUDES = UnboundedStackScope("stack_user_includes", system_includes_as_user_includes)
-UNBOUNDED_STACK_SCOPES = (COMPILE_FLAGS_AS_GIVEN, SYSTEM_INCLUDES_AS_USER_INCLUDES)
-
-
-def _language_args(spec: Spec, include_args: list[str], flag_view: FlagView = _as_given) -> list[str]:
-    return [*flag_view(codegen_flags(spec.compile.flags)), *define_args(spec.compile.defines), *include_args]
+COMPILE_FLAGS_AS_GIVEN = UnboundedStackScope("stack", _as_given, only_adds_violations=False)
+SYSTEM_INCLUDES_AS_USER_INCLUDES = UnboundedStackScope(
+    "stack_user_includes", _system_includes_as_user_includes, only_adds_violations=True
+)
+WITHOUT_COMPILE_FLAGS = UnboundedStackScope("stack_without_compile_flags", _without_compile_flags, only_adds_violations=True)
+UNBOUNDED_STACK_SCOPES = (COMPILE_FLAGS_AS_GIVEN, SYSTEM_INCLUDES_AS_USER_INCLUDES, WITHOUT_COMPILE_FLAGS)
 
 
 def _standard_arg(spec: Spec) -> str:
@@ -75,7 +84,7 @@ def unbounded_stack_argv(
     return [
         compiler,
         _standard_arg(spec),
-        *_language_args(spec, include_args, scope.flag_view),
+        *scope.language_args(spec, include_args),
         *UNBOUNDED_STACK_CHECK_FLAGS,
         OUTPUT_FLAG,
         syntax_output,
@@ -89,7 +98,7 @@ def stack_frame_argv(compiler: str, spec: Spec, include_args: list[str], rel: st
         _standard_arg(spec),
         INCLUDE_FLAG,
         sandbox_visible_path(stack_usage_anchor_path(assembly)),
-        *_language_args(spec, include_args),
+        *_as_given(spec, include_args),
         *STACK_FRAME_CHECK_FLAGS,
         OUTPUT_FLAG,
         sandbox_visible_path(assembly),
@@ -158,6 +167,8 @@ class StackCheck:
             proc.stderr, self.unbounded_reason, project_root=sandbox_visible_path(self.ctx.snapshot_dir)
         )
         outcome.violations += scan.violations
+        if scope.only_adds_violations:
+            return True
         if proc.exit_code != CLEAN_EXIT_CODE and (proc.exit_code is None or not scan.accounts_for_failure):
             outcome.problems.append(
                 f"stack check of {rel} failed (exit {proc.exit_code}): {redacted_excerpt(proc.stderr)}"

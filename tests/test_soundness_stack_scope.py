@@ -48,14 +48,15 @@ SYSTEM_HEADER_FLAGS = [
 ]
 PRESUMED_SYSTEM_FILE = '#line 1 "/usr/include/leanc_vendor_scratch.h"\n'
 INCLUDE_REWRITES = [
-    (["-isystemvendor", "-isystem-aftervendor", "-idiraftervendor"], ["-Ivendor", "-Ivendor", "-Ivendor"]),
-    (["-iwithsysrootvendor", "-iwithprefixvendor", "-cxx-isystemvendor"], ["-Ivendor", "-Ivendor", "-Ivendor"]),
-    (["-iprefixext/", "-iwithprefixvendor", "--include-with-prefix-after=lib"], ["-iprefixext/", "-Iext/vendor", "-Iext/lib"]),
-    (["--include-directory-after=vendor", "--include-with-prefix=vendor"], ["-Ivendor", "-Ivendor"]),
-    (["-iframeworkvendor", "-iframeworkwithsysrootvendor"], ["-Fvendor", "-Fvendor"]),
-    (["--system-header-prefix=vendor/", "-O2"], ["-O2"]),
+    (["-isystemvendor", "-isystem-aftervendor", "-idiraftervendor"], [], ["-Ivendor", "-Ivendor", "-Ivendor"]),
+    (["-iwithsysrootvendor", "-iwithprefixvendor", "-cxx-isystemvendor"], [], ["-Ivendor", "-Ivendor", "-Ivendor"]),
+    (["-iprefixext/", "-iwithprefixvendor", "--include-with-prefix-after=lib"], ["-iprefixext/"],
+     ["-Iext/vendor", "-Iext/lib"]),
+    (["--include-directory-after=vendor", "--include-with-prefix=vendor"], [], ["-Ivendor", "-Ivendor"]),
+    (["-iframeworkvendor", "-iframeworkwithsysrootvendor"], [], ["-Fvendor", "-Fvendor"]),
+    (["--system-header-prefix=vendor/", "-O2"], ["-O2"], []),
     (["-iwithprefixbeforevendor", "--include-with-prefix-before=vendor", "-Ivendor"],
-     ["-iwithprefixbeforevendor", "--include-with-prefix-before=vendor", "-Ivendor"]),
+     ["-iwithprefixbeforevendor", "--include-with-prefix-before=vendor", "-Ivendor"], []),
 ]
 PROJECT_ROOT = "/run/snapshot"
 FORCED_INCLUDE_FLAGS = [f"-include{DIAG_HEADER}", f"-imacros{DIAG_HEADER}"]
@@ -87,8 +88,7 @@ def test_system_header_flags_cannot_hide_a_vla_in_a_protected_header(example_cop
         example_copy, tmp_path, spec_edits=with_flags("-Wall", *flags), extra_files=_with_header(UNUSED_HEADER_VLA)
     )
     assert result.outcome is Outcome.FAIL, result.summary
-    expected = flags[0].removeprefix("-isystem").removesuffix("include") + HEADER if "/proc/" in flags[0] else HEADER
-    assert [d.location.file for d in by_rule(result, UNBOUNDED_STACK_RULE)] == [expected]
+    assert [d.location.file for d in by_rule(result, UNBOUNDED_STACK_RULE)] == [HEADER]
 
 
 def test_presumed_system_file_name_cannot_hide_a_protected_header_vla(example_copy, needs_clang, tmp_path):
@@ -98,9 +98,10 @@ def test_presumed_system_file_name_cannot_hide_a_protected_header_vla(example_co
     assert [d.location.file for d in by_rule(result, UNBOUNDED_STACK_RULE)] == ["/usr/include/leanc_vendor_scratch.h"]
 
 
-@pytest.mark.parametrize("flags, rewritten", INCLUDE_REWRITES, ids=lambda flags: " ".join(flags))
-def test_system_include_options_become_user_include_options(flags, rewritten):
-    assert system_includes_as_user_includes(flags) == rewritten
+@pytest.mark.parametrize("flags, kept, system_as_user", INCLUDE_REWRITES, ids=lambda flags: " ".join(flags))
+def test_system_include_options_become_user_include_options(flags, kept, system_as_user):
+    split = system_includes_as_user_includes(flags)
+    assert (split.kept, split.system_as_user) == (kept, system_as_user)
 
 
 def test_frame_check_reports_a_vla_whose_diagnostics_are_switched_off(example_copy, needs_clang, tmp_path):
