@@ -19,6 +19,8 @@ __all__ = [
     "StackUsage",
     "UnboundedStackScan",
     "codegen_flags",
+    "default_system_dirs",
+    "in_dirs",
     "project_relative",
     "stack_usage_findings",
     "stack_usage_path",
@@ -43,6 +45,7 @@ DIAGNOSTIC_LAYOUT_FLAGS: tuple[str, ...] = (
     "-fshow-source-location",
     "-fdiagnostics-format=clang",
     "-fmessage-length=0",
+    "-ferror-limit=0",
 )
 UNBOUNDED_STACK_CHECK_FLAGS: tuple[str, ...] = (
     "-fsyntax-only",
@@ -68,7 +71,9 @@ _STACK_DIAG_RE = re.compile(
     r"\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
     re.MULTILINE,
 )
-_ERROR_LINE_RE = re.compile(r": (?:fatal )?error: ")
+_ERROR_LINE_RE = re.compile(r"(?:^|: )(?:fatal )?error: ")
+SEARCH_LIST_START = "#include <...> search starts here:"
+SEARCH_LIST_END = "End of search list."
 _LOCATED_ERROR_RE = re.compile(r"^(?P<file>[^:\n]+):\d+:\d+:(?:(?:\{[^}\n]*\})+:)? error: ")
 _STACK_USAGE_ROW_RE = re.compile(
     r"^(?P<file>.+?)(?::(?P<line>\d+))?:(?P<function>[^\t:]+)\t(?P<size>\d+)\t(?P<qualifier>\S+)$"
@@ -86,9 +91,25 @@ class UnboundedStackScan:
         return bool(self.violations or self.outside_snapshot) and not self.unparsed_errors
 
 
-def _is_recoverable_error_outside(line: str, project_root: str) -> bool:
+def default_system_dirs(verbose_stderr: str) -> tuple[str, ...] | None:
+    lines = [line.strip() for line in verbose_stderr.splitlines()]
+    if SEARCH_LIST_START not in lines:
+        return None
+    start = lines.index(SEARCH_LIST_START) + 1
+    if SEARCH_LIST_END not in lines[start:]:
+        return None
+    dirs = tuple(posixpath.normpath(line) for line in lines[start : lines.index(SEARCH_LIST_END, start)])
+    return dirs if dirs and all(posixpath.isabs(line) for line in dirs) else None
+
+
+def in_dirs(file: str, dirs: tuple[str, ...]) -> bool:
+    normalized = posixpath.normpath(file)
+    return posixpath.isabs(normalized) and any(posixpath.commonpath([normalized, d]) == d for d in dirs)
+
+
+def _is_recoverable_error_in(line: str, tolerated_dirs: tuple[str, ...]) -> bool:
     located = _LOCATED_ERROR_RE.match(line)
-    return located is not None and project_relative(located.group("file"), project_root) is None
+    return located is not None and in_dirs(located.group("file"), tolerated_dirs)
 
 
 @dataclass(frozen=True)
@@ -120,14 +141,14 @@ def project_relative(file: str, project_root: str) -> str | None:
 
 
 def unbounded_stack_scan(
-    stderr: str, reason: str, *, project_root: str, project_files_only: bool
+    stderr: str, reason: str, *, project_root: str, tolerated_dirs: tuple[str, ...]
 ) -> UnboundedStackScan:
     scan = UnboundedStackScan()
     for found in _STACK_DIAG_RE.finditer(stderr):
-        relative = project_relative(found.group("file"), project_root)
-        if relative is None and project_files_only:
+        if in_dirs(found.group("file"), tolerated_dirs):
             scan.outside_snapshot.append(found.group())
             continue
+        relative = project_relative(found.group("file"), project_root)
         file = relative if relative is not None else posixpath.normpath(found.group("file"))
         scan.violations.append(
             violation(UNBOUNDED_STACK_RULE, f"{found.group('msg').strip()} ({reason})", file, int(found.group("line")))
@@ -135,7 +156,7 @@ def unbounded_stack_scan(
     for line in stderr.splitlines():
         if not _ERROR_LINE_RE.search(line) or _STACK_DIAG_RE.match(line):
             continue
-        if project_files_only and _is_recoverable_error_outside(line, project_root):
+        if _is_recoverable_error_in(line, tolerated_dirs):
             scan.outside_snapshot.append(line)
         else:
             scan.unparsed_errors.append(line)

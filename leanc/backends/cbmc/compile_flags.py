@@ -16,8 +16,6 @@ LONG_UNDEFINE_FLAG = "--undefine-macro="
 LONG_INCLUDE_DIR_FLAG = "--include-directory="
 STANDARD_FLAG_PREFIX = "-std="
 LONG_STANDARD_FLAG_PREFIX = "--std="
-ANSI_FLAGS = frozenset({"-ansi", "--ansi"})
-ANSI_STANDARD = "c89"
 CBMC_UNSIGNED_CHAR_FLAG = "--unsigned-char"
 DEFINES_DISABLING_HARNESS_ASSERTIONS = frozenset({"NDEBUG"})
 
@@ -66,7 +64,7 @@ class StandardMode:
 
 
 CBMC_STANDARD_MODES: dict[str, StandardMode] = {
-    **dict.fromkeys(("c89", "c90", "gnu89", "gnu90", "iso9899:1990", "iso9899:199409"), StandardMode(C89_MODE)),
+    **dict.fromkeys(("gnu89", "gnu90"), StandardMode(C89_MODE)),
     **dict.fromkeys(("c99", "c9x", "gnu99", "gnu9x", "iso9899:1999", "iso9899:199x"), StandardMode(C99_MODE)),
     **dict.fromkeys(("c11", "c1x", "gnu11", "gnu1x", "iso9899:2011"), StandardMode(C11_MODE)),
     **dict.fromkeys(
@@ -150,8 +148,6 @@ class _Translator:
         joined = _joined_option(flag)
         if joined is not None:
             JOINED_OPTIONS[joined](self, flag[len(joined) :], flag)
-        elif flag in ANSI_FLAGS:
-            self.standard = ANSI_STANDARD
         elif flag in CHAR_SIGNEDNESS_FLAGS:
             self.char_signedness = CHAR_SIGNEDNESS_FLAGS[flag]
         elif has_no_semantic_effect(flag):

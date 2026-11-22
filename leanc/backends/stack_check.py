@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from leanc.rules.stack_checks import (
     SYSTEM_HEADER_WARNINGS_FLAG,
     UNBOUNDED_STACK_CHECK_FLAGS,
     codegen_flags,
+    default_system_dirs,
     stack_usage_findings,
     stack_usage_path,
     unbounded_stack_scan,
@@ -33,6 +35,12 @@ ANCHOR_SOURCE = (
     "#pragma clang diagnostic pop\n"
 )
 CLEAN_EXIT_CODE = 0
+STDLIB_SELECTION_PREFIX = "-stdlib="
+SEARCH_LIST_PROBE_FLAGS = ("-E", "-v")
+LANGUAGE_FLAG = "-x"
+PROBE_LANGUAGES = {"c": "c", "cpp": "c++"}
+SYSTEM_DIRS_STEP = "system-dirs"
+UNREADABLE_SEARCH_LIST = "printed no readable system include search list"
 MAX_UNPARSED_ROWS_SHOWN = 3
 NO_STACK_USAGE = "produced no stack usage (compile.flags stop machine-code generation, e.g. -emit-llvm)"
 
@@ -41,18 +49,29 @@ NO_STACK_USAGE = "produced no stack usage (compile.flags stop machine-code gener
 class UnboundedStackScope:
     name: str
     extra_flags: tuple[str, ...]
-    project_files_only: bool
+    tolerates_system_headers: bool
 
     @property
     def log_label(self) -> str:
         return self.name.replace("_", "-")
 
 
-ALL_REPORTED_FILES = UnboundedStackScope("stack", (), project_files_only=False)
+ALL_REPORTED_FILES = UnboundedStackScope("stack", (), tolerates_system_headers=False)
 PROJECT_FILES_AS_USER_CODE = UnboundedStackScope(
-    "stack_system_headers", (SYSTEM_HEADER_WARNINGS_FLAG,), project_files_only=True
+    "stack_system_headers", (SYSTEM_HEADER_WARNINGS_FLAG,), tolerates_system_headers=True
 )
 UNBOUNDED_STACK_SCOPES = (ALL_REPORTED_FILES, PROJECT_FILES_AS_USER_CODE)
+
+
+def system_dirs_argv(compiler: str, spec: Spec) -> list[str]:
+    return [
+        compiler,
+        *[flag for flag in spec.compile.flags if flag.startswith(STDLIB_SELECTION_PREFIX)],
+        *SEARCH_LIST_PROBE_FLAGS,
+        LANGUAGE_FLAG,
+        PROBE_LANGUAGES[spec.language.name],
+        os.devnull,
+    ]
 
 
 def _language_args(spec: Spec, include_args: list[str]) -> list[str]:
@@ -130,7 +149,9 @@ class StackCheck:
                 self.compiler, self.ctx.spec, include_args, rel, assembly, scope
             )
         outcome.argv["stack_frames"] = stack_frame_argv(self.compiler, self.ctx.spec, include_args, rel, assembly)
-        checked = [self.check_unbounded(outcome, rel, scope) for scope in UNBOUNDED_STACK_SCOPES]
+        outcome.argv[SYSTEM_DIRS_STEP] = system_dirs_argv(self.compiler, self.ctx.spec)
+        system_dirs = self.probe_system_dirs(outcome, rel)
+        checked = [self.check_unbounded(outcome, rel, scope, system_dirs) for scope in UNBOUNDED_STACK_SCOPES]
         checked.append(self.check_frames(outcome, rel, assembly))
         return outcome, all(checked)
 
@@ -146,7 +167,26 @@ class StackCheck:
             return None
         return proc
 
-    def check_unbounded(self, outcome: StackCheckOutcome, rel: str, scope: UnboundedStackScope) -> bool:
+    def probe_system_dirs(self, outcome: StackCheckOutcome, rel: str) -> tuple[str, ...] | None:
+        proc = self.execute(outcome, outcome.argv[SYSTEM_DIRS_STEP], rel, SYSTEM_DIRS_STEP)
+        if proc is None:
+            return None
+        dirs = default_system_dirs(proc.stderr) if proc.exit_code == CLEAN_EXIT_CODE else None
+        if dirs is None:
+            outcome.problems.append(
+                f"{SYSTEM_DIRS_STEP} probe for {rel} {UNREADABLE_SEARCH_LIST} (exit {proc.exit_code}): "
+                f"{redacted_excerpt(proc.stderr)}"
+            )
+        return dirs
+
+    def check_unbounded(
+        self, outcome: StackCheckOutcome, rel: str, scope: UnboundedStackScope, system_dirs: tuple[str, ...] | None
+    ) -> bool:
+        tolerated_dirs: tuple[str, ...] = ()
+        if scope.tolerates_system_headers:
+            if system_dirs is None:
+                return False
+            tolerated_dirs = system_dirs
         proc = self.execute(outcome, outcome.argv[scope.name], rel, scope.log_label)
         if proc is None:
             return False
@@ -154,7 +194,7 @@ class StackCheck:
             proc.stderr,
             self.unbounded_reason,
             project_root=sandbox_visible_path(self.ctx.snapshot_dir),
-            project_files_only=scope.project_files_only,
+            tolerated_dirs=tolerated_dirs,
         )
         outcome.violations += scan.violations
         if proc.exit_code != CLEAN_EXIT_CODE and (proc.exit_code is None or not scan.accounts_for_failure):

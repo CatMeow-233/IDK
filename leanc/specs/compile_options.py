@@ -61,6 +61,11 @@ PREPROCESSOR_OUTPUT_FLAGS = frozenset({
 })
 PREPROCESSOR_DUMP_PREFIX = "-d"
 CONST_STRING_FLAG = "-Wwrite-strings"
+DIGRAPH_CONTROL_FLAGS = frozenset({"-fdigraphs", "-fno-digraphs"})
+STRICT_C89_ALIASES = frozenset({"-ansi", "--ansi"})
+STRICT_C89_STANDARDS = frozenset({"c89", "c90", "iso9899:1990", "iso9899:199409"})
+STANDARD_OPTION_PREFIXES = ("-std=", "--std=")
+OPTION_VALUE_SEPARATOR = "="
 MACRO_DEFINING_WARNING_FLAGS = frozenset({"-Wdeprecated", "-Wno-deprecated"})
 OPTION_PREFIX = "-"
 NON_OPTION_ENTRIES = frozenset({"-", "--"})
@@ -72,6 +77,11 @@ TOOL_CONTROL_MESSAGE = (
 PREPROCESSOR_OUTPUT_MESSAGE = (
     "compile.flags must not change what the preprocessor prints or stop before code generation: integrity reads "
     "the preprocessed source with these flags"
+)
+LEXICAL_MESSAGE = (
+    "compile.flags must not change how C source is split into tokens: strict C89/C90 (-std=c89, -std=c90, "
+    "-std=iso9899:1990, -std=iso9899:199409, -ansi) has no // comments and -fdigraphs / -fno-digraphs switch "
+    "digraphs, while CBMC and Frama-C preprocess in gcc's gnu modes"
 )
 CONST_STRING_MESSAGE = (
     f"{CONST_STRING_FLAG} gives C string literals the type const char[N] (clang passes -fconst-strings to the "
@@ -99,6 +109,16 @@ def preprocessor_output_flags(flags: list[str]) -> list[str]:
     return [flag for flag in flags if flag in PREPROCESSOR_OUTPUT_FLAGS or flag.startswith(PREPROCESSOR_DUMP_PREFIX)]
 
 
+def _selects_strict_c89(flag: str) -> bool:
+    if flag in STRICT_C89_ALIASES:
+        return True
+    return flag.startswith(STANDARD_OPTION_PREFIXES) and flag.partition(OPTION_VALUE_SEPARATOR)[2] in STRICT_C89_STANDARDS
+
+
+def lexical_flags(flags: list[str]) -> list[str]:
+    return [flag for flag in flags if flag in DIGRAPH_CONTROL_FLAGS or _selects_strict_c89(flag)]
+
+
 def const_string_flags(flags: list[str]) -> list[str]:
     return [flag for flag in flags if flag == CONST_STRING_FLAG]
 
@@ -123,6 +143,7 @@ REJECTED_FLAG_FAMILIES: tuple[tuple[str, FlagSelector], ...] = (
     (TOOL_CONTROL_MESSAGE, tool_control_flags),
     (NON_OPTION_MESSAGE, non_option_entries),
     (PREPROCESSOR_OUTPUT_MESSAGE, preprocessor_output_flags),
+    (LEXICAL_MESSAGE, lexical_flags),
     (CONST_STRING_MESSAGE, const_string_flags),
 )
 

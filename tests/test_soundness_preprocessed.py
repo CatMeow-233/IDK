@@ -10,7 +10,6 @@ from integrity_support import (
     by_rule,
     integrity_gate,
     shipped,
-    with_flags,
 )
 
 from leanc.backends.integrity import NO_LINEMARKER
@@ -27,7 +26,6 @@ TRIGRAPH_HIDDEN_LINE_READ = (
     "    size_t pos = idx;\n    if (len == 4) {\n        pos = idx + 1;\n        // keep pos in range ??/\n"
     "        pos = idx;\n    }\n    *out = arr[pos];"
 )
-C89_SLASH_STAR_READ = "    size_t extra = 2 //* halve */ 2\n        - 1;\n    *out = arr[len == 4 ? idx + 1 - extra : idx];"
 TRIGRAPH_TEXTS = ["// end ??/\nx = 1;\n", 'const char *s = "??=";\n', "int a ??( 2 ??);\n", "/* ??! */\n"]
 NOT_TRIGRAPH_TEXTS = ["int x = a ? b : c;\n", 'const char *s = "??";\n', 'const char *s = "?" "?/";\n']
 
@@ -59,11 +57,16 @@ def test_preprocessed_output_without_a_linemarker_for_the_file_is_an_error(
         ('# 1 "./src/a.c" 1\nint x;\n', True),
         ('#line 1 "src/a.c"\nint x;\n', False),
         ('# 1 "src/b.c"\nint x;\n', False),
+        ('# 1 "src/caf\\303\\251.c"\nint x;\n', "src/café.c"),
+        ('# 1 "src/a\\tb.c"\nint x;\n', "src/a\tb.c"),
         ("int x;\n", False),
     ],
 )
 def test_linemarker_presence(output, marked):
-    assert has_linemarker_for("src/a.c", output) is marked
+    if isinstance(marked, str):
+        assert has_linemarker_for(marked, output) and not has_linemarker_for("src/a.c", output)
+    else:
+        assert has_linemarker_for("src/a.c", output) is marked
 
 
 @pytest.mark.parametrize("text", TRIGRAPH_TEXTS)
@@ -84,15 +87,19 @@ def test_trigraph_that_hides_a_line_from_clang_fails_integrity(example_copy, nee
     assert [d.location.line for d in by_rule(result, TRIGRAPH_RULE)] == [14]
 
 
-@pytest.mark.parametrize("text", ["int x = 2 //* halve */ 2\n;\n", "#define HALF(v) v //**/ 2\n"])
-def test_slash_star_after_a_slash_is_rejected(text):
-    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
-    found = [v for v in c_source_violations(spec, SOURCE, text) if v.rule == "TOOL_DIVERGENCE"]
-    assert len(found) == 1 and "strict C89" in found[0].message
 
-
-def test_c89_slash_star_that_changes_an_expression_fails_integrity(example_copy, needs_clang, tmp_path):
-    source = shipped().replace(READ_LINE, C89_SLASH_STAR_READ)
-    result = integrity_gate(example_copy, tmp_path, source, with_flags("-Wall", "-std=c89"))
+def test_non_ascii_source_name_is_read_after_expansion(example_copy, needs_clang, tmp_path):
+    renamed = "src/safe_arrayé.c"
+    source = shipped().replace(READ_LINE, "#define PASTE(a, b) a##b\n    *out = arr[idx];\n    PASTE(__builtin_, trap)();")
+    edits = {f"editable: [{SOURCE}]": f"editable: [{renamed}]"}
+    result = integrity_gate(example_copy, tmp_path, spec_edits=edits, extra_files={renamed: source})
     assert result.outcome is Outcome.FAIL, result.summary
-    assert any("strict C89" in d.message for d in by_rule(result, "TOOL_DIVERGENCE"))
+    [entry] = result.details["files"]
+    assert "preprocessed" in entry["checks"]
+    assert any("after macro expansion" in d.message for d in by_rule(result, "TERMINATION"))
+
+
+def test_file_name_macro_is_tool_dependent():
+    spec = load_spec(EXAMPLES / "safe_array_get" / "spec.yaml")
+    found = c_source_violations(spec, SOURCE, "static const char WHERE[] = __FILE__;\n")
+    assert [v.rule for v in found] == ["TOOL_DIVERGENCE"]

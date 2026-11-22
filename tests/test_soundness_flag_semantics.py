@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
-from clang_driver_support import cc1_changes, minimal_source, option_spellings
+from clang_driver_support import cc1_changes, clang, minimal_source, option_spellings
 
 from leanc.foundation.errors import SpecError
 from leanc.rules.stack_checks import codegen_flags
 from leanc.specs.compile_options import (
     CONST_STRING_MESSAGE,
+    LEXICAL_MESSAGE,
     MACRO_DEFINING_WARNING_FLAGS,
     PREPROCESSOR_OUTPUT_MESSAGE,
     TOOL_CONTROL_MESSAGE,
@@ -110,3 +112,28 @@ def test_options_that_change_the_preprocessor_output_are_rejected(flag):
     with pytest.raises(SpecError, match="must not change what the preprocessor prints"):
         parse_spec_text(_spec_with_flags(["-Wall", flag]), source="spec.json")
     assert flag_rejection([flag]).message == PREPROCESSOR_OUTPUT_MESSAGE
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["-std=c89", "-std=c90", "-std=iso9899:1990", "-std=iso9899:199409", "--std=c89", "-ansi", "--ansi",
+     "-fdigraphs", "-fno-digraphs"],
+)
+def test_options_that_change_tokenisation_are_rejected(flag):
+    with pytest.raises(SpecError, match="must not change how C source is split into tokens"):
+        parse_spec_text(_spec_with_flags(["-Wall", flag]), source="spec.json")
+    assert flag_rejection([flag]).message == LEXICAL_MESSAGE
+
+
+@pytest.mark.parametrize("flag", ["-std=gnu89", "-std=gnu90", "-std=c99", "-std=gnu17", "--std=c11"])
+def test_standards_with_line_comments_and_digraphs_pass(flag):
+    assert flag_rejection(["-Wall", flag]) is None
+
+
+@pytest.mark.parametrize("standard", ["c89", "c90", "iso9899:1990", "iso9899:199409"])
+def test_rejected_standards_are_the_ones_where_clang_reads_slash_star_as_a_division(needs_clang, tmp_path, standard):
+    source = tmp_path / "slash_star.c"
+    source.write_text("int x = 1 //* c */ 2\n;\n")
+    preprocessed = subprocess.run([clang(), f"-std={standard}", "-E", str(source)], capture_output=True, text=True,
+                                  check=True).stdout
+    assert "int x = 1 / 2" in preprocessed

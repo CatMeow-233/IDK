@@ -98,10 +98,6 @@ def test_long_standard_spellings_select_the_standard(flags):
     assert translation.not_applied == ()
 
 
-def test_long_ansi_spelling_selects_c89():
-    assert _translate(["--ansi"]).standard_mode.flag == "--c89"
-
-
 def test_no_warnings_alias_has_no_semantic_effect():
     translation = _translate(["--no-warnings", "-w"])
     assert translation.no_semantic_effect == ("--no-warnings", "-w") and translation.not_applied == ()
