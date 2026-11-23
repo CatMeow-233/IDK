@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from leanc.backends.counterexample import fingerprint
+from leanc.backends.wp.compile_flags import unapplied_compile_flags
 from leanc.foundation.errors import LeanCError, PatchError, ProviderError
 from leanc.foundation.models import (
     FailureReport,
@@ -112,11 +113,19 @@ def _goal_reached(vr: VerificationResult) -> bool:
     return is_success(vr.status) or all_gates_pass(vr)
 
 
+def _proof_open_to_code_edits(stage: StageResult) -> bool:
+    return (
+        stage.stage in PROOF_GATES
+        and stage.outcome is Outcome.INCONCLUSIVE
+        and not unapplied_compile_flags(stage.details)
+    )
+
+
 def proof_repairable(vr: VerificationResult) -> bool:
     if vr.status is not Status.UNKNOWN:
         return False
     still_open = [s for s in _required_gates(vr) if s.outcome is not Outcome.PASS]
-    return bool(still_open) and all(s.stage in PROOF_GATES and s.outcome is Outcome.INCONCLUSIVE for s in still_open)
+    return bool(still_open) and all(_proof_open_to_code_edits(s) for s in still_open)
 
 
 def _is_proof_improvement(before: VerificationResult, after: VerificationResult) -> bool:

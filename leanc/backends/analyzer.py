@@ -314,6 +314,9 @@ def _initial_details(ctx: BackendContext) -> dict:
 
 def _setup_problem(ctx: BackendContext) -> str | None:
     spec = ctx.spec
+    invalid = [checker for checker in spec.static_analysis.extra_checkers if not _CHECKER_NAME_RE.match(checker)]
+    if invalid:
+        return f"invalid static_analysis.extra_checkers name(s): {invalid}"
     if not compiler(ctx):
         return compiler_missing(
             spec,
@@ -323,9 +326,6 @@ def _setup_problem(ctx: BackendContext) -> str | None:
     version = compiler_version(ctx)
     if version and "clang" not in version.lower():
         return f"{compiler(ctx)} does not identify as clang ({version!r}); cannot run the Clang Static Analyzer"
-    invalid = [checker for checker in spec.static_analysis.extra_checkers if not _CHECKER_NAME_RE.match(checker)]
-    if invalid:
-        return f"invalid static_analysis.extra_checkers name(s): {invalid}"
     return None
 
 

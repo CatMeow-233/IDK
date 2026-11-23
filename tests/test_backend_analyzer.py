@@ -396,6 +396,16 @@ def test_invalid_checker_name_rejected_without_running(tmp_path):
     assert res.invocations == []
 
 
+def test_invalid_checker_name_is_reported_before_the_toolchain_lookup(tmp_path):
+    ctx = make_project(
+        tmp_path, {"src/a.c": CLEAN, "include/a.h": HEADER}, static_analysis={"extra_checkers": ["core;rm -rf"]}
+    )
+    ctx.tools = dataclasses.replace(ctx.tools, clang=None, clang_version=None)
+    res = run_static_analysis(ctx)
+    assert res.outcome is Outcome.ERROR and "invalid static_analysis.extra_checkers" in res.summary
+    assert "clang not found" not in res.summary and res.invocations == []
+
+
 def test_code_that_does_not_compile_is_tool_error(needs_clang, tmp_path):
     ctx = make_project(tmp_path, {"src/a.c": "int f(int x) { return x }\n", "include/a.h": HEADER})
     res = run_static_analysis(ctx)

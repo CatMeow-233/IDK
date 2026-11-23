@@ -83,8 +83,8 @@ RULES: dict[str, str] = {
     "PRAGMA": "a #pragma / _Pragma other than '#pragma once' (they can disable CBMC checks or diagnostics)",
     "LINE_DIRECTIVE": "#line or GNU linemarkers (they re-attribute code, e.g. mark it as a system header)",
     "TRIGRAPH": "trigraph sequences (??= ??/ ??' ??( ??) ??! ??< ??> ??-), comments and string literals included: "
-    "clang replaces them in ISO C modes while CBMC and Frama-C preprocess without them, so a `??/` that ends a "
-    "comment hides the next line from one side only",
+    "clang in ISO C modes and Frama-C (gcc -std=c11) replace them while CBMC preprocesses in gcc's gnu modes "
+    "without them, so a `??/` that ends a comment hides the next line from one side only",
     "SYMBOL_OVERRIDE": "defines or redefines something it must not (libc / verifier hooks such as __assert_fail, "
     "nondet_*, main, reserved names, weak/alias symbols, external symbols not declared by the protected headers, "
     "macros named after libc functions, keywords or interface macros)",

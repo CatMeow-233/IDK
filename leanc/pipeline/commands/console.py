@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from leanc.foundation.models import RepairRound, RunRecord
+from leanc.foundation.redact import redact
 from leanc.foundation.status import Status
 
 LOGGER_NAME = "leanc"
@@ -38,6 +39,11 @@ class Console:
             print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
 
+class _RedactingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
+
+
 def setup_logging(log_file: Path | None, verbose: bool) -> None:
     root = logging.getLogger(LOGGER_NAME)
     root.setLevel(logging.DEBUG)
@@ -46,11 +52,11 @@ def setup_logging(log_file: Path | None, verbose: bool) -> None:
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_file, encoding="utf-8", errors="backslashreplace")
-        file_handler.setFormatter(logging.Formatter(LOG_FILE_FORMAT))
+        file_handler.setFormatter(_RedactingFormatter(LOG_FILE_FORMAT))
         root.addHandler(file_handler)
     stderr_handler = logging.StreamHandler(sys.stderr)
     stderr_handler.setLevel(logging.DEBUG if verbose else QUIET_STDERR_LEVEL)
-    stderr_handler.setFormatter(logging.Formatter(STDERR_FORMAT))
+    stderr_handler.setFormatter(_RedactingFormatter(STDERR_FORMAT))
     root.addHandler(stderr_handler)
 
 

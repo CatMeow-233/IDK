@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from leanc.backends.wp.argv import FRAMA_C_STANDARD_ARG, RTE_CLASSES
+from leanc.backends.wp.argv import RTE_CLASSES
+from leanc.backends.wp.compile_flags import FRAMA_C_STANDARD, WpCompileFlags
 from leanc.foundation.status import Outcome
-from leanc.specs.compile_options import semantic_flags
+from leanc.specs.compile_options import requested_standard
 from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext
 
 WHY3_VERSION_PREFIX = "Why3 platform, version "
 NOT_CHECKED_BY_RTE = "reads of uninitialised memory, pointer alignment (\\aligned), function-pointer validity"
 MACHINE_MODEL_FACTS = "32-bit int, 64-bit long and pointers, signed char, little-endian"
-FRAMA_C_STANDARD = FRAMA_C_STANDARD_ARG.removeprefix("-std=")
+DUMP_MACHINE_DESCRIPTION = "clang -dumpmachine"
 UNAPPLIED_FLAGS_CONSEQUENCE = (
     "Frama-C preprocesses with its own machdep, C11, the include directories and compile.defines only; "
     "behaviour that depends on these flags is not covered by the proof"
@@ -20,6 +21,15 @@ def _no_guarantee(target: str, outcome: Outcome) -> list[str]:
     return [
         f"Frama-C/WP did not establish the approved contract of {target}() (outcome {outcome.value}): "
         "no deductive guarantee is claimed"
+    ]
+
+
+def _model_only_proof(spec: Spec, compile_flags: WpCompileFlags, outcome: Outcome) -> list[str]:
+    unapplied = compile_flags.not_applied
+    return [
+        f"Frama-C/WP proved the approved contract of {spec.target.function}() only under Frama-C's own model "
+        f"(outcome {outcome.value}): compile.flags not applied by Frama-C ({', '.join(unapplied)}) change the "
+        "semantics of the built program, so no deductive guarantee is claimed for it"
     ]
 
 
@@ -42,14 +52,28 @@ def _library_scope(generated_clauses: list[str]) -> str:
     return assumed + generated
 
 
-def compile_statements(spec: Spec) -> list[str]:
-    statements = []
-    if spec.language.standard != FRAMA_C_STANDARD:
+def _build_standard(spec: Spec) -> str:
+    return requested_standard(spec.compile.flags) or spec.language.standard
+
+
+def _build_target_statement(compile_flags: WpCompileFlags) -> str:
+    details = compile_flags.details()
+    target = compile_flags.build_target
+    described = f"{target.triple} ({DUMP_MACHINE_DESCRIPTION})" if target.triple else f"unknown ({target.problem})"
+    return (
+        f"build target {described}: {details['build_char_signedness']} char; Frama-C machdep "
+        f"{compile_flags.machdep}: {details['machdep_char_signedness']} char"
+    )
+
+
+def compile_statements(spec: Spec, compile_flags: WpCompileFlags) -> list[str]:
+    statements = [_build_target_statement(compile_flags)]
+    standard = _build_standard(spec)
+    if standard != FRAMA_C_STANDARD:
         statements.append(
-            f"C language standard {spec.language.standard}: Frama-C preprocesses and parses the code as "
-            f"{FRAMA_C_STANDARD}"
+            f"C language standard {standard}: Frama-C preprocesses and parses the code as {FRAMA_C_STANDARD}"
         )
-    unapplied = semantic_flags(spec.compile.flags)
+    unapplied = compile_flags.not_applied
     if unapplied:
         statements.append(
             "compile.flags not applied by Frama-C: " + ", ".join(unapplied) + f" - {UNAPPLIED_FLAGS_CONSEQUENCE}"
@@ -57,10 +81,14 @@ def compile_statements(spec: Spec) -> list[str]:
     return statements
 
 
-def wp_assumptions(ctx: BackendContext, details: dict, outcome: Outcome) -> list[str]:
+def wp_assumptions(
+    ctx: BackendContext, details: dict, compile_flags: WpCompileFlags, outcome: Outcome, model_outcome: Outcome
+) -> list[str]:
     spec = ctx.spec
     wp = spec.wp
     target = spec.target.function
+    if outcome is not Outcome.PASS and model_outcome is Outcome.PASS:
+        return _model_only_proof(spec, compile_flags, outcome) + compile_statements(spec, compile_flags)
     if outcome is not Outcome.PASS:
         return _no_guarantee(target, outcome)
     contracts = ", ".join(f"{c['file']}:{c['line']}" for c in details.get("contract", [])) or "?"
@@ -86,6 +114,6 @@ def wp_assumptions(ctx: BackendContext, details: dict, outcome: Outcome) -> list
         "the result concerns the C source as preprocessed and parsed by Frama-C; compiler correctness and the "
         "platform's actual libc are outside its scope",
     ]
-    statements += compile_statements(spec)
+    statements += compile_statements(spec, compile_flags)
     statements += [f"WP memory-model hypothesis (assumed): {h}" for h in details.get("memory_model_hypotheses") or []]
     return statements

@@ -202,7 +202,9 @@ def network_probe_blocked(sandbox: Sandbox, work_dir: Path) -> NetworkIsolation:
     cat = shutil.which("cat") or "/usr/bin/cat"
     argv = sandbox.wrap([cat, "/proc/net/dev"], cwd="/", env={"PATH": PROBE_PATH})
     try:
-        probe = subprocess.run(argv, capture_output=True, timeout=PROBE_TIMEOUT_S, check=False)
+        probe = subprocess.run(
+            argv, capture_output=True, timeout=PROBE_TIMEOUT_S, check=False, env={"PATH": PROBE_PATH}
+        )
     except (OSError, subprocess.TimeoutExpired):
         return NetworkIsolation.UNCONFIRMED
     if probe.returncode != 0:

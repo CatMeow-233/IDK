@@ -28,20 +28,20 @@ C 原始碼 ──► I. Verification Controller ──────────�
 `leanc` 依職責分成嚴格分層、無循環的套件。每個套件只能 import 下表「允許依賴」所列的套件；同一套件內的模組可以互相
 import，但**模組**依賴圖必須無循環。`leanc` 內部的 import 一律寫在模組頂層（不在函式內延遲 import 來繞過循環）；
 多個模組共用的東西移到需要它的最低層，不新增向上依賴或轉出（re-export）墊片。根模組 `leanc` 只提供 `__version__`。
-這些規則由 `tests/test_architecture.py` 強制檢查（`ALLOWED_DEPENDENCIES` 即下表）。
+分層定義在 `constraints.toml`（`[layers]` 即下表）；`python -m scripts.constraints` 與 `tests/test_architecture.py`（執行 `scripts/ruleset` 的每條規則）強制檢查分層歸屬與依賴、模組圖無循環、頂層與絕對 import、根模組不 import 套件內模組。「不新增轉出墊片」與「根模組只提供 `__version__`」是慣例，沒有對應的規則。
 
 | 層 | 套件 | 模組 | 允許依賴 |
 |---|---|---|---|
-| L0 | `leanc/foundation` | `status`、`models`、`errors`、`hashing`、`redact`、`workspace`、`sandbox`、`runner` | （無） |
-| L1 | `leanc/specs` | `model`、`loader`、`approval` | foundation |
+| L0 | `leanc/foundation` | `status`、`models`、`errors`、`hashing`、`redact`、`text`、`workspace`、`sandbox`、`runner` | （無） |
+| L1 | `leanc/specs` | `compile_options`、`model`、`loader`、`approval` | foundation |
 | L1 | `leanc/lang` | `c_lexer`、`cpp_lexer`、`lean_lexer` | foundation |
-| L2 | `leanc/rules` | `definitions`、`acsl`、`c_rules`、`cpp_rules`、`source`、`lean_rules` | foundation、specs、lang |
+| L1 | `leanc/reports` | `json_report`、`markdown` | foundation |
+| L2 | `leanc/rules` | `definitions`、`acsl`、`c_names`、`c_rules`、`cpp_rules`、`findings`、`predefined_macros`、`preprocessor`、`source`、`stack_checks`、`symbol_types`、`lean_rules` | foundation、specs、lang |
 | L2 | `leanc/toolchain` | `tools`、`cxx`、`framac`、`lean`、`environment`、`context` | foundation、specs |
-| L2 | `leanc/reports` | `json_report`、`markdown` | foundation |
 | L2 | `leanc/llm` | `base`、`parsing`、`prompts`、`cpp_prompts`、`wp_prompts`、`mock`、`openai_compat`、`factory` | foundation、specs |
-| L3 | `leanc/backends` | `clang`、`analyzer`、`sanitizer`、`cbmc`、`counterexample`、`integrity`、`wp`、`lean` | foundation、specs、lang、rules、toolchain |
-| L3 | `leanc/repair` | `patch`、`policy` | foundation、specs、lang、rules |
-| L4 | `leanc/pipeline` | `controller`、`generation`、`repair_loop`、`doctor`、`config` | foundation、specs、lang、rules、toolchain、reports、llm、backends、repair |
+| L3 | `leanc/backends` | `clang`、`clang_diagnostics`、`flag_arity`、`analyzer`、`sarif`、`sanitizer`、`cbmc`、`counterexample`、`integrity`、`stack_check`、`termination`、`verifier_macros`、`wp`、`lean` | foundation、specs、lang、rules、toolchain |
+| L3 | `leanc/repair` | `constructs`、`patch`、`policy` | foundation、specs、lang、rules |
+| L4 | `leanc/pipeline` | `controller`、`generation`、`repair_loop`、`doctor`、`config`、`commands` | foundation、specs、lang、rules、toolchain、reports、llm、backends、repair |
 | L5 | `leanc/cli.py`、`leanc/__main__.py` | CLI（argparse）；`__main__` 只依賴 `cli` | 以上全部 |
 
 各層內的分工：
@@ -52,7 +52,7 @@ import，但**模組**依賴圖必須無循環。`leanc` 內部的 import 一律
   `cpp_lexer.CppSource`（數字分隔符、raw string，再交給 C 前端）、`lean_lexer.LeanSource`。
 * `rules`：完整性關卡與修復政策共用的純函式信任規則（不呼叫任何工具）。`definitions`（檔案範圍函式定義、
   `is_trivial_body`；C、ACSL、C++ 規則與修復政策共用）→ `acsl`（ACSL 規則）→ `c_rules`（C 原始碼 / 前處理後 /
-  物件符號與 section 規則、`ALLOWED_IMPORTS`、名稱集合、標頭事實）→ `cpp_rules`（C++ 規則、demangle、C++ 定義）→
+  物件符號與 section 規則、標頭事實；`ALLOWED_IMPORTS` 與名稱集合在 `c_names`，C 與 C++ 規則共用）→ `cpp_rules`（C++ 規則、demangle、C++ 定義）→
   `source`（依語言分派的 `source_violations`）；`lean_rules`（Lean 證明檔規則與模組配置）。
 * `toolchain`：`tools`（`find_tool`、`tool_version` 等基本探測）→ `cxx`（clang++）、`framac`（Frama-C）、
   `lean`（Lean 4 + `leanchecker`）→ `environment`（`Toolchain`、`toolchain()`、`environment_info`）→
@@ -76,7 +76,7 @@ import，但**模組**依賴圖必須無循環。`leanc` 內部的 import 一律
 | G. Counterexample Analyzer | `leanc/backends/counterexample/` | 失敗性質、位置、輸入值、呼叫堆疊、精簡 trace、指紋（fingerprint） |
 | H. Repair Agent | `leanc/pipeline/repair_loop.py`、`leanc/repair/patch/`、`policy.py`、`leanc/llm/*` | 提案 → 補丁 → 政策 → 去重 → 快照驗證 → 改善判定 / 還原 |
 | I. Verification Controller | `leanc/pipeline/controller.py` | 關卡順序、略過規則、狀態彙總 |
-| J. Report Generator | `leanc/reports/json_report.py`、`markdown.py` | JSON 摘要、Markdown 報告（依偵測工具分組） |
+| J. Report Generator | `leanc/reports/json_report.py`、`leanc/reports/markdown/` | JSON 摘要、Markdown 報告（依偵測工具分組） |
 | F'. Deductive Verification（V2） | `leanc/backends/wp/`、`leanc/rules/acsl.py`、`leanc/toolchain/framac.py` | Frama-C/WP：受保護標頭中的 ACSL 契約 + `-wp-rte` + smoke test；唯一能產生 `PROVED` 的關卡 |
 | F''. Model Proofs（V2，可選） | `leanc/backends/lean/`、`leanc/rules/lean_rules.py`、`leanc/toolchain/lean.py` | Lean 4 kernel + `leanchecker` 檢查 AI 撰寫的模型證明；差分測試向量連結模型與 C |
 | C++20（V2） | `leanc/toolchain/cxx.py`、`leanc/rules/cpp_rules/`、`leanc/lang/cpp_lexer.py`、`leanc/llm/cpp_prompts.py` | clang++ 編譯/分析/sanitizer；C++ 完整性規則；沒有形式化關卡 |
@@ -84,12 +84,13 @@ import，但**模組**依賴圖必須無循環。`leanc` 內部的 import 一律
 
 ## 資料流與快照
 
-每個指令在 `.leanc/runs/<run_id>/` 下寫 `run.json`、`report.md`、`leanc.log`；每次驗證（初次驗證在
+`generate`、`verify`、`repair`、`run` 在 `.leanc/runs/<run_id>/` 下寫 `run.json`、`report.md`、`leanc.log`（`spec draft` 也建立執行目錄並寫
+`leanc.log`，只有之後以輸入錯誤中止時才另有 `run.json` 與 `report.md`；其餘指令不建立執行目錄）；每次驗證（初次驗證在
 `verify/`，修復回合在 `repair/round-N/verify/`）建立：
 
 ```
 snapshot/   ← 規格列出的檔案（editable + 受保護檔）的複本；工具只讀這裡
-build/      ← 物件檔、SARIF、測試執行檔（唯一可寫的工具輸出目錄）
+build/      ← 物件檔、SARIF、測試執行檔（沙箱預設只把 build/ 與 raw/ 掛載為可寫）
 raw/        ← 原始機器可讀輸出（cbmc-verify.json、cbmc-vacuity.json、*.sarif）
 logs/       ← 每次工具呼叫的 stdout/stderr（已遮蔽憑證）
 verification.json / verification.md
@@ -97,14 +98,14 @@ verification.json / verification.md
 
 批准檢查讀取的是 **snapshot** 中的受保護檔，因此「被檢查雜湊的位元組」就是「被驗證的位元組」，
 避免 time-of-check/time-of-use 差異。修復回合在各自的 `repair/round-N/verify/` 快照中驗證候選碼，
-工作區在迴圈期間不被修改；只有達到成功狀態的候選碼才會寫回，原檔備份在 `backup/before-writeback/`
-（`generate --force` / `run --regenerate` 覆寫前的原檔在 `backup/before-generate/`；已驗證的候選碼一律另存於
+工作區在迴圈期間不被修改；只有達到成功狀態，或在沒有 `cbmc` / `wp` 關卡的規格中所有必要關卡都通過（狀態仍為 `UNKNOWN`）的候選碼才會寫回，原檔備份在 `backup/before-writeback/`
+（`generate --force` / `run --regenerate` 覆寫前的原檔在 `backup/before-generate/`；上述兩種候選碼一律另存於
 `verified-candidate/`）。
 
 ## 關卡規則
 
 1. `spec`：未批准 / 規格或受保護檔被改 / 簽章無效 / 回滾到被取代的版本 → `SPEC_UNAPPROVED`，其餘關卡不執行
-   （`--check-unapproved` 可僅供參考地執行，但狀態仍為 `SPEC_UNAPPROVED`）。批准在 CBMC 之前與所有關卡之後
+   （`--check-unapproved` 可僅供參考地執行，但狀態仍為 `SPEC_UNAPPROVED`）。批准在每個形式化關卡（`cbmc`、`wp`、`lean`）之前與所有關卡之後
    會在快照上**再檢查一次**；驗證過程中受保護檔被改動 → `SPEC_UNAPPROVED`。
 2. `compile` 失敗 → 其餘關卡 `SKIPPED`。`compile` 通過後**一定**執行 `integrity` 關卡（不在 `gates` 清單中、
    不能移除）。`sanitizer`、`cbmc`、`wp`、`lean` 只在 `integrity` 通過後執行；`integrity` 未通過或沒有執行
@@ -117,7 +118,10 @@ verification.json / verification.md
 
 ## 擴充點
 
-* 新後端：在 `leanc/backends/` 實作 `run_xxx(ctx: BackendContext) -> StageResult`，在 `leanc/pipeline/controller.py` 的 `_gate_runner` 註冊，
-  並在 `specs/model.py` 的 `GateName` 加入名稱。
+* 新後端：在 `leanc/backends/` 實作 `run_xxx(ctx: BackendContext) -> StageResult`，在 `leanc/pipeline/controller.py` 的 `_GATE_RUNNERS` 註冊，
+  並在 `specs/model.py` 的 `GateName` 以及 `DEFAULT_V1_GATES`（規格的預設關卡）或 `OPT_IN_V2_GATES` 加入名稱（兩者組成控制器排序用的
+  `GATE_ORDER`；不在其中的關卡會讓驗證以 `ValueError` 中止）。會執行或分析候選碼的關卡另加入 `controller.py` 的
+  `GATES_ANALYSING_OR_EXECUTING_CANDIDATE_CODE`（只在 `integrity` 通過後執行），形式化關卡另加入 `FORMAL_GATES`（執行前再檢查批准）；
+  後端未自行設定 `status` 時，關卡 `FAIL` 的狀態取自 `foundation/status.py` 的 `STATUS_OF_FAILED_STAGE`，沒有項目時為 `UNKNOWN`。
 * 新 LLM provider：實作 `leanc.llm.base.LLMProvider`，在 `llm/factory.py` 註冊。
-* V2 規劃見 [roadmap.md](roadmap.md)。
+* V2 的實作範圍與 V3 方向見 [roadmap.md](roadmap.md)。

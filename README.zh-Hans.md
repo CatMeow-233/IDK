@@ -22,12 +22,12 @@
 需要 Linux 或 WSL2（以下命令以 Ubuntu 24.04 为例），以及 Python 3.11 以上。
 
 ```bash
-sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap
+sudo apt-get install -y clang-18 libclang-rt-18-dev llvm-18 cbmc gcc bubblewrap
 pip install -e ".[dev]"          # 运行依赖：pydantic、PyYAML；开发：pytest
 leanc doctor                     # 实测 clang、分析器、sanitizers、gcc、CBMC、bwrap 沙箱与网络隔离、LLM 配置
 ```
 
-`leanc doctor` 会实际运行每个工具，并为每项失败的检查给出修复方法。加上 `--json` 可获得机器可读输出（`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`）。如果 bubblewrap 沙箱不可用，sanitizer 测试会被跳过，整体状态最多只能是 `UNKNOWN`（见 [安全性](docs/security.md)）。
+`leanc doctor` 会实际运行每个工具，并为每项失败的检查给出修复方法；有必需的检查失败时以 exit 30 结束。加上 `--json` 可获得机器可读输出（`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`）。如果 bubblewrap 沙箱不可用，sanitizer 测试会被跳过，整体状态最多只能是 `UNKNOWN`（见 [安全性](docs/security.md)）。
 
 ## 快速开始
 
@@ -60,14 +60,14 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 
 | 术语 | 含义 |
 |---|---|
-| 项目根目录 | 最近一个含 `leanc.yaml` 的上级目录，否则为规格文件所在目录；可用 `--project-root` 覆盖 |
+| 项目根目录 | 最近一个含 `leanc.yaml` 的上级目录，否则为规格文件所在目录；可用 `--project-root` 覆盖。`spec draft` 没有规格文件，未给出 `--project-root` 时使用当前目录 |
 | 规格（`spec.yaml`） | 可信契约：目标签名、契约、源文件、编译/分析/测试/CBMC 设置、必需 `gates`。格式见 [docs/spec-format.md](docs/spec-format.md) |
 | 受保护文件 | 规格、`sources.headers`、`verification.harness`、`tests.driver`，以及 V2 的 ACSL 头文件、Lean spec/vectors。生成与修复永远不会写入这些文件 |
 | 可编辑文件 | `sources.editable`：生成与修复唯一能写入的文件 |
-| 批准 | `leanc spec approve` 把规格的语义哈希与每个受保护文件的 SHA-256 绑定进一条记录，并用 `LEANC_HOME`（默认 `~/.config/leanc`）中的密钥签名。任何改动都会导致 `SPEC_UNAPPROVED`，直到重新批准为止，而且 `version` 必须递增。回滚账本会拒绝已被取代的批准 |
+| 批准 | `leanc spec approve` 把规格的语义哈希与每个受保护文件的 SHA-256 绑定进一条记录，并用 `LEANC_HOME`（默认 `$XDG_CONFIG_HOME/leanc`，未设置 `XDG_CONFIG_HOME` 时为 `~/.config/leanc`）中的密钥签名。任何改动都会导致 `SPEC_UNAPPROVED`，直到重新批准为止，而且 `version` 必须递增。回滚账本会拒绝已被取代的批准 |
 | 规格草案 | `leanc spec draft` 写入 `drafts/<id>/`，并标记为 `provenance: ai-draft`。在人工审查并批准之前，它永远不受信任 |
 | 关卡（gate） | 一个验证阶段：`compile`、`integrity`（强制；在编译关卡通过后运行）、`static_analysis`、`sanitizer`、`cbmc`，V2 另有 `wp`、`lean`。必须每个必需关卡都运行且通过，才算成功 |
-| 运行（run） | 每次 `generate` / `verify` / `repair` / `run` 都会创建 `.leanc/runs/<run_id>/` |
+| 运行（run） | 每次 `generate` / `verify` / `repair` / `run` 都会创建 `.leanc/runs/<run_id>/`。`spec draft` 会创建 `.leanc/runs/draft-<UTC 时间戳>-<hex>/`，用来存放它的 `leanc.log` 以及真实 provider 的 `llm/` transcript；除非命令中止（见 exit 2），其中不会写入 `run.json`，所以 `report latest` 会跳过它 |
 
 给所有 agent 的规则：不得修改受保护文件，也不得代替人执行 `spec approve`。批准就是信任边界。
 
@@ -75,17 +75,17 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 
 | 命令 | 作用 | 创建 run |
 |---|---|---|
-| `leanc doctor` | 检查工具链、沙箱与 LLM 配置 | 否 |
+| `leanc doctor [--no-sandbox]` | 检查工具链、沙箱与 LLM 配置（`--no-sandbox` 跳过沙箱检查） | 否 |
 | `leanc init [DIR] [--template safe-array-get] [--force]` | 由模板创建项目 | 否 |
-| `leanc spec draft --id ID (--requirement TEXT \| --requirement-file F)` | 需求 → `drafts/<id>/` 中不受信任的草案（exit 40） | 否 |
+| `leanc spec draft --id ID (--requirement TEXT \| --requirement-file F) [--title T] [--force]` | 需求 → `drafts/<id>/` 中不受信任的草案（exit 40） | 仅日志目录 |
 | `leanc spec approve SPEC --by NAME [--note N] [--yes]` | 人工批准（哈希锁定 + 签名） | 否 |
-| `leanc spec status SPEC` | 批准状态、签名有效性、批准后的改动 | 否 |
+| `leanc spec status SPEC` | 批准状态、签名有效性、批准后的改动（未批准时 exit 40） | 否 |
 | `leanc spec show SPEC` | 规范化规格、哈希、生效的 CBMC 检查 | 否 |
-| `leanc generate SPEC [--force]` | 为已批准的规格写入 `sources.editable`（exit 0 表示已生成，**尚未**验证） | 是 |
+| `leanc generate SPEC [--force]` | 为已批准的规格写入 `sources.editable`（exit 0 表示已生成，**尚未**验证；记录的 `status` 是 `UNKNOWN`） | 是 |
 | `leanc verify SPEC` | 对当前源代码运行各验证关卡 | 是 |
-| `leanc repair SPEC [--max-rounds N] [--no-write]` | 先验证，再进行反例驱动的修复循环 | 是 |
-| `leanc run SPEC [--regenerate] [--no-repair] [--max-rounds N] [--no-write]` | 规格检查 → 生成（若不存在）→ 验证 → 修复 → 再验证 → 报告 | 是 |
-| `leanc report [RUN\|latest] [--format md\|json]` | 显示某次运行的报告；以该次运行的状态作为退出码；若成功的运行之后文件被修改，显示 STALE 并返回 20 | 否 |
+| `leanc repair SPEC [--max-rounds N] [--no-write]` | 先验证，再进行反例驱动的修复循环（`--max-rounds`：0 到 20） | 是 |
+| `leanc run SPEC [--regenerate] [--no-repair] [--max-rounds N] [--no-write]` | 规格检查 → 生成（若不存在）→ 验证 → 修复 → 再验证 → 报告（`--max-rounds`：0 到 20） | 是 |
+| `leanc report [RUN\|latest] [--format md\|json]` | 显示某次运行的报告；以该次运行的状态作为退出码；若成功的运行之后文件被修改，显示 STALE 并返回 20；状态为 `UNKNOWN`（已生成、尚未验证）的 `generate` 运行返回 0 | 否 |
 
 通用选项：
 
@@ -96,7 +96,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | `--project-root DIR` | spec、generate、verify、repair、run、report | 覆盖项目根目录 |
 | `--gates a,b` | verify、repair、run | 只运行规格关卡的子集（结果最多 `UNKNOWN`） |
 | `--fail-fast` | verify、repair、run | 第一个未通过的关卡之后就停止 |
-| `--timeout-scale X` | verify、repair、run | 所有工具超时乘以 X |
+| `--timeout-scale X` | verify、repair、run | 所有工具超时乘以 X（0.01 到 100） |
 | `--no-sandbox` | verify、repair、run | 不使用 bwrap；动态测试会 `SKIPPED`，结果最多 `UNKNOWN` |
 | `--allow-unsandboxed` | verify、repair、run | 危险：在没有沙箱的情况下运行不可信的测试程序（只有这个标志能这样做，`leanc.yaml` 不行） |
 | `--check-unapproved` | verify、repair、run | 对未批准的规格运行关卡，结果仅供参考；状态仍是 `SPEC_UNAPPROVED` |
@@ -106,19 +106,20 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 
 | exit | 状态 | 含义 |
 |---|---|---|
-| 0 | `PROVED` | 必需的 `wp` 关卡证明了已批准的 ACSL 契约与所有 RTE 守卫（smoke test 无异常）。这是 `PROVED` 唯一的来源 |
+| 0 | `PROVED` | 必需的 `wp` 关卡证明了已批准的 ACSL 契约与所有 RTE 守卫（smoke test 无异常），且 WP 套用了每一项有语义影响的 `compile.flags` 以及构建的 `char` 符号性。这是 `PROVED` 唯一的来源 |
 | 0 | `VERIFIED_BOUNDED` | 在已批准的 harness、输入界限与 unwind 界限内没有违反；所有循环都已完全展开；harness 不是 vacuous。**永远不会升级为 `PROVED`** |
 | 10 | `COMPILE_ERROR` | 编译错误（或在 `warnings_policy: block` 下出现警告） |
 | 11 | `STATIC_ANALYSIS_WARNING` | 在 `policy: block` 下有分析器发现，或违反完整性关卡 |
 | 12 | `RUNTIME_TEST_FAILED` | sanitizer 报告、退出码或输出错误，或 Lean 测试向量不符 |
-| 13 | `COUNTEREXAMPLE_FOUND` | CBMC 找到具体反例（真实的执行路径，即使 unwind 不足也成立） |
-| 20 | `UNKNOWN` | 无法下结论：unwind 不足、harness vacuous、关卡被跳过、只跑关卡子集、没有形式化关卡（C++）、目标未证明 |
+| 13 | `COUNTEREXAMPLE_FOUND` | CBMC 找到具体反例（真实的执行路径，即使 unwind 不足也成立），或 Frama-C/WP 的证明器判定某个证明目标不成立（该失败带有目标的位置，但没有输入或路径） |
+| 20 | `UNKNOWN` | 无法下结论：unwind 不足、harness vacuous、关卡被跳过、只跑关卡子集、没有形式化关卡（C++）、目标未证明、WP 证明所依据的 `compile.flags` 或构建目标的 `char` 符号性未被 Frama-C 套用 |
 | 21 | `TIMEOUT` | 必需工具超时 |
-| 30 | `TOOL_ERROR` | 工具崩溃或输出无法解析 |
+| 30 | `TOOL_ERROR` | 工具崩溃或输出无法解析；另外，已建立的 provider 在生成过程中出错或生成的代码被拒绝时（`generate`、`run`），`run` 无法为生成建立 provider 时，以及需要修复但无法建立 provider 时（`repair`、`run`；验证的判定保留在 `initial_status` / `verification.status`，原因在 `messages`），也是这个状态 |
 | 40 | `SPEC_UNAPPROVED` | 当前的规格与受保护文件没有有效批准 |
-| 50 | `REPAIR_EXHAUSTED` | 修复循环结束但没有成功；工作区已还原 |
-| 2 | — | 用法或输入错误 |
+| 50 | `REPAIR_EXHAUSTED` | 修复循环结束但没有成功；修复循环不改动工作区 |
+| 2 | — | 用法或输入错误。若命令此前已创建运行目录，该次运行会以状态 `TOOL_ERROR` 记录，`report` 对它返回 30 |
 | 70 | — | 内部错误（traceback 写到 stderr） |
+| 130 | — | 被中断（Ctrl-C） |
 
 “没找到反例”不等于成功。超时、工具错误、无法解析的结果、被跳过的关卡，都不算成功。汇总规则见 [docs/status-semantics.md](docs/status-semantics.md)。
 
@@ -129,10 +130,10 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 规则 | 行为 |
 |---|---|
 | 完整性未通过 | `sanitizer`、`cbmc`、`wp`、`lean` 只在完整性关卡通过后运行，否则为 `SKIPPED`（报告原文：“never executed, model-checked or proved”）；`gates` 不含 `compile` 时同样如此，因为完整性关卡在编译关卡通过后才运行。`static_analysis` 照常运行。状态取自完整性关卡：`FAIL` 得 `STATIC_ANALYSIS_WARNING`，`ERROR` 得 `TOOL_ERROR`，`TIMEOUT` 得 `TIMEOUT`；完整性关卡没有运行时，状态为 `UNKNOWN`。修复循环中，让完整性通过的候选算作进展，即使随后解锁的关卡找到反例，前提是先前已运行的关卡（`compile`、`static_analysis`）没有失去通过、也没有新增失败 |
-| 栈帧大小 | 完整性关卡以 `-fstack-usage` 编译每个可编辑文件（先以 `-include` 加入一个锚点函数，再加去掉警告控制后的 `compile.flags`，最后是 `-O0 -fno-lto -fembed-bitcode=off`），读取 clang 写出的栈帧大小：超过 1 MiB 的栈帧为 `STACK_FRAME_TOO_LARGE`，clang 标为 `dynamic` 的栈帧（运行时才分配的栈：VLA、`alloca`、`_alloca`）为 `UNBOUNDED_STACK`。锚点让 clang 为每个生成代码的文件写出栈用量文件；没有写出时（例如 `-emit-llvm`）或编译的退出码不是 0，完整性关卡为 `ERROR`。VLA / `alloca` 检查（`UNBOUNDED_STACK`）对每个文件编译三次。第一次带上 `compile.flags`，失败即关闭：只有每一行错误都是解析得出的 VLA / `alloca` 诊断时才算通过。第二次把 `compile.flags` 中的系统 include 选项（`-isystem`、`-idirafter`、`-iwithsysroot` 等）改成放在规格 include 目录之后的 `-I`，保持搜索顺序，并去掉 `--system-header-prefix=`。第三次不带 `compile.flags`，与旧版相同，同样失败即关闭，所以只靠某个 `compile.flags` 项才能编译的文件会得到 `ERROR`：include 目录请放在 `sources.include_dirs`，宏请放在 `compile.defines`。只有第二次运行只增加违规而不会失败；它编译不过时不增加任何东西。因此系统 include 选项、module map 与强制包含头文件中的 pragma，都无法隐藏不带它们时会被报告的 VLA，而编译器自己的系统头文件（libstdc++）仍是系统头文件 |
-| 三字符序列 | 可编辑的 C 代码中任何位置（包括注释与字符串字面量）出现三字符序列（`??/`、`??=` 等）即为 `TRIGRAPH`：clang 在 ISO C 模式（`-std=c17`）下会替换三字符序列，CBMC 与 Frama-C 的预处理则不会，所以注释结尾的 `??/` 只会对其中一方隐藏下一行。原始字符串前缀（`R"`、`u8R"`、`LR"` 等）为 `TOOL_DIVERGENCE`：gcc 的 gnu 模式把它读成原始字符串字面量，clang 在 C 中读成标识符加字符串。`__FILE__` 也是 `TOOL_DIVERGENCE`，因为 `-fmacro-prefix-map=` 只改变 clang 的值 |
-| 预定义宏 | 仅适用于含 `cbmc` 或 `wp` 的规格。把 clang 在编译关卡选项（`-std`、`compile.flags`、`compile.defines`）下的预定义宏，与 gcc 在各验证器自身预处理方式下的预定义宏比较。CBMC：`-D__CPROVER__ -m64 -std=gnuNN`、`-funsigned-char`、它收到的 `-D` 定义，然后是它的 x86-64 定义（`__LP64__`、`__x86_64__` 等），顺序与 CBMC 调用 gcc 时相同。Frama-C：`-undef -nostdinc` 加 machdep 的内建宏（`frama-c -print-machdep-builtin-macros`，其中定义了 `unix` 与 `linux`）、`-D__FRAMAC__ -std=c11` 与 `compile.defines`。可编辑代码中用到取值不同的宏即为 `TOOL_DIVERGENCE`。需要 `gcc`，`wp` 还需要 `frama-c`；缺少时完整性关卡为 `ERROR` |
-| `compile.flags` | 每一项都是一个选项，值直接接在选项后面（`-Iinclude`、`-DNAME=1`、`-std=c17`、`-includepre.h`）。规格验证拒绝输入文件、`-` 与 `--`。完整性关卡会询问 clang（`clang -### <项>`）某一项是否把下一项当作自己的值（`-I include`、`-iprefix -funsigned-char`）；这样的项得 `TOOL_ERROR`，因为 CBMC 转换与栈检查把每一项都当作独立选项读取。另外拒绝：`-fsanitize*` / `-fno-sanitize*`（sanitizer 由 `tests.sanitizers` 决定），以及把参数交给内部工具或替换工具链的选项：`-X...`（`-Xclang`、`-Xanalyzer`、`-Xlinker` 等）、`--for-linker`、`-mllvm`、`-Wp,` / `-Wa,` / `-Wl,`、`--analyze...`、`@file`、`--config`、`-fplugin` / `-fpass-plugin`、`-ccc-*`、`-B` / `--prefix`、`--ld-path` / `-fuse-ld=<path>`、`-resource-dir` / `--resource-dir`、`--sysroot` / `-isysroot`、`-ivfsoverlay` / `-vfsoverlay`、`--gcc-toolchain` / `--gcc-install-dir`、`-nostdlib` / `--no-standard-libraries` / `-nodefaultlibs` / `-nostartfiles`、`--driver-mode`。改变预处理器输出或在生成代码之前就停止的选项也会被拒绝，因为完整性关卡以 `compile.flags` 读取预处理后的源码：`-E`、`-P` / `--no-line-commands`、`-C` / `-CC`、`-d*`（`-dM`、`-dD` 等）、`-M` / `-MM`、`-fdirectives-only`、`-frewrite-includes`、`-fuse-line-directives`、`-fkeep-system-includes`、`-fminimize-whitespace`、`-traditional-cpp`、`-fsyntax-only`、`-fdriver-only`；预处理输出中没有该文件的 linemarker 时为 `ERROR`。改变 C 源码分词方式的选项也会被拒绝，因为 CBMC 与 Frama-C 以 gcc 的 gnu 模式预处理：strict C89/C90（`-std=c89`、`-std=c90`、`-std=iso9899:1990`、`-std=iso9899:199409`、`-ansi`，它们没有 `//` 注释）、C23（`-std=c23`、`-std=c2x`、`-std=gnu23`、`-std=gnu2x`，它们有数字分隔符），以及 `-fdigraphs` / `-fno-digraphs`。`-Wwrite-strings` 会被拒绝：clang 把它转成 `-fconst-strings`，让字符串字面量的类型变成 `const char[N]`，而没有任何验证器套用这一点。静态分析收到其余参数。CBMC 会收到 `-D`、`-I`、`-std=` / `--std=` 与 `-funsigned-char`（有符号 `char` 是 CBMC 在 x86 上的默认），GCC 的长拼法（`--define-macro=`、`--undefine-macro=`、`--include-directory=`、`--unsigned-char`、`--signed-char`）也一样，但绝不会收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`（函数式宏也一样）；其他 `-U` 会被列为未套用。警告与 `-g` 参数没有语义影响，但 `-Wdeprecated` / `-Wno-deprecated` 除外：它们在 C++ 中决定 `__DEPRECATED`，因此会保留给栈检查。其余参数（例如 `-O2 -ffast-math -mavx2`）列在假设“compile.flags not applied by CBMC”中；WP 不套用任何 `compile.flags`，并把它们列在“compile.flags not applied by Frama-C”中。判定不变 |
+| 栈帧大小 | 完整性关卡以 `-fstack-usage` 编译每个可编辑文件（先以 `-include` 加入一个锚点函数，再加去掉警告控制后的 `compile.flags`，最后是 `-O0 -fno-lto -fembed-bitcode=off`），读取 clang 写出的栈帧大小：超过 1 MiB 的栈帧为 `STACK_FRAME_TOO_LARGE`，clang 标为 `dynamic` 的栈帧（运行时才分配的栈：VLA、`alloca`、`_alloca`）为 `UNBOUNDED_STACK`。锚点让 clang 为每个生成代码的文件写出栈用量文件；没有写出时（例如 `-emit-llvm`）或编译的退出码不是 0，完整性关卡为 `ERROR`。VLA / `alloca` 检查（`UNBOUNDED_STACK`）对每个文件编译三次。第一次带上 `compile.flags`，失败即关闭：只有每一行错误都是解析得出的 VLA / `alloca` 诊断时才算通过。第二次把 `compile.flags` 中的系统 include 选项（`-isystem`、`-idirafter`、`-iwithsysroot` 等）改成放在规格 include 目录之后的 `-I`，保持它们在 `compile.flags` 中的顺序，并去掉 `--system-header-prefix=`；`-idirafter` 的目录因此会先于工具链自己的头文件被搜索，所以这次运行可能在正式构建能编译的情况下编译不过。第三次不带 `compile.flags`，与旧版相同，同样失败即关闭，所以只靠某个 `compile.flags` 项才能编译的文件会得到 `ERROR`：include 目录请放在 `sources.include_dirs`，宏请放在 `compile.defines`。只有第二次运行只增加违规而不会失败：它编译不过时，它输出的 VLA / `alloca` 诊断仍算作违规，其他错误行被忽略；但它超时或编译器无法运行时仍然算数。因此系统 include 选项、module map 与强制包含头文件中的 pragma，都无法隐藏不带它们时会被报告的 VLA，而编译器自己的系统头文件（libstdc++）仍是系统头文件 |
+| 三字符序列 | 可编辑的 C 代码中任何位置（包括注释与字符串字面量）出现三字符序列（`??/`、`??=` 等）即为 `TRIGRAPH`：clang 在 ISO C 模式（`-std=c17`）下以及 Frama-C（它的 gcc 以 `-std=c11` 运行）会替换三字符序列，CBMC 以 gcc 的 gnu 模式预处理则不会，所以注释结尾的 `??/` 只会对其中一方隐藏下一行。原始字符串前缀（`R"`、`u8R"`、`LR"` 等）为 `TOOL_DIVERGENCE`：gcc 的 gnu 模式把它读成原始字符串字面量，clang 在 C 中读成标识符加字符串。`__FILE__` 也是 `TOOL_DIVERGENCE`，因为 `-fmacro-prefix-map=` 只改变 clang 的值 |
+| 预定义宏 | 仅适用于含 `cbmc` 或 `wp` 的规格。把 clang 在编译关卡选项（`-std`、`compile.flags`、`compile.defines`）下的预定义宏，与 gcc 在各验证器自身预处理方式下的预定义宏比较。CBMC：`-D__CPROVER__ -m64`、`-funsigned-char`、`-std=gnuNN`、它收到的 `-D` 定义，然后是它的 x86-64 定义（`__LP64__`、`__x86_64__` 等），顺序与 CBMC 调用 gcc 时相同。Frama-C：`-undef -nostdinc` 加 machdep 的内建宏（`frama-c -print-machdep-builtin-macros`，其中定义了 `unix` 与 `linux`）、`-D__FRAMAC__ -std=c11` 与 `compile.defines`。可编辑代码中用到取值不同的宏即为 `TOOL_DIVERGENCE`。需要 `gcc`，`wp` 还需要 `frama-c`；缺少时完整性关卡为 `ERROR` |
+| `compile.flags` | 每一项都是一个选项，值直接接在选项后面（`-Iinclude`、`-DNAME=1`、`-std=c17`、`-includepre.h`）。规格验证拒绝输入文件、`-` 与 `--`。完整性关卡会询问 clang（`clang -### <项>`）某一项是否把下一项当作自己的值（`-I -Wno-such-dir`、`-iprefix -funsigned-char`）；这样的项得 `TOOL_ERROR`，因为 CBMC 转换与栈检查把每一项都当作独立选项读取。另外拒绝：`-fsanitize*` / `-fno-sanitize*`（sanitizer 由 `tests.sanitizers` 决定），以及把参数交给内部工具或替换工具链的选项：`-X...`（`-Xclang`、`-Xanalyzer`、`-Xlinker` 等）、`--for-linker`、`-mllvm`、`-Wp,` / `-Wa,` / `-Wl,`、`--analyze...`、`@file`、`--config`、`-fplugin` / `-fpass-plugin`、`-ccc-*`、`-B` / `--prefix`、`--ld-path` / `-fuse-ld=<path>`、`-resource-dir` / `--resource-dir`、`--sysroot` / `-isysroot`、`-ivfsoverlay` / `-vfsoverlay`、`--gcc-toolchain` / `--gcc-install-dir`、`-nostdlib` / `--no-standard-libraries` / `-nodefaultlibs` / `-nostartfiles`、`--driver-mode`。改变预处理器输出或在生成代码之前就停止的选项也会被拒绝，因为完整性关卡以 `compile.flags` 读取预处理后的源码：`-E`、`-P` / `--no-line-commands`、`-C` / `-CC`、`-d*`（`-dM`、`-dD` 等）、`-M` / `-MM`、`-fdirectives-only`、`-frewrite-includes`、`-fuse-line-directives`、`-fkeep-system-includes`、`-fminimize-whitespace`、`-traditional-cpp`、`-fsyntax-only`、`-fdriver-only`；预处理输出中没有该文件的 linemarker 时为 `ERROR`。改变 C 源码分词方式的选项也会被拒绝，因为 CBMC 以 gcc 的 gnu 模式（最高 gnu11）预处理，Frama-C 以 gcc 的 `-std=c11` 预处理：strict C89/C90（`-std=c89`、`-std=c90`、`-std=iso9899:1990`、`-std=iso9899:199409`、`-ansi`，它们没有 `//` 注释）、C23（`-std=c23`、`-std=c2x`、`-std=gnu23`、`-std=gnu2x`，它们有数字分隔符），以及 `-fdigraphs` / `-fno-digraphs`。`-Wwrite-strings` 会被拒绝：clang 把它转成 `-fconst-strings`，让字符串字面量的类型变成 `const char[N]`，而没有任何验证器套用这一点。静态分析收到其余参数。CBMC 会收到 `-D`、`-I`、`-std=` / `--std=` 与 `-funsigned-char`（有符号 `char` 是 CBMC 在 x86 上的默认），GCC 的长拼法（`--define-macro=`、`--undefine-macro=`、`--include-directory=`、`--unsigned-char`、`--signed-char`）也一样，但绝不会收到 `NDEBUG`。`-U` 只能取消它之前的 `-D`（函数式宏也一样）；其他 `-U` 会被列为未套用。警告与 `-g` 参数没有语义影响，但 `-Wdeprecated` / `-Wno-deprecated` 除外：它们在 C++ 中决定 `__DEPRECATED`，因此会保留给栈检查。其余参数（例如 `-O2 -ffast-math -mavx2`）列在假设“compile.flags not applied by CBMC”中；CBMC 的判定不变。对 WP 而言，每一项要么被套用，要么没有语义影响（警告与 `-g` 参数，同上），要么未被套用。只有当构建的 `char` 符号性与 Frama-C machdep 的相同（`x86_64` 上为有符号）时，char 符号性才算被套用。构建的符号性取最后一个 char 符号性参数（`-fsigned-char`、`-fno-unsigned-char`、`--signed-char` 为有符号），否则取 `clang <compile.flags> -dumpmachine` 输出的构建目标的默认值：架构 `x86_64`、`i386`、`x32`（CBMC 使用的同一张表）为有符号，其他架构视为未知是否有符号。没有 char 参数时，未知是否有符号的目标（如 `aarch64-unknown-linux-gnu`）会加入未套用项 `(default char of build target ...)`；查询失败或无法解析的三元组无论参数如何都会加入 `(build target unknown: ...)`。最后一个 `-std=` / `--std=` 选择 C11 或 C17（`c11`、`c1x`、`iso9899:2011`、`c17`、`c18`、`iso9899:2017`、`iso9899:2018`）时该参数被套用；它与 `language.standard` 一样以“Frama-C preprocesses and parses the code as c11”披露。`gnu*` 与其他标准不被套用。其余各项都未被套用，包括 `-D`、`-U` 与 `-I`（Frama-C 只收到 `sources.include_dirs` 与 `compile.defines`）。未被套用的项列在“compile.flags not applied by Frama-C”中（`wp` 阶段的 `details.compile_flags`）。只要有其中任何一项，证明就是 `wp` 关卡的 `INCONCLUSIVE`（`UNKNOWN`），绝不是 `PROVED`，而 Frama-C 模型下的结果保留在 `details.frama_c_model_verdict` 中。此时不会尝试证明修复 |
 | 无函数体的函数（CBMC） | 允许：`nondet_*`、`__CPROVER*`、`__builtin_prefetch`、`__builtin_expect`。其他无函数体的被调函数会使 `cbmc` 无法通过：`<immintrin.h>` 背后的 SIMD builtin，以及完整性关卡允许、但 CBMC 没有模型的 `memchr`、`strnlen`、`strstr`、`fputc`、`putc`。路径用到这类函数返回值的违规是 `unmodelled-callee` 诊断，不是反例；其他违规仍是反例。没有反例时关卡为 `INCONCLUSIVE`（状态 `UNKNOWN`）：把调用改写成普通 C 才能得到判定 |
 | CBMC 内部错误 | 不变式违规报告为 `TOOL_ERROR`（“CBMC internal error”），并附带 File/Condition/Reason 摘录，而不是内存不足提示 |
 | 契约安全检查 | `contract.safety` 中的检查会加入 CBMC 的属性检查；规格哈希不变 |
@@ -141,7 +142,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 
 ## 机器接口（AI agent / CI）
 
-使用 `--json`，并按退出码或 `status` 分支。`leanc verify SPEC --json` 的输出如下：
+使用 `--json`，并按退出码或 `status` 分支。以 exit 2、70 或 130 结束时，以及在 `spec approve` 的交互确认中拒绝确认（exit 40）时，不会输出 JSON 对象，消息写到 stderr。成功的 `generate` 报告的 `status` 为 `UNKNOWN`，`exit_code` 为 0。`leanc verify SPEC --json` 的输出如下：
 
 ```json
 {
@@ -151,8 +152,8 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
   "verification": {
     "status": "...", "success": false, "spec_id": "...", "spec_version": 1, "spec_hash": "...",
     "approval": {"...": "..."},
-    "stages": [{"stage": "cbmc", "outcome": "FAIL", "status": "...", "required": true, "invoked": true,
-                "duration_s": 1.2, "summary": "...", "tools": [], "failures": []}],
+    "stages": [{"stage": "cbmc", "outcome": "FAIL", "status": "...", "required": true, "invoked": ["cbmc"],
+                "duration_s": 1.2, "summary": "...", "tools": ["cbmc"], "failures": 3}],
     "detected_by": ["asan", "cbmc"], "reasons": ["..."], "assumptions": ["..."], "limitations": ["..."],
     "failures": [{
       "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
@@ -193,7 +194,7 @@ C 项目出现 LeakSanitizer 失败时，`ownership_trace` 保存对该泄漏测
 agent 修正代码有两种方式：
 
 1. **外部 agent 循环。** 运行 `leanc verify SPEC --json`，读取 `verification.failures`（位置、输入、性质）与 `raw_ref`。只修改 `sources.editable` 列出的文件，然后再验证。遇到 exit 0，或 40（需要人处理）、20/21/30（不是代码缺陷，请看 `reasons`）时停止。
-2. **内置循环。** 运行 `leanc run SPEC --provider openai --json`（或 `repair`）。Lean C 会调用模型、对每个补丁做策略检查，并且只把验证通过的候选写回（`--no-write` 让工作区保持不变）。
+2. **内置循环。** 运行 `leanc run SPEC --provider openai --json`（或 `repair`）。Lean C 会调用模型、对每个补丁做策略检查，并且只把所有必需关卡都通过的候选写回：验证通过的候选（`VERIFIED_BOUNDED` / `PROVED`），或者在既没有 `cbmc` 也没有 `wp` 关卡的规格中状态仍为 `UNKNOWN` 的候选（`--no-write` 不把修复后的候选写回；在 `run` 中，生成缺少的源文件或以 `--regenerate` 重新生成时仍会写入 `sources.editable`）。
 
 修复策略会拒绝以下补丁：写入 `sources.editable` 以外的文件、加入 `__CPROVER_*` / `LEANC_*` / `__builtin_assume`、删除 `assert`、抑制警告或 sanitizer、`#include` 逃逸、`system`/`exec`/`fork`/`socket`、inline asm、把目标函数掏空，以及过大的补丁。重复的补丁会被判定为循环。结果变成 `UNKNOWN`/`TIMEOUT` 不算改善。
 
@@ -216,6 +217,7 @@ mock/
 | `LEANC_API_KEY`（或 `OPENAI_API_KEY`） | API key。日志、报告与 transcript 中都会遮蔽，也不会传给子进程。若用 `LEANC_BASE_URL` 指向本地服务器，可以留空 |
 | `LEANC_MODEL` | 模型名称（必填） |
 | `LEANC_BASE_URL` | 默认 `https://api.openai.com/v1` |
+| `LEANC_ALLOW_INSECURE_HTTP=1` | 允许通过明文 `http://` 把 API key 发送到非 loopback 的主机。未设置时，只要设置了 key（`OPENAI_API_KEY` 也算），这样的 `LEANC_BASE_URL` 就会被拒绝；`localhost`、`*.localhost`、loopback IP 以及不带 key 的端点始终允许 |
 | `LEANC_LLM_TIMEOUT` | 请求超时秒数 |
 | `LEANC_LLM_MAX_RETRIES` | 暂时性错误的重试次数 |
 | `LEANC_LLM_MAX_TOKENS` | 最大生成 token 数（看到 `finish_reason=length` 时请调高） |
@@ -241,11 +243,11 @@ mock_dir: mock
 sandbox: auto         # auto | none
 ```
 
-项目配置不能削弱检查、界限、关卡、批准或隔离。若设置了 `allow_unsandboxed`，该值会被忽略并发出警告。
+项目配置不能削弱检查、界限、关卡或批准，也不能让不可信的程序在没有沙箱的情况下运行。`sandbox: none` 的作用与 `--no-sandbox` 相同：工具也不使用 bwrap，动态测试会 `SKIPPED`。若设置了 `allow_unsandboxed`，该值会被忽略并发出警告。
 
 | 变量 | 含义 |
 |---|---|
-| `LEANC_HOME` | 批准密钥与账本目录（默认 `~/.config/leanc`）；请放在工作区之外 |
+| `LEANC_HOME` | 批准密钥与账本目录（默认 `$XDG_CONFIG_HOME/leanc`，未设置 `XDG_CONFIG_HOME` 时为 `~/.config/leanc`）；请放在工作区之外 |
 | `LEANC_CLANG`、`LEANC_CLANGXX`、`LEANC_CBMC` | 工具路径 |
 | `LEANC_FRAMAC` | `frama-c`（>= 27，含 WP）；未设置时搜索 `PATH` 与 `/opt/opam/*/bin` |
 | `LEANC_LEAN` | `lean`（含 `leanchecker` 的 toolchain）；未设置时搜索 `PATH` 与 `/opt/lean/*/bin` |
@@ -262,7 +264,7 @@ sandbox: auto         # auto | none
 
 ## 示例
 
-每个 `examples/<name>/` 都包含 `spec.yaml`、受保护的 `include/`、`harness/`、`tests/`，附带的（通常有缺陷的）`src/`，`mock/` fixture，以及 `expected.yaml`。
+每个 `examples/<name>/` 都包含 `spec.yaml`、受保护的 `include/`、附带的（通常有缺陷的）`src/`、`mock/` fixture 以及 `expected.yaml`；有 `cbmc` 关卡的示例还有受保护的 `harness/`（两个 C++ 示例没有），有 `sanitizer` 关卡的示例还有受保护的 `tests/`（`vacuous_harness` 没有）。
 
 | 示例 | 附带的代码 | `verify` | `run --provider mock` |
 |---|---|---|---|
@@ -303,9 +305,9 @@ python scripts/run_experiments.py --only array_oob div_by_zero
   foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < pipeline < cli < __main__
   ```
   共享代码往下层移。包的 `__init__` 只能 re-export 自己的子模块。
-- `leanc/`、`tests/`、`scripts/` 中不得有注释或 docstring。意图要用名称、常量、Enum 与 frozen dataclass 表达。
-- 不得有 bare/`Exception`/`BaseException` handler（唯一的例外是 `leanc/cli.py` 的 `main()`，它以 exit 70 结束），也不得吞掉异常。
-- 每个 `.py` 文件最多 600 行。
+- `leanc/`、`tests/`、`scripts/` 中不得有注释或 docstring，`tests/` 或 `scripts/` 下的 `fixtures/` 目录除外。意图要用名称、常量、Enum 与 frozen dataclass 表达。
+- 不得有 bare/`Exception`/`BaseException` handler（唯一的例外是 `leanc/cli.py` 的 `main()` 中的 `except Exception` / `except BaseException`，它以 exit 70 结束；那里同样不允许 bare `except:`），也不得吞掉异常。
+- 每个 `.py` 文件最多 600 行（`fixtures/` 目录同样除外）。
 
 | 包 | 职责 |
 |---|---|
@@ -338,18 +340,18 @@ python -m scripts.merge_gate                        # 创建或合并 PR 之前�
 3. 运行 `python -m scripts.constraints`。
 4. 运行完整测试。junit 报告必须显示测试数大于 0，且没有失败、错误或跳过；出现跳过代表缺少必要的工具。
 5. 运行 `run_experiments.py`，必须报告 N/N 且 N > 0。
-6. 检查批准兼容性：对每个自基准分支以来未改动的示例目录，用基准代码做出的批准，在 HEAD 代码下必须仍然有效。
+6. 检查批准兼容性：对每个自基准分支以来未改动的示例目录，用基准代码做出的批准，在 HEAD 代码下必须仍然有效。至少要有一个示例目录未改动，否则这一步失败。
 7. 确认 worktree 仍在固定的 HEAD 上且没有被改动。
 
 成功时输出 `MERGE GATE PASS head=<sha> base=<sha>`。合并之前要先获取远端，确认远端基准分支仍等于输出中的 base sha（否则重新运行闸门），然后只合并输出中的 head sha（使用 `expectedHeadSha` 和 merge commit）。之后有任何新 commit，都必须重新运行闸门。
 
-完整测试需要 clang-18、gcc、CBMC、bwrap，以及支持 AVX2 的 x86-64 CPU（SIMD 测试会执行 AVX2 代码）。WP 测试以及 `wp` 规格的完整性测试需要支持 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 测试）；Lean 测试需要 Lean 4。缺少某个工具时相关测试会被跳过，因此合并闸门需要全部工具。
+完整测试需要 clang-18、gcc、CBMC、bwrap、位于 /usr/ 的 llvm-symbolizer（llvm-18 软件包），以及支持 AVX2 的 x86-64 CPU（SIMD 测试会执行 AVX2 代码）。WP 测试以及 `wp` 规格的完整性测试需要支持 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 测试）；Lean 测试需要 Lean 4。缺少某个工具时相关测试会被跳过，因此合并闸门需要全部工具。
 
 ## 限制
 
 - `VERIFIED_BOUNDED` 受限于已批准的 harness；harness 是否忠实表达需求，仍需由人判断。
 - sanitizer 只覆盖可信测试实际执行到的路径。
-- CBMC 不对无函数体的函数（如 SIMD intrinsic）建模，也无法套用部分参数（如 `-ffast-math`、`-O2`、`-m*`）：前者使结果不确定，后者作为假设披露。WP 不套用任何 `compile.flags`：它们会被披露，而以 `-funsigned-char` 构建的代码在 Frama-C 有符号 `char` 的 machdep 下仍可能得到 `PROVED`。
+- CBMC 不对无函数体的函数（如 SIMD intrinsic）建模，也无法套用部分参数（如 `-ffast-math`、`-O2`、`-m*`）：前者使结果不确定，后者作为假设披露。WP 在 Frama-C 的模型下证明代码：Frama-C 未套用的有语义影响的 `compile.flags` 项（如 `-funsigned-char`、`-O2`、`-fwrapv`、`-D`）会使结果无法成为 `PROVED`，因此这样的规格最多是 `UNKNOWN`。默认 `char` 未知是否有符号的构建目标（如 aarch64，也包括 `char` 实为有符号的 arm64 Apple 目标）需要显式的 `-fsigned-char` 才能得到 `PROVED`。与构建目标比较的只有 `char` 符号性：与 Frama-C `x86_64` machdep 的其他机器模型差异（类型大小、`long double`、对齐）不检查。`language.standard` 只披露、不检查：Frama-C 按 C11 解析，那里的其他标准不阻止 `PROVED`。
 - 宏比较只看按名称使用的预定义宏。用记号拼接（`##`）拼出的预定义宏名，以及两边工具中由系统头文件定义且取值不同的宏（例如 `M_PI`：glibc 在 `-std=gnu11` 下定义它，在 `-std=c17` 下不定义），都不会被比较：依据它们分支的代码可能让编译关卡与验证器看到不同的代码。
 - `compile.flags` 的检查是一份拒绝清单，而不是允许清单。
 - 栈帧大小检查以 `-O0` 度量每个函数。较高 `-O` 下的内联可能合并栈帧，调用链的总深度也不检查。受保护头文件若依 `__OPTIMIZE__` 选择函数体，度量的是 `-O0` 下的版本（可编辑代码不能使用 `__OPTIMIZE__`）。受保护头文件若把自己标为系统头文件（`#pragma GCC system_header`，或标志为 3 的 linemarker），会像以前一样隐藏自身的 VLA 警告；受保护头文件中的诊断 pragma 也能关闭之后代码的 VLA 警告，此时栈帧检查只看得到 `-O0` 下生成的函数中的 VLA。

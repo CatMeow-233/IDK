@@ -61,8 +61,9 @@ def refuted_goal_failure(entry: dict, lines: SourceLines, report_ref: str | None
         property_id=entry["goal"],
         description=f"{entry['kind']} refuted: `{text}`" if text else f"{entry['kind']} refuted",
         location=_goal_location(entry),
-        explanation=f"a prover reported the goal {entry['goal']} as INVALID: the code violates this property for "
-        "some input allowed by the approved preconditions.",
+        explanation=f"a prover reported the goal {entry['goal']} as INVALID: under the approved preconditions and the "
+        "editable annotations (loop invariants, helper contracts) this property does not hold; the code or those "
+        "annotations are wrong.",
         raw_ref=report_ref,
     )
 

@@ -7,18 +7,18 @@ Lean C 把所有產物分成三類：
 | 類別 | 例子 | 誰可以寫 | 如何保護 |
 |---|---|---|---|
 | **可信任**（trusted） | 已批准的 `spec.yaml`、CBMC harness、可信測試 driver、介面標頭 | 只有人類（審查後 `leanc spec approve`） | 語意雜湊 + 檔案 SHA-256 + HMAC 簽章；每次驗證前在快照上重新檢查 |
-| **不受信任的候選**（untrusted） | AI 規格草案、AI harness 草案、AI 生成/修復的 C 原始碼 | LLM provider（經政策檢查後） | 只能寫入 `sources.editable`；內容政策；沙箱執行 |
+| **不受信任的候選**（untrusted） | AI 規格草案、AI harness 草案、AI 生成/修復的 C 原始碼 | LLM provider（經政策檢查後） | 只能寫入 `sources.editable`（修復時也包含 `lean.proofs`）；內容政策；沙箱執行 |
 | **獨立裁判**（judges） | Clang、Clang Static Analyzer、ASan/UBSan/LSan、CBMC | — | Lean C 只解析其輸出，不採信 LLM 的任何「已正確」說法 |
 
 ## 批准紀錄
 
 `leanc spec approve <spec> --by <name>` 會：
 
-1. 以 pydantic 驗證規格（未知欄位、YAML 重複鍵、路徑穿越、editable/受保護重疊 → 拒絕）；
+1. 以 pydantic 驗證規格（未知欄位、重複鍵、路徑穿越、editable/受保護重疊 → 拒絕）；
 2. 計算規格的**語意雜湊**（正規化後的 JSON；註解/排版變更不影響，任何欄位變更都會改變）；
 3. 計算每個受保護檔（harness、測試 driver、標頭）的 SHA-256；
 4. 寫入 `.leanc/approvals/<spec_id>.json`（`current` + `history`），並以存放在**工作區外**的金鑰
-   （`$LEANC_HOME/approval.key`，預設 `~/.config/leanc/approval.key`，權限 0600）計算 HMAC-SHA256 簽章。
+   （`$LEANC_HOME/approval.key`；`LEANC_HOME` 預設為 `$XDG_CONFIG_HOME/leanc`，未設定 `XDG_CONFIG_HOME` 時為 `~/.config/leanc`；權限 0600）計算 HMAC-SHA256 簽章。
 
 版本規則：內容與目前已批准內容不同時，`version` 必須嚴格遞增；相同內容可重複批准（冪等）。
 `leanc spec status` 會顯示自上次批准以來的欄位層級差異。
@@ -36,7 +36,7 @@ Lean C 把所有產物分成三類：
 
 | 作弊手法 | 防線 |
 |---|---|
-| 修改 harness / 測試 / 標頭 / 規格 / 批准紀錄 | 修復政策 `PATH_NOT_EDITABLE`（只允許 `sources.editable`）；即使繞過，雜湊與簽章檢查也會使結果變成 `SPEC_UNAPPROVED` |
+| 修改 harness / 測試 / 標頭 / 規格 / 批准紀錄 | 修復政策 `PATH_NOT_EDITABLE`（只允許 `sources.editable` 與 `lean.proofs`）；即使繞過，雜湊與簽章檢查也會使結果變成 `SPEC_UNAPPROVED` |
 | 刪除失敗的 assert | harness 受保護；原始碼中 `assert(` 數量減少 → `ASSERT_REMOVED` |
 | 在原始碼加 `__CPROVER_assume` / `LEANC_ASSUME` / `__builtin_assume` / `__builtin_unreachable` | `CPROVER_BUILTIN` / `ASSUMPTION_INJECTION` |
 | 降低驗證強度（關閉 `--signed-overflow-check`、縮小 unwind、縮小輸入範圍） | 檢查類別、unwind、輸入限制都在已批准規格/harness 中；`MANDATORY_CHECKS` 不能被規格關閉；修復代理只能改原始碼 |
@@ -45,14 +45,14 @@ Lean C 把所有產物分成三類：
 | 讓不同工具看到不同程式（`#ifdef __clang__`、`__OPTIMIZE__`、`__CPROVER__`、`LEANC_VACUITY_CHECK`、`NDEBUG`） | 完整性關卡拒絕在前處理指令中使用保留識別字/工具巨集 |
 | 以巨集組出 `_Pragma(CPROVER check disable ...)` 關閉檢查、`#line`/linemarker 偽裝成系統標頭以隱藏分析器警告、`__VERIFIER_assume` | 完整性關卡（前處理後掃描 + 指令規則） |
 | 在建構子中 `atexit(_exit(0))` 偽造測試結果 / 躲過 LSan | 拒絕 `.init_array`/`.ctors` 與 `atexit`/`_exit` 匯入；未通過則不執行測試 |
-| 測試程式在執行中竄改快照中的 harness | 沙箱只給測試程式自己的目錄（唯讀）與空白案例目錄；批准在 CBMC 前與結束時於快照上再檢查 |
+| 測試程式在執行中竄改快照中的 harness | 沙箱只給測試程式自己的目錄（唯讀）與空白案例目錄；批准在每個形式化關卡（cbmc、wp、lean）前與結束時於快照上再檢查 |
 | 把批准紀錄回滾到被取代的舊版本 | `$LEANC_HOME` 中的簽章帳本記錄每個專案+規格已批准的最高版本 |
 | 吞掉錯誤 / 固定回傳值 | harness 的後置條件 assert（例如 `*out == arr[idx]`）+ `TRIVIALIZED_TARGET` 啟發式 |
 | 關閉警告 / sanitizer | `WARNING_SUPPRESSION`（`#pragma clang diagnostic`）、`SANITIZER_SUPPRESSION`（`no_sanitize`） |
 | 嘗試存取主機 / 網路 | `DANGEROUS_CALL`（system/popen/exec/fork/socket/...）+ 沙箱（無網路、唯讀系統目錄、uid nobody） |
-| `#include "/etc/shadow"` 洩漏資料 | `INCLUDE_ESCAPE`；編譯器/CBMC 也在沙箱中執行，只看得到 `/usr` 與快照 |
+| `#include "/etc/shadow"` 洩漏資料 | `INCLUDE_ESCAPE`；沙箱啟用時（`sandbox: none` 會連同工具一起關閉）編譯器/CBMC 也在沙箱中執行，除唯讀的系統目錄（`/usr` 等）外只看得到明確綁定的路徑：快照、leanc include 目錄、工具自己的安裝目錄、`build/` 與 `raw/` |
 | 反覆提交同一個補丁 | 候選雜湊去重（cycle detection），不重新驗證、計入回合 |
-| 讓結果變成 UNKNOWN/TIMEOUT 以「消除」反例 | `is_improvement` 規則：不確定結果永遠不算改善，會被還原 |
+| 讓結果變成 UNKNOWN/TIMEOUT 以「消除」反例 | `is_improvement` 規則：不確定結果不算改善，會被還原（例外：沒有形式化關卡時全部必要關卡通過；證明修復中未證明目標嚴格減少且沒有新增） |
 
 ## V2：契約、模型與證明的信任邊界
 

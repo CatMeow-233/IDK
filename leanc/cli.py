@@ -38,6 +38,7 @@ EPILOG = """exit codes:
   12 RUNTIME_TEST_FAILED           13 COUNTEREXAMPLE_FOUND  20 UNKNOWN
   21 TIMEOUT                       30 TOOL_ERROR            40 SPEC_UNAPPROVED
   50 REPAIR_EXHAUSTED              2  usage/input error     70 internal error
+  130 interrupted (Ctrl-C)
 
 VERIFIED_BOUNDED only means: no violation of the checked properties exists within the
 approved harness, input constraints and unwind bound (all loops fully unwound, harness
