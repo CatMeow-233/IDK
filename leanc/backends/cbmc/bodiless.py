@@ -14,7 +14,14 @@ UNMODELLED_CONSEQUENCE = (
     "memory accesses are not checked"
 )
 
+UNDECLARED_CONSEQUENCE = (
+    "CBMC types an undeclared function as returning int, so each call yields only int values converted to the "
+    "type the caller uses (a nondet_* input then covers only part of its type's range); declare the function "
+    "(leanc.h declares the common nondet_* inputs)"
+)
+
 _NO_BODY_RE = re.compile(r"no body for (?:function|callee) '?([A-Za-z_][\w$]*)'?")
+_UNDECLARED_RE = re.compile(r"function '([A-Za-z_][\w$]*)' is not declared")
 _RETURN_TEMPORARY_RE = re.compile(r"^(?:return_value_|goto_symex\$\$return_value\$\$)(?P<function>[A-Za-z_]\w*)")
 
 
@@ -25,6 +32,15 @@ def is_modelled_bodiless(function: str) -> bool:
 def bodiless_function(warning_text: str) -> str | None:
     match = _NO_BODY_RE.search(warning_text)
     return match.group(1) if match else None
+
+
+def undeclared_function(warning_text: str) -> str | None:
+    match = _UNDECLARED_RE.search(warning_text)
+    return match.group(1) if match else None
+
+
+def undeclared_reason(functions: list[str]) -> str:
+    return f"the code calls undeclared function(s) {call_list(sorted(functions))}: " + UNDECLARED_CONSEQUENCE
 
 
 def _returned_function(step: dict) -> str | None:
