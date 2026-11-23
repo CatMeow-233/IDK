@@ -17,6 +17,27 @@ from leanc.toolchain.tools import find_clang, tool_version
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 CASES = sorted(p.parent.name for p in EXAMPLES.glob("*/expected.yaml"))
+GATE_FAILED_IN_SANITIZER_AND_CBMC = {("gate_failed", "sanitizer"), ("gate_failed", "cbmc")}
+EXPECTED_VERIFY_REASON_CODES: dict[str, set[tuple[str, str]]] = {
+    "array_oob": GATE_FAILED_IN_SANITIZER_AND_CBMC,
+    "cbmc_timeout": {("gate_timeout", "cbmc")},
+    "cheating_repair": GATE_FAILED_IN_SANITIZER_AND_CBMC,
+    "cpp_bounds_bug": {("gate_failed", "sanitizer")},
+    "cpp_ring_buffer": {("no_formal_gate", "spec")},
+    "div_by_zero": GATE_FAILED_IN_SANITIZER_AND_CBMC,
+    "int_overflow": GATE_FAILED_IN_SANITIZER_AND_CBMC,
+    "lean_clamp": {("property_unproved", "lean")},
+    "loop_unwind": {("unwind_insufficient", "cbmc"), ("vacuous_harness", "cbmc")},
+    "null_deref": GATE_FAILED_IN_SANITIZER_AND_CBMC | {("gate_failed", "static_analysis")},
+    "repair_exhausted": GATE_FAILED_IN_SANITIZER_AND_CBMC,
+    "ring_buffer": set(),
+    "runtime_memory": {("gate_failed", "sanitizer")},
+    "safe_array_get": set(),
+    "vacuous_harness": {("vacuous_harness", "cbmc")},
+    "wp_contract_violation": {("gate_failed", "cbmc"), ("property_unproved", "wp")},
+    "wp_proof_repair": {("property_unproved", "wp")},
+    "wp_safe_array_get": set(),
+}
 
 
 def _cli(capsys, *argv) -> tuple[int, dict]:
@@ -36,6 +57,19 @@ def _approve(capsys, spec: Path) -> None:
 
 def _tools(payload: dict) -> set[str]:
     return {f["tool"] for f in payload.get("verification", {}).get("failures", [])}
+
+
+def _reason_codes(payload: dict) -> list[dict]:
+    return payload["verification"]["reason_codes"]
+
+
+def _assert_codes_only_without_success(payload: dict) -> None:
+    verification_status = Status(payload["verification"]["status"])
+    assert bool(_reason_codes(payload)) is not is_success(verification_status), _reason_codes(payload)
+
+
+def test_every_example_declares_its_verify_reason_codes():
+    assert set(EXPECTED_VERIFY_REASON_CODES) == set(CASES)
 
 
 def _skip_without_v2_tools(name: str) -> None:
@@ -65,6 +99,8 @@ def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
     assert data["status"] == exp["verify"], json.dumps(data.get("verification", {}).get("stages"), indent=1)[:4000]
     for tool in exp.get("detected_by") or []:
         assert tool in _tools(data), (tool, _tools(data))
+    _assert_codes_only_without_success(data)
+    assert {(c["code"], c["stage"]) for c in _reason_codes(data)} == EXPECTED_VERIFY_REASON_CODES[name]
     if not is_success(Status(exp["verify"])):
         assert rc != 0
 
@@ -72,11 +108,14 @@ def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
         _approve(capsys, proj / spec_name)
         rc, vdata = _cli(capsys, "verify", str(proj / spec_name))
         assert vdata["status"] == vexp["verify"], spec_name
+        _assert_codes_only_without_success(vdata)
 
     proj2 = _fresh(name, tmp_path / "run" / name)
     _approve(capsys, proj2 / "spec.yaml")
     rc, data = _cli(capsys, "run", str(proj2 / "spec.yaml"), "--provider", "mock", "--regenerate")
     assert data["status"] == exp["run"], json.dumps(data.get("repair_rounds"), indent=1)
+    if "verification" in data:
+        _assert_codes_only_without_success(data)
     rounds = data.get("repair_rounds") or []
     if "rejected_rounds" in exp:
         assert [r["round"] for r in rounds if r["policy_allowed"] is False] == list(exp["rejected_rounds"])

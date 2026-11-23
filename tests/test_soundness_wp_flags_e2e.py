@@ -12,6 +12,7 @@ from leanc.backends.wp.build_target import DUMP_MACHINE_FLAG
 from leanc.backends.wp.compile_flags import MACHDEP_CHAR_SIGNEDNESS, unapplied_compile_flags
 from leanc.backends.wp.installation import tool_path
 from leanc.cli import main
+from leanc.foundation.reasons import Reason
 from leanc.foundation.runner import ProcResult
 from leanc.foundation.status import Outcome, Status
 from leanc.pipeline.controller import verify
@@ -135,6 +136,8 @@ def _assert_model_only(result, wp, entry: str) -> None:
     assert wp.outcome is Outcome.INCONCLUSIVE and entry in unapplied_compile_flags(wp.details)[-1]
     assert any("[wp]" in reason and entry in reason for reason in result.reasons)
     assert any(MODEL_ONLY in assumption for assumption in result.assumptions)
+    assert [(code.code, code.stage) for code in result.reason_codes] == [(Reason.FRAMA_C_MODEL_ONLY_PROOF, "wp")]
+    assert entry in result.reason_codes[0].detail
 
 
 @pytest.mark.parametrize(
@@ -153,6 +156,7 @@ def test_wp_proves_only_builds_whose_char_signedness_frama_c_applies(
     else:
         assert result.status is Status.PROVED, result.reasons
         assert wp.outcome is Outcome.PASS and unapplied_compile_flags(wp.details) == []
+        assert result.reason_codes == []
 
 
 def test_an_unsigned_char_target_default_is_not_proved(tmp_path, capsys, monkeypatch, needs_clang, needs_framac):

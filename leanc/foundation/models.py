@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from leanc.foundation.reasons import Reason
 from leanc.foundation.status import Outcome, Status
 
 Severity = Literal["error", "warning", "note", "info"]
@@ -192,6 +193,19 @@ class EnvironmentInfo(_Model):
     sandbox_note: str | None = None
 
 
+class StageReasonCode(_Model):
+    code: Reason
+    location: Location | None = None
+    detail: str = ""
+
+
+class ReasonCode(_Model):
+    code: Reason
+    stage: str
+    location: Location | None = None
+    detail: str = ""
+
+
 class VerificationResult(_Model):
     run_id: str
     spec_id: str | None = None
@@ -199,6 +213,7 @@ class VerificationResult(_Model):
     spec_hash: str | None = None
     status: Status
     reasons: list[str] = Field(default_factory=list)
+    reason_codes: list[ReasonCode] = Field(default_factory=list)
     approval: ApprovalCheck | None = None
     stages: list[StageResult] = Field(default_factory=list)
     source_hashes: dict[str, str] = Field(default_factory=dict)

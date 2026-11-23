@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 import pytest
+from status_support import gate_stages, stage_result
 
 from leanc.cli import EPILOG
 from leanc.foundation.models import StageResult
@@ -75,7 +76,6 @@ PRE_INDUCTIVE_EXIT_CODES = {
     Status.SPEC_UNAPPROVED: 40,
     Status.REPAIR_EXHAUSTED: 50,
 }
-GATES_BEFORE_CBMC = ("compile", "integrity", "static_analysis", "sanitizer")
 
 AGGREGATE_MATRIX = [
     (PASS, PASS, ABSENT, INDUCTIVE),
@@ -139,24 +139,6 @@ NOT_PROVED = re.compile(r"\b(?:not|never)\b[^.;]*\bPROVED\b")
 NON_REQUIRED_CBMC_OUTCOMES = (FAIL, INCONCLUSIVE, ERROR, TIMEOUT, SKIPPED)
 
 
-def _stage(name: str, outcome: Outcome, required: bool = True) -> StageResult:
-    return StageResult(
-        stage=name,
-        outcome=outcome,
-        status=outcome_to_status(name, outcome),
-        summary=f"{name} {outcome.value}",
-        required=required,
-    )
-
-
-def _stages(cbmc: Outcome | None, inductive: Outcome | None, wp: Outcome | None) -> list[StageResult]:
-    stages = [_stage("spec", PASS)] + [_stage(name, PASS) for name in GATES_BEFORE_CBMC]
-    for name, outcome in (("cbmc", cbmc), (INDUCTIVE_GATE, inductive), ("wp", wp)):
-        if outcome is not None:
-            stages.append(_stage(name, outcome))
-    return stages
-
-
 def _epilog_paragraph(prefix: str) -> str:
     return next(p for p in EPILOG.split("\n\n") if p.startswith(prefix))
 
@@ -173,7 +155,7 @@ TEXTS_LISTING_CHECK_CLASSES = ("aggregate reason", "status meaning", "mock summa
 
 @pytest.mark.parametrize("cbmc,inductive,wp,expected", AGGREGATE_MATRIX)
 def test_aggregate_matrix(cbmc, inductive, wp, expected):
-    status, reasons = aggregate(_stages(cbmc, inductive, wp), approved=True)
+    status, reasons = aggregate(gate_stages(cbmc, inductive, wp), approved=True)
     assert status is expected
     if inductive not in (PASS, ABSENT):
         assert any(r.startswith(f"[{INDUCTIVE_GATE}] {inductive.value}") for r in reasons), reasons
@@ -191,35 +173,35 @@ def test_aggregate_matrix_covers_every_combination():
 
 
 def test_optional_inductive_pass_does_not_raise_the_bounded_status():
-    stages = _stages(PASS, ABSENT, ABSENT) + [_stage(INDUCTIVE_GATE, PASS, required=False)]
+    stages = gate_stages(PASS, ABSENT, ABSENT) + [stage_result(INDUCTIVE_GATE, PASS, required=False)]
     assert aggregate(stages, approved=True)[0] is BOUNDED
 
 
 def test_inductive_pass_without_cbmc_has_no_formal_verdict():
-    status, reasons = aggregate(_stages(ABSENT, PASS, ABSENT), approved=True)
+    status, reasons = aggregate(gate_stages(ABSENT, PASS, ABSENT), approved=True)
     assert status is UNKNOWN
     assert reasons == NO_FORMAL_GATE_REASONS
 
 
 def test_inductive_pass_with_skipped_cbmc_is_unknown():
-    assert aggregate(_stages(SKIPPED, PASS, ABSENT), approved=True)[0] is UNKNOWN
+    assert aggregate(gate_stages(SKIPPED, PASS, ABSENT), approved=True)[0] is UNKNOWN
 
 
 @pytest.mark.parametrize("cbmc", NON_REQUIRED_CBMC_OUTCOMES)
 def test_required_inductive_pass_needs_a_passing_cbmc_stage_even_when_cbmc_is_not_required(cbmc):
-    stages = _stages(ABSENT, PASS, ABSENT) + [_stage("cbmc", cbmc, required=False)]
+    stages = gate_stages(ABSENT, PASS, ABSENT) + [stage_result("cbmc", cbmc, required=False)]
     status, reasons = aggregate(stages, approved=True)
     assert status is UNKNOWN and status is not INDUCTIVE
     assert reasons == [FORMAL_GATE_DID_NOT_PASS_REASON]
 
 
 def test_inductive_fail_without_status_is_never_a_counterexample():
-    stages = _stages(PASS, ABSENT, ABSENT) + [StageResult(stage=INDUCTIVE_GATE, outcome=FAIL, summary="unproved")]
+    stages = gate_stages(PASS, ABSENT, ABSENT) + [StageResult(stage=INDUCTIVE_GATE, outcome=FAIL, summary="unproved")]
     assert aggregate(stages, approved=True)[0] is UNKNOWN
 
 
 def test_unapproved_spec_wins_over_inductive_pass():
-    assert aggregate(_stages(PASS, PASS, ABSENT), approved=False)[0] is Status.SPEC_UNAPPROVED
+    assert aggregate(gate_stages(PASS, PASS, ABSENT), approved=False)[0] is Status.SPEC_UNAPPROVED
 
 
 def test_failed_inductive_stage_maps_to_unknown():

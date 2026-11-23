@@ -276,6 +276,7 @@ def summary(vr: VerificationResult) -> dict[str, Any]:
         "exit_code": exit_code(vr.status),
         "success": is_success(vr.status),
         "reasons": list(vr.reasons),
+        "reason_codes": [code.model_dump(mode="json") for code in vr.reason_codes],
         "spec_id": vr.spec_id,
         "spec_version": vr.spec_version,
         "spec_hash": vr.spec_hash,

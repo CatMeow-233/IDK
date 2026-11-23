@@ -23,6 +23,7 @@ from leanc.foundation.models import (
 )
 from leanc.foundation.status import Outcome, Status, outcome_to_status
 from leanc.pipeline.controller import VERIFIED_INDUCTIVE_REASON
+from leanc.pipeline.reason_codes import derive_reason_codes
 
 HASH = "ab" * 32
 
@@ -230,6 +231,7 @@ def _vr(status: Status, **kw) -> VerificationResult:
         spec_hash=HASH,
         status=status,
         reasons=reasons,
+        reason_codes=derive_reason_codes(stages, status),
         approval=_approval(approved),
         stages=stages,
         source_hashes={"src/safe_array_get.c": "12" * 32},

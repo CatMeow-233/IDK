@@ -7,6 +7,7 @@ from leanc.reports.markdown.closing_sections import (
 )
 from leanc.reports.markdown.context_sections import (
     environment_section,
+    reason_code_lines,
     scope_section,
     spec_section,
     verdict_lines,
@@ -34,6 +35,7 @@ def _verification_header(vr: VerificationResult) -> list[str]:
 def render_verification_md(vr: VerificationResult) -> str:
     lines = _verification_header(vr)
     lines += ["## Verdict", ""] + verdict_lines(vr.status, vr.reasons)
+    lines += reason_code_lines(vr.reason_codes)
     lines += scope_section(vr)
     lines += spec_section(vr)
     lines += environment_section(vr)

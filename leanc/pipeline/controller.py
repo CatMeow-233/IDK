@@ -22,6 +22,7 @@ from leanc.foundation.models import (
 )
 from leanc.foundation.status import Outcome, Status, outcome_to_status, worst
 from leanc.foundation.workspace import Workspace, normalize_relpath
+from leanc.pipeline.reason_codes import derive_reason_codes
 from leanc.reports.json_report import atomic_write_text, write_json
 from leanc.reports.markdown import render_verification_md
 from leanc.specs.approval import check_approval
@@ -403,6 +404,7 @@ def verify(
         spec_hash=approval.spec_hash,
         status=status,
         reasons=reasons,
+        reason_codes=derive_reason_codes(stages, status),
         approval=approval,
         stages=stages,
         source_hashes=snapshot_hashes(ctx),

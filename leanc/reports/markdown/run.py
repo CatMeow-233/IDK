@@ -15,6 +15,7 @@ from leanc.reports.markdown.closing_sections import (
 )
 from leanc.reports.markdown.context_sections import (
     environment_section,
+    reason_code_lines,
     scope_section,
     spec_section,
     verdict_lines,
@@ -294,6 +295,7 @@ def render_run_md(rr: RunRecord) -> str:
     lines += _mock_disclaimer(rr)
     lines += _run_verdict(rr)
     if vr is not None:
+        lines += reason_code_lines(vr.reason_codes)
         lines += scope_section(vr)
         lines += spec_section(vr)
         lines += environment_section(vr)

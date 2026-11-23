@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from leanc.foundation.models import ApprovalCheck, VerificationResult
+from leanc.foundation.models import ApprovalCheck, ReasonCode, VerificationResult
 from leanc.foundation.status import Status, exit_code, is_success
-from leanc.reports.markdown.markup import code_span, escape_inline, table, yes_no
+from leanc.reports.markdown.markup import LIMITS, code_span, escape_inline, location_span, table, yes_no
 from leanc.reports.markdown.wording import STATUS_MEANING
 
 NO_STATUS_DESCRIPTION = "no description available for this status"
+REASON_CODES_HEADING = "Reason codes (machine-readable, also in the JSON summary):"
 UNTRUSTED_SPEC_WARNING = "**No result in this report is a verification result against a trusted specification.**"
 PROVED_IS_CONTRACT_RELATIVE = (
     "**PROVED is relative to the approved ACSL contract: review that the contract states what you need.**"
@@ -33,6 +34,18 @@ def verdict_lines(status: Status, reasons: list[str], *, label: str = "Status") 
         out.append("Reasons: none recorded.")
     out.append("")
     return out
+
+
+def _reason_code_line(code: ReasonCode) -> str:
+    where = f", {location_span(code.location)}" if code.location else ""
+    detail = f": {escape_inline(code.detail, LIMITS.short_detail_chars)}" if code.detail else ""
+    return f"- {code_span(code.code.value)} ({code_span(code.stage)}{where}){detail}"
+
+
+def reason_code_lines(codes: list[ReasonCode]) -> list[str]:
+    if not codes:
+        return []
+    return [REASON_CODES_HEADING, "", *(_reason_code_line(code) for code in codes), ""]
 
 
 def _hash_table(hashes: dict[str, str]) -> list[str]:
