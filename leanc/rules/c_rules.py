@@ -4,11 +4,11 @@ import re
 from typing import NamedTuple
 
 from leanc.foundation.models import PolicyViolation
+from leanc.lang.c_identifiers import C_KEYWORDS
 from leanc.lang.c_lexer import CSource
 from leanc.rules.acsl import ACSL_RULES, acsl_violations
 from leanc.rules.c_names import (
     ALLOWED_IMPORTS,
-    C_KEYWORDS,
     COMPILER_RT_ARITHMETIC_HELPER_RE,
     DANGEROUS_NAMES,
     LIBC_NAMES,

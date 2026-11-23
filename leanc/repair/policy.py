@@ -12,6 +12,8 @@ from leanc.repair.patch import changed_paths, diff_stats
 from leanc.rules.cpp_rules import find_cpp_function_definitions
 from leanc.rules.definitions import FunctionDefinition, find_function_definitions
 from leanc.rules.lean_rules import LEAN_RULES, check_lean_file, is_lean_path
+from leanc.rules.loop_contracts import LOOP_CONTRACT_RULES, is_loop_contract_path, loop_contract_violations
+from leanc.rules.preprocessor import defined_macro_names
 from leanc.rules.source import source_violations
 from leanc.specs.model import CPP_SUFFIXES, LEANC_STATE_DIR, Spec
 
@@ -62,7 +64,13 @@ _WP_GATE_ACSL_RULES: dict[str, str] = {
     "ACSL_CONTRACT": "an ACSL contract on the target, or one not attached to a static helper definition",
     "ACSL_MACRO": "a macro used inside ACSL, or a #define of an identifier of the approved ACSL contract",
 }
-RULES: dict[str, str] = {**_CANDIDATE_RULES, **_SOURCE_INTEGRITY_GATE_RULES, **_WP_GATE_ACSL_RULES, **LEAN_RULES}
+RULES: dict[str, str] = {
+    **_CANDIDATE_RULES,
+    **_SOURCE_INTEGRITY_GATE_RULES,
+    **_WP_GATE_ACSL_RULES,
+    **LEAN_RULES,
+    **LOOP_CONTRACT_RULES,
+}
 
 MAX_ANALYZED_CHARS = 1_000_000
 CONFIGURATION_SUFFIXES = (".yaml", ".yml", ".json")
@@ -298,11 +306,25 @@ def _changed_lines_violations(old: dict[str, str], new: dict[str, str], limit: i
     ]
 
 
+def _editable_macro_names(spec: Spec, lexed: _LexedFiles) -> frozenset[str]:
+    names: set[str] = set()
+    for path in spec.sources.editable:
+        if path in lexed.files and len(lexed.files[path]) <= MAX_ANALYZED_CHARS:
+            names |= defined_macro_names(lexed.lexed(path).code)
+    return frozenset(names)
+
+
+def _is_source_code(spec: Spec, path: str) -> bool:
+    return not is_lean_path(path) and not is_loop_contract_path(spec, path)
+
+
 def _file_violations(
     spec: Spec, path: str, old_content: str | None, new_content: str, old: _LexedFiles | None, new: _LexedFiles
 ) -> list[PolicyViolation]:
     if is_lean_path(path):
         return check_lean_file(spec, path, old_content, new_content)
+    if is_loop_contract_path(spec, path):
+        return loop_contract_violations(spec, path, new_content, macro_names=_editable_macro_names(spec, new))
     old_src = old.get(path) if old is not None else None
     return _content_violations(path, old_src, new.lexed(path), spec.target.function) + _integrity_gate_violations(
         spec, path, new_content
@@ -377,6 +399,6 @@ def check_generated(spec: Spec, files: dict[str, str]) -> PolicyDecision:
     lexed = _LexedFiles(files)
     for path in content_paths:
         violations.extend(_file_violations(spec, path, None, files[path], None, lexed))
-    generated_sources = [path for path in content_paths if not is_lean_path(path)]
+    generated_sources = [path for path in content_paths if _is_source_code(spec, path)]
     violations.extend(_target_violations(spec, None, lexed, [], generated_sources))
     return _decision(violations)

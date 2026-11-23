@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import re
 
+from leanc.lang.c_identifiers import HARNESS_INPUT_PREFIX, RESERVED_IDENTIFIER_RE
+
 __all__ = [
     "ALLOWED_IMPORTS",
     "COMPILER_RT_ARITHMETIC_HELPER_RE",
-    "C_KEYWORDS",
     "DANGEROUS_NAMES",
-    "HARNESS_INPUT_PREFIX",
     "LIBC_NAMES",
-    "RESERVED_IDENTIFIER_RE",
     "TERMINATION_NAMES",
     "forbidden_definition",
     "is_dangerous_import",
@@ -52,7 +51,6 @@ DANGEROUS_NAMES: frozenset[str] = frozenset(
 )
 _THREAD_OR_SANITIZER_API_RE = re.compile(r"^(?:pthread_|thrd_|__(?:asan|lsan|ubsan|msan|tsan|hwasan|dfsan|sanitizer)_)")
 _VERIFIER_HOOK_PREFIXES = ("__CPROVER", "__VERIFIER", "nondet_")
-HARNESS_INPUT_PREFIX = "nondet_"
 _HARNESS_ENTRY_POINT = "main"
 
 LIBC_NAMES: frozenset[str] = (
@@ -70,18 +68,6 @@ LIBC_NAMES: frozenset[str] = (
         }
     )
 )
-
-C_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
-        "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return",
-        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-        "volatile", "while", "alignas", "alignof", "typeof", "typeof_unqual", "constexpr", "nullptr",
-        "thread_local",
-    }
-)
-
-RESERVED_IDENTIFIER_RE = re.compile(r"^(?:__\w*|_[A-Z]\w*)$")
 
 
 def is_verifier_hook(name: str) -> bool:

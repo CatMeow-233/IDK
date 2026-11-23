@@ -40,7 +40,7 @@ _DuplicateKeyRejectingSafeLoader.add_constructor(
 )
 
 
-def _json_object_rejecting_duplicate_keys(members: list[tuple[str, Any]]) -> dict[str, Any]:
+def json_object_rejecting_duplicate_keys(members: list[tuple[str, Any]]) -> dict[str, Any]:
     mapping: dict[str, Any] = {}
     for key, value in members:
         if key in mapping:
@@ -62,7 +62,7 @@ def parse_spec_text(text: str, *, source: str = "<spec>") -> Spec:
         raise SpecError(f"{source}: spec too large")
     try:
         if source.endswith(".json"):
-            data = json.loads(text, object_pairs_hook=_json_object_rejecting_duplicate_keys)
+            data = json.loads(text, object_pairs_hook=json_object_rejecting_duplicate_keys)
         else:
             data = yaml.load(text, Loader=_DuplicateKeyRejectingSafeLoader)
     except YAML_LOAD_ERRORS + JSON_LOAD_ERRORS as exc:

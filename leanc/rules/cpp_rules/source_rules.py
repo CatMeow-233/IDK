@@ -4,14 +4,16 @@ import bisect
 import re
 
 from leanc.foundation.models import PolicyViolation
+from leanc.lang.c_identifiers import (
+    C_KEYWORDS,
+    HARNESS_INPUT_PREFIX,
+    RESERVED_IDENTIFIER_RE,
+)
 from leanc.lang.c_lexer import CSource
 from leanc.lang.cpp_lexer import CppSource
 from leanc.rules.c_names import (
-    C_KEYWORDS,
     DANGEROUS_NAMES,
-    HARNESS_INPUT_PREFIX,
     LIBC_NAMES,
-    RESERVED_IDENTIFIER_RE,
     TERMINATION_NAMES,
     forbidden_definition,
 )

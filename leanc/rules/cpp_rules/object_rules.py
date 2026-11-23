@@ -5,12 +5,11 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from leanc.foundation.models import PolicyViolation
+from leanc.lang.c_identifiers import HARNESS_INPUT_PREFIX, RESERVED_IDENTIFIER_RE
 from leanc.lang.c_lexer import CSource
 from leanc.rules.c_names import (
     ALLOWED_IMPORTS,
     COMPILER_RT_ARITHMETIC_HELPER_RE,
-    HARNESS_INPUT_PREFIX,
-    RESERVED_IDENTIFIER_RE,
     TERMINATION_NAMES,
     forbidden_definition,
     is_dangerous_import,
