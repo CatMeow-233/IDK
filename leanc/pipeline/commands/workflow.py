@@ -183,6 +183,18 @@ def _generation_succeeded(args, rec: RunRecord, spec: Spec, root: Path, run_dir:
     return True
 
 
+UNAPPROVED_CHECK_NOTE = "--check-unapproved: gates ran for information only; nothing was generated or repaired"
+
+
+def _record_unapproved_check(
+    args, rec: RunRecord, spec_path: Path, root: Path, run_id: str, run_dir: Path
+) -> None:
+    checked = _verify_sources(args, spec_path, root, run_id, run_dir)
+    rec.initial_verification = checked
+    rec.verification = checked
+    rec.messages.append(UNAPPROVED_CHECK_NOTE)
+
+
 def cmd_run(args) -> int:
     console = Console(args.json)
     spec_path, root = spec_and_root(args)
@@ -191,6 +203,8 @@ def cmd_run(args) -> int:
     setup_logging(run_dir / "leanc.log", args.verbose)
     rec = _record("run", run_id, Status.UNKNOWN, spec_path, spec, root)
     if not _spec_is_approved(rec, spec, spec_path, root):
+        if args.check_unapproved:
+            _record_unapproved_check(args, rec, spec_path, root, run_id, run_dir)
         return finish_run(rec, run_dir, console)
     if _sources_to_generate(args, spec, root) and not _generation_succeeded(args, rec, spec, root, run_dir):
         return finish_run(rec, run_dir, console)

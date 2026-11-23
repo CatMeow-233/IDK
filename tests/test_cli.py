@@ -298,3 +298,22 @@ def test_failed_abort_record_does_not_hide_the_user_error(capsys, example_copy, 
     err = capsys.readouterr().err
     assert "leanc: error:" in err
     assert "could not write the aborted-run record: read-only run directory" in err
+
+def test_run_check_unapproved_runs_the_gates_without_generating_or_repairing(capsys, example_copy, needs_toolchain):
+    proj = example_copy("div_by_zero")
+    spec = str(proj / "spec.yaml")
+    src = proj / "src/safe_ratio.c"
+    before = src.read_text()
+    rc, data = run(capsys, "run", spec, "--provider", "mock", "--check-unapproved", "--json")
+    assert rc == 40 and data["status"] == "SPEC_UNAPPROVED"
+    stages = {s["stage"]: s["outcome"] for s in data["verification"]["stages"]}
+    assert stages["spec"] == "FAIL" and stages["cbmc"] == "FAIL", stages
+    assert "repair_rounds" not in data and data["provider"] is None
+    assert any("--check-unapproved" in m for m in data["messages"])
+    assert src.read_text() == before
+
+
+def test_run_without_check_unapproved_runs_no_gate(capsys, example_copy):
+    proj = example_copy("div_by_zero")
+    rc, data = run(capsys, "run", str(proj / "spec.yaml"), "--provider", "mock", "--json")
+    assert rc == 40 and data["status"] == "SPEC_UNAPPROVED" and "verification" not in data
