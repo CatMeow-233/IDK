@@ -16,6 +16,7 @@ __all__ = [
     "UNCHECKED_DIRECTIVES",
     "Directive",
     "IncludedHeader",
+    "Linemarker",
     "assertion_predicate_findings",
     "computed_include_findings",
     "defined_macro",
@@ -30,6 +31,7 @@ __all__ = [
     "irregular_directive_findings",
     "is_irregular",
     "is_tool_specific_macro",
+    "linemarker",
     "normalized_header_path",
     "parse_directives",
     "pragma_directive_findings",
@@ -267,10 +269,22 @@ def _unescaped_linemarker_file(spelling: str) -> str:
     return unescaped.decode(FILE_NAME_ENCODING, FILE_NAME_ERRORS)
 
 
+class Linemarker(NamedTuple):
+    line: int
+    file: str
+
+
+def linemarker(line: str) -> Linemarker | None:
+    marker = _LINEMARKER_RE.match(line)
+    if marker is None:
+        return None
+    return Linemarker(int(marker.group(1)), _unescaped_linemarker_file(marker.group(2)))
+
+
 def has_linemarker_for(rel: str, pp_output: str) -> bool:
     for line in pp_output.split("\n"):
-        marker = _LINEMARKER_RE.match(line)
-        if marker and posixpath.normpath(_unescaped_linemarker_file(marker.group(2))) == posixpath.normpath(rel):
+        marker = linemarker(line)
+        if marker is not None and posixpath.normpath(marker.file) == posixpath.normpath(rel):
             return True
     return False
 
@@ -281,10 +295,9 @@ def expanded_view(rel: str, pp_output: str) -> tuple[str, list[int]]:
     current_file: str | None = None
     current_line = 0
     for line in pp_output.split("\n"):
-        marker = _LINEMARKER_RE.match(line)
-        if marker:
-            current_line = int(marker.group(1))
-            current_file = _unescaped_linemarker_file(marker.group(2))
+        marker = linemarker(line)
+        if marker is not None:
+            current_line, current_file = marker
             continue
         if current_file is not None and posixpath.normpath(current_file) == posixpath.normpath(rel):
             lines.append(line)

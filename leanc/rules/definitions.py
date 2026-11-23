@@ -9,9 +9,11 @@ from leanc.lang.c_lexer import CSource
 
 __all__ = [
     "NOT_A_FUNCTION",
+    "DefinitionSite",
     "FunctionDefinition",
     "defined_functions",
     "find_function_definitions",
+    "function_definition_sites",
     "is_trivial_body",
 ]
 
@@ -63,6 +65,13 @@ class FunctionDefinition:
     line: int
     body: str
     trivial: bool
+
+
+@dataclass(frozen=True)
+class DefinitionSite:
+    name: str
+    offset: int
+    body_open: int
 
 
 def _is_constant_expr(expr: str) -> bool:
@@ -170,11 +179,11 @@ def find_function_definitions(src: CSource, name: str, file: str = "") -> list[F
     return out
 
 
-def defined_functions(src: CSource) -> list[tuple[str, int]]:
+def function_definition_sites(src: CSource) -> list[DefinitionSite]:
     code = src.code_nodirectives
     pairs = src.pairs_nodirectives
     depth_at = _brace_depth_finder(code)
-    out: list[tuple[str, int]] = []
+    out: list[DefinitionSite] = []
     for m in _DEF_CANDIDATE_RE.finditer(code):
         name = m.group(1)
         if name in NOT_A_FUNCTION:
@@ -186,5 +195,9 @@ def defined_functions(src: CSource) -> list[tuple[str, int]]:
             continue
         k = _skip_attributes(code, pairs, close + 1, _any_attribute_paren)
         if k < len(code) and code[k] == "{":
-            out.append((name, m.start()))
+            out.append(DefinitionSite(name, m.start(), k))
     return out
+
+
+def defined_functions(src: CSource) -> list[tuple[str, int]]:
+    return [(site.name, site.offset) for site in function_definition_sites(src)]

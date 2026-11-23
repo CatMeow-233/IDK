@@ -38,6 +38,8 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 - toolchain.cxx.find_clangxx: return clang++ path unresolved (realpath of /usr/bin/clang++ is clang).
 - MUST NOT set Limits.memory_mb (RLIMIT_AS) for ASan/LSan-instrumented programs; cap via ASan hard_rss_limit_mb.
 - ownership trace (backends/sanitizer/ownership*, data/runtime/ownership_trace.c): evidence only. MUST NOT add failures/diagnostics, touch tally/outcome/status, or edit id/description/location of failures; every trace failure is a value in details["ownership_trace"]. reads its log with O_NOFOLLOW + regular-file + size cap. C only.
+- inductive copy models (data/runtime/inductive_models.c, inductive gate only): memcpy/memmove/memset keep the CBMC 5.95.1 library preconditions (memcpy no overlap, r_ok src, w_ok dst), then __CPROVER_havoc_slice(dst, n) for n > 0. MUST NOT drop the havoc (an assert-only stub hides content-dependent bugs; tests/test_inductive_models). known gaps (not reported): a copy that overflows into a neighbouring field of the same object, a copy that writes into a string literal.
+- rules/loop_sites (on cbmc --preprocess output): a loop contract (file, line) matches exactly one for|while|do|goto keyword whose linemarker origin is that line; it must be for/while, spelled on that source line (no macro loop), with a ( ) header ending in the same file and a { block body (not ;, not <%). clause and probe insertions carry no line break and apply in descending offset. anything else -> site problem, never a guess.
 
 ## errors
 - MUST NOT: bare except, except Exception, except BaseException. sole exception: leanc/cli.py main() -> print traceback, return 70 (except Exception/BaseException only; bare except rejected even there).
