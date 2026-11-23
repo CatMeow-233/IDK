@@ -33,6 +33,7 @@ foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < p
 - leanc/cli.py: single module (argparse + main). command bodies -> leanc/pipeline/commands/*.
 - leanc/repair/patch: fuzz 0; DEFAULT_MAX_OFFSET <= 50 (wider window mis-matches repetitive C lines).
 - backends: read only ctx.snapshot_dir; write only build/raw/logs; run tools on project content only via ctx.run (bwrap when sandbox.active, else unsandboxed). exception: version probes via toolchain.tools.tool_version ([path, -version|--version], cwd /, unsandboxed, not recorded as invocation): frama-c, why3, and each wp.provers family name resolved on fc.bin_dir:DEFAULT_PATH; find_framac/find_lean probe the same way.
+- cprover version probes (same tool_version rule): cbmc, goto-cc (find_goto_cc, LEANC_GOTO_CC), goto-instrument (find_goto_instrument, LEANC_GOTO_INSTRUMENT), once in toolchain.environment.toolchain(); the inductive gate and leanc doctor read the pin only via toolchain.cprover.cprover_pin(ctx.tools / toolchain()): exactly one (cbmc-X.Y.Z) token per version line, each in TESTED_INDUCTIVE_CBMC, all equal, goto-cc line starts "gcc (goto-cc " (goto-ld/goto-as personalities also print the token); anything else -> inductive gate ERROR, never PASS.
 - lean checker template axiom whitelist == backends.lean STANDARD_AXIOMS.
 - toolchain.cxx.find_clangxx: return clang++ path unresolved (realpath of /usr/bin/clang++ is clang).
 - MUST NOT set Limits.memory_mb (RLIMIT_AS) for ASan/LSan-instrumented programs; cap via ASan hard_rss_limit_mb.

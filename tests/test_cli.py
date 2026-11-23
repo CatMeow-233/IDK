@@ -62,6 +62,11 @@ def test_doctor_json(capsys, needs_toolchain):
         assert names[n]["ok"], names[n]
     assert rc == 0 and data["ok"]
     assert names["llm-provider"]["required"] is False
+    inductive = [n for n in names if n.endswith(" (inductive gate)")]
+    assert inductive == [
+        "goto-cc (inductive gate)", "goto-instrument (inductive gate)", "cbmc release pin (inductive gate)",
+    ]
+    assert not any(names[n]["required"] for n in inductive)
 
 
 def test_init_then_full_lifecycle(capsys, tmp_path, needs_toolchain):

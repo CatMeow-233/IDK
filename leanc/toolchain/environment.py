@@ -11,7 +11,15 @@ from leanc.foundation.sandbox import Sandbox
 from leanc.toolchain.cxx import find_clangxx
 from leanc.toolchain.framac import find_framac
 from leanc.toolchain.lean import find_lean
-from leanc.toolchain.tools import find_cbmc, find_clang, tool_version
+from leanc.toolchain.tools import (
+    GOTO_CC,
+    GOTO_INSTRUMENT,
+    find_cbmc,
+    find_clang,
+    find_goto_cc,
+    find_goto_instrument,
+    tool_version,
+)
 
 
 @dataclass(frozen=True)
@@ -22,19 +30,33 @@ class Toolchain:
     cbmc_version: str | None
     clangxx: str | None = None
     clangxx_version: str | None = None
+    goto_cc: str | None = None
+    goto_cc_version: str | None = None
+    goto_instrument: str | None = None
+    goto_instrument_version: str | None = None
+
+
+def _version_of(path: str | None) -> str | None:
+    return tool_version(path) if path else None
 
 
 def toolchain(preferred_compiler: str = "clang") -> Toolchain:
     clang = find_clang(preferred_compiler)
     cbmc = find_cbmc()
     clangxx = find_clangxx(clang)
+    goto_cc = find_goto_cc()
+    goto_instrument = find_goto_instrument()
     return Toolchain(
         clang=clang,
         cbmc=cbmc,
-        clang_version=tool_version(clang) if clang else None,
-        cbmc_version=tool_version(cbmc) if cbmc else None,
+        clang_version=_version_of(clang),
+        cbmc_version=_version_of(cbmc),
         clangxx=clangxx,
-        clangxx_version=tool_version(clangxx) if clangxx else None,
+        clangxx_version=_version_of(clangxx),
+        goto_cc=goto_cc,
+        goto_cc_version=_version_of(goto_cc),
+        goto_instrument=goto_instrument,
+        goto_instrument_version=_version_of(goto_instrument),
     )
 
 
@@ -56,11 +78,24 @@ def _v2_tool_infos() -> list[ToolInfo]:
     return [_framac_info(), _lean_info()]
 
 
+def _cprover_tool_infos(tc: Toolchain) -> list[ToolInfo]:
+    return [
+        ToolInfo(name=GOTO_CC, path=tc.goto_cc, version=tc.goto_cc_version, available=bool(tc.goto_cc)),
+        ToolInfo(
+            name=GOTO_INSTRUMENT,
+            path=tc.goto_instrument,
+            version=tc.goto_instrument_version,
+            available=bool(tc.goto_instrument),
+        ),
+    ]
+
+
 def environment_info(sandbox: Sandbox, tc: Toolchain | None = None) -> EnvironmentInfo:
     tc = tc or toolchain()
     tools = [
         ToolInfo(name="clang", path=tc.clang, version=tc.clang_version, available=bool(tc.clang)),
         ToolInfo(name="cbmc", path=tc.cbmc, version=tc.cbmc_version, available=bool(tc.cbmc)),
+        *_cprover_tool_infos(tc),
         ToolInfo(name="clang++", path=tc.clangxx, version=tc.clangxx_version, available=bool(tc.clangxx)),
         *_v2_tool_infos(),
     ]

@@ -50,6 +50,20 @@ def find_cbmc() -> str | None:
     return find_tool("cbmc", "LEANC_CBMC")
 
 
+GOTO_CC = "goto-cc"
+GOTO_CC_ENV = "LEANC_GOTO_CC"
+GOTO_INSTRUMENT = "goto-instrument"
+GOTO_INSTRUMENT_ENV = "LEANC_GOTO_INSTRUMENT"
+
+
+def find_goto_cc() -> str | None:
+    return find_tool(GOTO_CC, GOTO_CC_ENV)
+
+
+def find_goto_instrument() -> str | None:
+    return find_tool(GOTO_INSTRUMENT, GOTO_INSTRUMENT_ENV)
+
+
 def clang_major(version_line: str | None) -> int | None:
     if not version_line:
         return None

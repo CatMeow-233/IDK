@@ -18,12 +18,14 @@ from leanc.foundation.sandbox import (
     network_probe_blocked,
 )
 from leanc.specs.approval import leanc_home
+from leanc.toolchain.cprover import TESTED_INDUCTIVE_CBMC, CproverPin, ToolRelease, cprover_pin, pinned_releases_text
 from leanc.toolchain.cxx import find_clangxx
+from leanc.toolchain.environment import toolchain
 from leanc.toolchain.framac import INSTALL_HINT as WP_HINT
 from leanc.toolchain.framac import find_framac
 from leanc.toolchain.lean import INSTALL_HINT as LEAN_HINT
 from leanc.toolchain.lean import find_lean
-from leanc.toolchain.tools import find_cbmc, find_clang, find_tool, tool_version
+from leanc.toolchain.tools import GOTO_CC_ENV, GOTO_INSTRUMENT_ENV, find_cbmc, find_clang, find_tool, tool_version
 
 APT_HINT = "sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap   (Ubuntu 24.04 / Debian)"
 GCC = "gcc"
@@ -46,6 +48,8 @@ CBMC_TIMEOUT_S = 120
 SHOWN_STDERR_CHARS = 300
 SHOWN_RUN_STDERR_CHARS = 200
 CBMC_SUCCESS_MARKERS = ('"cProverStatus": "success"', '"cProverStatus":"success"')
+INDUCTIVE_GATE_SUFFIX = " (inductive gate)"
+CPROVER_PIN_CHECK = "cbmc release pin" + INDUCTIVE_GATE_SUFFIX
 
 
 @dataclass
@@ -279,6 +283,35 @@ def _lean_check() -> Check:
     )
 
 
+def _cprover_install_hint(env_var: str) -> str:
+    return f"install CBMC {' or '.join(TESTED_INDUCTIVE_CBMC)} (it ships goto-cc and goto-instrument) or set {env_var}"
+
+
+def _cprover_tool_check(release: ToolRelease, env_var: str) -> Check:
+    ok = release.problem is None
+    detail = f"{release.path}: {release.version_line or '-'}; {release.status()}" if release.path else release.status()
+    fix = "" if ok else _cprover_install_hint(env_var)
+    return Check(release.tool.value + INDUCTIVE_GATE_SUFFIX, ok, False, detail, fix)
+
+
+def _cprover_pin_check(pin: CproverPin) -> Check:
+    fix = (
+        ""
+        if pin.tested
+        else "the inductive gate gives ERROR unless cbmc, goto-cc and goto-instrument all report one tested release "
+        f"({pinned_releases_text()})"
+    )
+    return Check(CPROVER_PIN_CHECK, pin.tested, False, pin.describe(), fix)
+
+
+def inductive_tool_checks(pin: CproverPin) -> list[Check]:
+    return [
+        _cprover_tool_check(pin.goto_cc, GOTO_CC_ENV),
+        _cprover_tool_check(pin.goto_instrument, GOTO_INSTRUMENT_ENV),
+        _cprover_pin_check(pin),
+    ]
+
+
 def _approval_key_check() -> Check:
     key_path = leanc_home() / "approval.key"
     return Check(
@@ -299,6 +332,7 @@ def run_doctor(sandbox_preference: str = "auto") -> list[Check]:
     checks.append(_clangxx_check(clang))
     checks.append(_framac_check())
     checks.append(_lean_check())
+    checks.extend(inductive_tool_checks(cprover_pin(toolchain())))
     checks.append(_approval_key_check())
     return checks
 
