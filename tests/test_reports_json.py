@@ -8,7 +8,7 @@ from reports_support import HASH, _inv, _run_record, _vr
 
 from leanc.foundation.errors import LeanCError
 from leanc.foundation.models import FailureReport, StageResult
-from leanc.foundation.status import EXIT_CODES, Outcome, Status
+from leanc.foundation.status import EXIT_CODES, SUCCESS_STATUSES, Outcome, Status
 from leanc.reports.json_report import (
     TOOL_ORDER,
     detecting_tools,
@@ -114,7 +114,7 @@ def test_summary_every_status(status):
     s = summary(vr)
     assert s["status"] == status.value
     assert s["exit_code"] == EXIT_CODES[status]
-    assert s["success"] is (status in (Status.VERIFIED_BOUNDED, Status.PROVED))
+    assert s["success"] is (status in SUCCESS_STATUSES)
     assert (s["spec_id"], s["spec_version"], s["spec_hash"]) == ("safe-array-get", 2, HASH)
     assert s["approval"]["approved"] is (status is not Status.SPEC_UNAPPROVED)
     assert isinstance(s["approval"]["reasons"], list)

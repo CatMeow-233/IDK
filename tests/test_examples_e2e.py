@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from leanc.cli import main
+from leanc.foundation.status import Status, is_success
 from leanc.specs.loader import load_spec
 from leanc.toolchain.cxx import find_clangxx
 from leanc.toolchain.framac import MIN_FRAMAC_MAJOR, find_framac, framac_version_key
@@ -64,7 +65,7 @@ def test_example_statuses(name, tmp_path, capsys, needs_toolchain):
     assert data["status"] == exp["verify"], json.dumps(data.get("verification", {}).get("stages"), indent=1)[:4000]
     for tool in exp.get("detected_by") or []:
         assert tool in _tools(data), (tool, _tools(data))
-    if exp["verify"] not in ("VERIFIED_BOUNDED", "PROVED"):
+    if not is_success(Status(exp["verify"])):
         assert rc != 0
 
     for spec_name, vexp in (exp.get("variants") or {}).items():

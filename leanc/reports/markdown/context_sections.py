@@ -10,6 +10,10 @@ UNTRUSTED_SPEC_WARNING = "**No result in this report is a verification result ag
 PROVED_IS_CONTRACT_RELATIVE = (
     "**PROVED is relative to the approved ACSL contract: review that the contract states what you need.**"
 )
+VERIFIED_INDUCTIVE_IS_HARNESS_RELATIVE = (
+    "**VERIFIED_INDUCTIVE is relative to the protected inductive harness: review that its assumptions and "
+    "assertions state what you need; it is never PROVED.**"
+)
 
 
 def verdict_lines(status: Status, reasons: list[str], *, label: str = "Status") -> list[str]:
@@ -19,6 +23,8 @@ def verdict_lines(status: Status, reasons: list[str], *, label: str = "Status") 
         out += [UNTRUSTED_SPEC_WARNING, ""]
     if status is Status.PROVED:
         out += [PROVED_IS_CONTRACT_RELATIVE, ""]
+    if status is Status.VERIFIED_INDUCTIVE:
+        out += [VERIFIED_INDUCTIVE_IS_HARNESS_RELATIVE, ""]
     if reasons:
         out.append("Reasons:")
         out.append("")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
+from leanc.cli import EPILOG
 from leanc.foundation.models import StageResult
 from leanc.foundation.status import (
     EXIT_CODES,
@@ -33,7 +36,7 @@ def test_every_status_has_distinct_exit_code_and_only_success_is_zero():
     for s in Status:
         assert s in EXIT_CODES
     zero = {s for s, c in EXIT_CODES.items() if c == 0}
-    assert zero == {Status.VERIFIED_BOUNDED, Status.PROVED}
+    assert zero == {Status.VERIFIED_BOUNDED, Status.VERIFIED_INDUCTIVE, Status.PROVED}
     non_zero = [c for s, c in EXIT_CODES.items() if c != 0]
     assert len(non_zero) == len(set(non_zero))
 
@@ -49,9 +52,10 @@ def test_rank_order_definite_failures_dominate_inconclusive():
 
 def test_success_predicate():
     assert is_success(Status.VERIFIED_BOUNDED)
+    assert is_success(Status.VERIFIED_INDUCTIVE)
     assert is_success(Status.PROVED)
     for s in Status:
-        if s not in (Status.VERIFIED_BOUNDED, Status.PROVED):
+        if s not in (Status.VERIFIED_BOUNDED, Status.VERIFIED_INDUCTIVE, Status.PROVED):
             assert not is_success(s)
 
 
@@ -117,6 +121,22 @@ def test_skipped_sanitizer_without_sandbox_prevents_verified():
 def test_link_failure_in_sanitizer_stage_reports_compile_error():
     stages = [SPEC_OK, st("compile", Outcome.PASS), st("sanitizer", Outcome.FAIL, Status.COMPILE_ERROR), st("cbmc", Outcome.PASS)]
     assert aggregate(stages, approved=True)[0] is Status.COMPILE_ERROR
+
+
+EPILOG_EXIT_CODE_ENTRY = re.compile(r"(?<!\S)(\d+)\s+([A-Z][A-Z_]+(?:\s*/\s*[A-Z][A-Z_]+)*)")
+
+
+def _epilog_exit_codes() -> dict[str, int]:
+    block = EPILOG.split("\n\n")[0]
+    listed: dict[str, int] = {}
+    for code, names in EPILOG_EXIT_CODE_ENTRY.findall(block):
+        for name in names.split("/"):
+            listed[name.strip()] = int(code)
+    return listed
+
+
+def test_cli_epilog_lists_every_status_with_its_exit_code():
+    assert _epilog_exit_codes() == {s.value: c for s, c in EXIT_CODES.items()}
 
 
 def test_exit_code_mapping():

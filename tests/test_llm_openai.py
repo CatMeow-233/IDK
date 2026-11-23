@@ -268,6 +268,7 @@ def test_analyze_and_explain_return_stripped_text(fake, make, spec):
     assert "cbmc:safe_array_get.pointer_dereference" in analyze_user
     explain_sys = fake.requests[1]["body"]["messages"][0]["content"]
     assert "VERIFIED_BOUNDED" in explain_sys and "not a proof" in explain_sys
+    assert "VERIFIED_INDUCTIVE" in explain_sys and "not PROVED" in explain_sys
 
 
 def test_spec_draft_round_trip(fake, make):

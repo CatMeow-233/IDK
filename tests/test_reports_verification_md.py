@@ -22,6 +22,10 @@ from leanc.reports.markdown import (
     STATUS_MEANING,
     render_verification_md,
 )
+from leanc.reports.markdown.context_sections import (
+    PROVED_IS_CONTRACT_RELATIVE,
+    VERIFIED_INDUCTIVE_IS_HARNESS_RELATIVE,
+)
 
 
 def test_every_status_has_a_meaning():
@@ -72,6 +76,17 @@ def test_verification_md_spec_unapproved():
     assert "**NOT approved**" in spec and "nothing in this report was formally verified" in spec
     assert "harness/h.c was modified since approval" in spec
     assert "No result in this report is a verification result" in _section(md, "Verdict")
+
+
+def test_verification_md_verified_inductive_is_harness_relative_and_never_proved():
+    md = render_verification_md(_vr(Status.VERIFIED_INDUCTIVE))
+    verdict = _section(md, "Verdict")
+    assert "**Status: `VERIFIED_INDUCTIVE`** (exit code 0)" in verdict
+    assert VERIFIED_INDUCTIVE_IS_HARNESS_RELATIVE in verdict and "never PROVED" in VERIFIED_INDUCTIVE_IS_HARNESS_RELATIVE
+    assert PROVED_IS_CONTRACT_RELATIVE not in verdict
+    assert "holds **only** within this scope" in _section(md, "Scope & assumptions")
+    assert "| `inductive` |" in _section(md, "Gates")
+    assert VERIFIED_INDUCTIVE_IS_HARNESS_RELATIVE not in render_verification_md(_vr(Status.VERIFIED_BOUNDED))
 
 
 def test_verification_md_approved_spec_and_environment():

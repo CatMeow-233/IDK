@@ -19,7 +19,7 @@ from leanc.foundation.models import (
 from leanc.foundation.status import Outcome, Status
 from leanc.llm.base import CodeGenRequest, LLMProvider, RepairRequest, SpecDraftRequest
 from leanc.llm.factory import available_providers, get_provider
-from leanc.llm.mock import MockProvider
+from leanc.llm.mock import INDUCTIVE_SUMMARY_SCOPE, MockProvider
 from leanc.specs.loader import load_spec, spec_to_yaml
 
 FIXTURE = Path(__file__).parent / "fixtures" / "llm" / "project"
@@ -216,6 +216,9 @@ def test_explain_uses_fixture_or_deterministic_summary(mock, project):
     assert "not LLM output" in text
     ok = mock.explain_failure(_result(Status.VERIFIED_BOUNDED, []))
     assert "No failures" in ok and "not a proof" in ok
+    assert INDUCTIVE_SUMMARY_SCOPE not in ok
+    inductive = mock.explain_failure(_result(Status.VERIFIED_INDUCTIVE, []))
+    assert "VERIFIED_INDUCTIVE" in inductive and INDUCTIVE_SUMMARY_SCOPE in inductive
 
 
 def test_analyze_counterexample_is_deterministic(mock, spec):

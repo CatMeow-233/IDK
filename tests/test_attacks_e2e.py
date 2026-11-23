@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from leanc.cli import main
+from leanc.foundation.status import Status, is_success
 
 REPO = Path(__file__).resolve().parent.parent
 FIX = REPO / "tests/fixtures/integrity"
@@ -62,7 +63,7 @@ def test_attack_is_not_verified(fixture, tmp_path, capsys, needs_toolchain):
     capsys.readouterr()
     rc = main(["verify", spec, "--json"])
     data = json.loads(capsys.readouterr().out)
-    assert data["status"] not in ("VERIFIED_BOUNDED", "PROVED"), (fixture, ATTACK_TECHNIQUES[fixture])
+    assert not is_success(Status(data["status"])), (fixture, ATTACK_TECHNIQUES[fixture])
     assert rc != 0
     stages = {s["stage"]: s for s in data["verification"]["stages"]}
     caught_by_integrity_or_compile = stages["compile"]["outcome"] != "PASS" or stages["integrity"]["outcome"] != "PASS"

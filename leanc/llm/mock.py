@@ -25,7 +25,7 @@ from leanc.llm.base import (
 )
 from leanc.llm.parsing import repair_proposal_from_obj
 from leanc.llm.prompts.rendering import render_failure
-from leanc.specs.model import Spec
+from leanc.specs.model import MANDATORY_CHECKS, Spec
 
 MAX_FIXTURE_BYTES = 4 * 1024 * 1024
 MOCK_DISCLAIMER = "mock provider: replayed fixture, not LLM output"
@@ -36,6 +36,16 @@ TESTS_DRAFT_FIXTURE = "tests_draft.c"
 GENERATION_FIXTURE_DIR = "generate"
 EXPLANATION_FIXTURE = "explain.md"
 MAX_SUMMARY_INPUTS = 10
+INDUCTIVE_SUMMARY_SCOPE = (
+    "VERIFIED_INDUCTIVE holds only for the claimed functions called by the protected inductive harness, from the "
+    "states its harness assumptions admit, for its assertions and the mandatory check classes only "
+    f"({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by induction; static objects start "
+    "arbitrary and allocations are assumed to succeed; functions that are not claimed, states outside the harness "
+    "assumptions and the extra verification.checks classes have only the bounded CBMC result; known gaps: a "
+    "memcpy, memmove or memset that overflows into a neighbouring field of the same object, or that writes into "
+    "a string literal, is not reported, and library models such as strlen make the gate fail closed; it is not "
+    "PROVED."
+)
 
 
 def repair_fixture(round_number: int) -> str:
@@ -167,6 +177,8 @@ def deterministic_summary(result: VerificationResult) -> str:
         lines.append(
             "VERIFIED_BOUNDED holds only within the approved harness, input bounds and unwind limit; it is not a proof."
         )
+    if status == "VERIFIED_INDUCTIVE":
+        lines.append(INDUCTIVE_SUMMARY_SCOPE)
     return "\n".join(lines)
 
 

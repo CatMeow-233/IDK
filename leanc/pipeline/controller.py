@@ -26,7 +26,7 @@ from leanc.reports.json_report import atomic_write_text, write_json
 from leanc.reports.markdown import render_verification_md
 from leanc.specs.approval import check_approval
 from leanc.specs.loader import load_spec
-from leanc.specs.model import GATE_ORDER, Spec
+from leanc.specs.model import GATE_ORDER, MANDATORY_CHECKS, Spec
 from leanc.toolchain.context import (
     BackendContext,
     VerifyOptions,
@@ -77,6 +77,19 @@ PROVED_REASON = (
     "and every runtime-error guard"
 )
 VERIFIED_BOUNDED_REASON = "all required gates passed; CBMC found no violation within the approved bounds"
+INDUCTIVE_GATE = "inductive"
+VERIFIED_INDUCTIVE_REASON = (
+    "all required gates passed; CBMC found no violation within the approved bounds, and the inductive gate showed, "
+    "from every state admitted by the harness assumptions (the LEANC_ASSUMEs of the protected inductive harness), "
+    "that each harness call of a claimed function (spec inductive.functions) satisfies the harness assertions and "
+    f"the mandatory check classes only ({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by "
+    "induction (invariant, assigns, decreases), static objects starting arbitrary and allocations assumed to "
+    "succeed; not proved: functions that are not claimed, states outside the harness assumptions and the extra "
+    "verification.checks classes, for which only the bounded CBMC result holds; known gaps: a memcpy, memmove "
+    "or memset that overflows into a neighbouring field of the same object, or that writes into a string "
+    "literal, is not reported, and calls of CBMC library models such as strlen, strcpy, strncpy and strncat "
+    "make the gate fail closed (incomplete, never a pass); this is not PROVED"
+)
 NO_FORMAL_GATE_REASONS = [
     "no formal verification gate (cbmc or wp) is required by the spec; "
     "dynamic and static checks alone cannot establish VERIFIED_BOUNDED"
@@ -84,8 +97,8 @@ NO_FORMAL_GATE_REASONS = [
 FORMAL_GATE_DID_NOT_PASS_REASON = "formal gate did not pass"
 
 MANDATORY_GATE_AFTER_COMPILE = "integrity"
-FORMAL_GATES = ("cbmc", "wp", "lean")
-GATES_ANALYSING_OR_EXECUTING_CANDIDATE_CODE = ("sanitizer", "cbmc", "wp", "lean")
+FORMAL_GATES = ("cbmc", INDUCTIVE_GATE, "wp", "lean")
+GATES_ANALYSING_OR_EXECUTING_CANDIDATE_CODE = ("sanitizer", "cbmc", INDUCTIVE_GATE, "wp", "lean")
 EXCLUDED_BY_GATES_OPTION = "excluded by --gates (the result cannot be VERIFIED_BOUNDED)"
 PROTECTED_FILE_CHANGED = "a protected file changed during verification"
 COMPILATION_FAILED = "compilation did not succeed"
@@ -171,6 +184,10 @@ def _unapproved_reasons(stages: list[StageResult]) -> list[str]:
     return reasons
 
 
+def _required_stage_passed(stages: list[StageResult], name: str) -> bool:
+    return any(s.stage == name and s.required and s.outcome is Outcome.PASS for s in stages)
+
+
 def aggregate(stages: list[StageResult], approved: bool) -> tuple[Status, list[str]]:
     if not approved:
         return Status.SPEC_UNAPPROVED, _unapproved_reasons(stages)
@@ -189,6 +206,8 @@ def aggregate(stages: list[StageResult], approved: bool) -> tuple[Status, list[s
     formal = next((s for s in stages if s.stage == "cbmc"), None)
     if formal is None:
         return Status.UNKNOWN, list(NO_FORMAL_GATE_REASONS)
+    if formal.outcome is Outcome.PASS and _required_stage_passed(stages, INDUCTIVE_GATE):
+        return Status.VERIFIED_INDUCTIVE, [VERIFIED_INDUCTIVE_REASON]
     if formal.outcome is Outcome.PASS:
         return Status.VERIFIED_BOUNDED, [VERIFIED_BOUNDED_REASON]
     return Status.UNKNOWN, [FORMAL_GATE_DID_NOT_PASS_REASON]

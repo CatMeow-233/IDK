@@ -34,15 +34,25 @@ MIN_TIMEOUT_SCALE = 0.01
 MAX_TIMEOUT_SCALE = 100
 
 EPILOG = """exit codes:
-  0  VERIFIED_BOUNDED / PROVED     10 COMPILE_ERROR         11 STATIC_ANALYSIS_WARNING
-  12 RUNTIME_TEST_FAILED           13 COUNTEREXAMPLE_FOUND  20 UNKNOWN
-  21 TIMEOUT                       30 TOOL_ERROR            40 SPEC_UNAPPROVED
-  50 REPAIR_EXHAUSTED              2  usage/input error     70 internal error
-  130 interrupted (Ctrl-C)
+  0  VERIFIED_BOUNDED / VERIFIED_INDUCTIVE / PROVED
+  10 COMPILE_ERROR                 11 STATIC_ANALYSIS_WARNING  12 RUNTIME_TEST_FAILED
+  13 COUNTEREXAMPLE_FOUND          20 UNKNOWN                  21 TIMEOUT
+  30 TOOL_ERROR                    40 SPEC_UNAPPROVED          50 REPAIR_EXHAUSTED
+  2  usage/input error             70 internal error           130 interrupted (Ctrl-C)
 
 VERIFIED_BOUNDED only means: no violation of the checked properties exists within the
 approved harness, input constraints and unwind bound (all loops fully unwound, harness
 non-vacuous). It is never reported as PROVED.
+
+VERIFIED_INDUCTIVE adds only: from every state admitted by the harness assumptions of the
+protected inductive harness, each harness call of a claimed function satisfies the harness
+assertions and the mandatory check classes only, with every contracted loop proved by
+induction; static objects start arbitrary and allocations are assumed to succeed.
+Functions that are not claimed, states outside the harness assumptions and the extra
+verification.checks classes have only the bounded CBMC result. Known gaps: a
+memcpy/memmove/memset that overflows into a neighbouring field of the same object, or that
+writes into a string literal, is not reported; library models such as strlen make the gate
+fail closed. It is never reported as PROVED.
 
 `leanc generate` exits 0 when generation succeeded (the code is NOT verified yet);
 `leanc report` exits with the run's status, or 20 if a successful run's files changed since.

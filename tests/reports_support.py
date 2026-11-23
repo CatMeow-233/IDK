@@ -22,6 +22,7 @@ from leanc.foundation.models import (
     VerificationResult,
 )
 from leanc.foundation.status import Outcome, Status, outcome_to_status
+from leanc.pipeline.controller import VERIFIED_INDUCTIVE_REASON
 
 HASH = "ab" * 32
 
@@ -206,6 +207,9 @@ def _vr(status: Status, **kw) -> VerificationResult:
     elif status in (Status.VERIFIED_BOUNDED, Status.PROVED):
         stages += [compile_, sa, san, cbmc]
         reasons = ["all required gates passed; CBMC found no violation within the approved bounds"]
+    elif status is Status.VERIFIED_INDUCTIVE:
+        stages += [compile_, sa, san, cbmc, _stage("inductive", P, "inductive: 1 claimed function, 1 contracted loop")]
+        reasons = [VERIFIED_INDUCTIVE_REASON]
     elif status is Status.UNKNOWN:
         unwind = FailureReport(id="cbmc:main.unwind.0", kind="unwind", tool="cbmc", property_id="main.unwind.0",
                                description="unwinding assertion loop 0")
