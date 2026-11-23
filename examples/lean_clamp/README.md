@@ -34,7 +34,7 @@ leanc run examples/lean_clamp/spec.yaml --provider mock --regenerate   # => VERI
 
 - 可信任的 spec 模組、可編輯的證明檔都在 sandbox（bwrap，無網路）中以 `lean` 編譯：Lean 的巨集、
   `#eval`、`initialize` 等在編譯時期就會執行程式碼。
-- 編譯前先套用 Lean 政策規則（`leanc/repair/lean_policy.py`）：禁止 `axiom`、`sorry`（修復時不得新增）、
+- 編譯前先套用 Lean 政策規則（`leanc/rules/lean_rules.py`）：禁止 `axiom`、`sorry`（修復時不得新增）、
   `unsafe`/`opaque`/`partial`、`@[extern]`/`@[implemented_by]`、`native_decide`、`set_option debug.*`、
   `#eval`/`run_cmd`/`initialize`/`macro`/`syntax`/`notation`、`instance`/`export`、
   以及 spec 模組、其他證明模組、`Init`、`Std` 以外的 `import`。

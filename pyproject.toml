@@ -38,6 +38,5 @@ leanc = ["data/include/*.h", "data/runtime/*.c", "data/templates/*/*", "data/tem
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-  "tools: requires clang/cbmc/bwrap toolchain (skipped automatically when missing)",
   "slow: slower end-to-end tests",
 ]

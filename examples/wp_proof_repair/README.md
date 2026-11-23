@@ -32,5 +32,6 @@ leanc run examples/wp_proof_repair/spec.yaml --provider mock --regenerate # => P
 第 2 輪之後所有目標（含終止性）都被證明 ⇒ `PROVED`。可執行程式碼從頭到尾沒有改變。
 
 信任規則：可編輯程式碼中的 ACSL 只能是 `loop invariant` / `loop assigns` / `loop variant` / `assert` /
-`check`，或非目標 static 輔助函式的合約——這些都是 WP 必須證明的義務，而不是假設。`admit`、`axiom`、
+`check`、非目標 static 輔助函式的合約、`lemma`——這些都是 WP 必須證明的義務，而不是假設——以及非遞迴且有本體的
+`predicate` / `logic` 定義。`admit`、`axiom`、
 在目標函式上另加合約（Frama-C 會與已批准的合約合併）等會被 integrity 關卡與修復政策拒絕。

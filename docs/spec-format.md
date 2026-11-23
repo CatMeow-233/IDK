@@ -19,9 +19,9 @@ target:                             # 待驗證函式的介面
   params:   [{name: arr, type: "const int *", description: "..."}]
   returns:
     type: int
-    values: [{value: "SAFE_ARRAY_OK (0)", meaning: "..."}]   # 所有回傳狀態必須有明確定義
+    values: [{value: "SAFE_ARRAY_OK (0)", meaning: "..."}]   # 建議列出所有回傳狀態（只用於 LLM 提示；驗證器不檢查）
 
-contract:                           # 人類可讀的契約；對應的證明義務寫在 harness 中
+contract:                           # preconditions / postconditions / frame 供人閱讀（證明義務寫在 harness 中）；safety[].checks 會加入 CBMC 檢查
   preconditions:  [{id: PRE1, text: "...", c_expr: "len <= MAX_LEN"}]
   postconditions: [{id: POST1, text: "..."}]
   safety:         [{id: SAFE1, text: "no out-of-bounds access", checks: [bounds, pointer]}]
@@ -68,7 +68,7 @@ verification:                       # CBMC
   timeout_s: 300
   memory_mb: 4096
 
-gates: [compile, static_analysis, sanitizer, cbmc]   # 必要驗證關卡；沒有 cbmc 時最多 UNKNOWN
+gates: [compile, static_analysis, sanitizer, cbmc]   # 必要驗證關卡；沒有 cbmc 也沒有 wp 時最多 UNKNOWN
 repair: {max_rounds: 5, max_changed_lines: 200}
 provenance: {origin: human}         # human | ai-draft（AI 草案）
 ```
@@ -133,7 +133,8 @@ Lean 結果是關於**模型**的，不會把 C 的判決提升為 `PROVED`。
 | `pointer-primitive` | `--pointer-primitive-check` | |
 | `enum-range` | `--enum-range-check` | |
 
-強制檢查（`MANDATORY_CHECKS`）無法被規格關閉；`--unwinding-assertions` 永遠開啟。
+強制檢查（`MANDATORY_CHECKS`）無法被規格關閉；實際啟用的檢查 = 強制檢查 + `verification.checks` + `contract.safety[].checks`。
+`--unwinding-assertions` 在 verify 與 vacuity 執行中永遠開啟（`coverage: true` 的額外執行不帶，該執行不影響判決）。
 規格中沒有「任意額外 CBMC 參數」欄位，避免以旗標削弱驗證。
 
 ## Harness 撰寫規範
@@ -164,7 +165,6 @@ int main(void) {
 provider: mock        # 預設 LLM provider：mock | openai
 mock_dir: mock
 sandbox: auto         # auto | none
-allow_unsandboxed: false
 ```
 
 設定檔不能改變檢查、界限、關卡或批准規則。
@@ -178,6 +178,6 @@ allow_unsandboxed: false
 | `LEANC_MODEL` | 模型名稱（必填） |
 | `LEANC_LLM_TIMEOUT` | 請求逾時秒數 |
 | `LEANC_LLM_JSON_MODE=1` | 送出 `response_format: json_object` |
-| `LEANC_HOME` | 批准金鑰目錄（預設 `~/.config/leanc`） |
+| `LEANC_HOME` | 批准金鑰與帳本目錄（預設 `$XDG_CONFIG_HOME/leanc`，未設定 `XDG_CONFIG_HOME` 時為 `~/.config/leanc`） |
 | `LEANC_CLANG` / `LEANC_CBMC` | 指定工具路徑 |
 | `LEANC_CLANGXX` / `LEANC_FRAMAC` / `LEANC_LEAN` | 指定 clang++、frama-c（需 ≥ 27，含 WP）、lean 的路徑 |

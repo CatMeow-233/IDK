@@ -22,12 +22,12 @@ Contents: [Install](#install) · [Quick start](#quick-start) · [Concepts](#conc
 You need Linux or WSL2 (the commands below are for Ubuntu 24.04) and Python 3.11 or newer.
 
 ```bash
-sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap
+sudo apt-get install -y clang-18 libclang-rt-18-dev llvm-18 cbmc gcc bubblewrap
 pip install -e ".[dev]"          # runtime deps: pydantic, PyYAML; dev: pytest
 leanc doctor                     # probes clang, analyzer, sanitizers, gcc, CBMC, bwrap sandbox + network isolation, LLM config
 ```
 
-`leanc doctor` runs every tool for real and prints a fix for each failed check. Add `--json` for machine-readable output (`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`). If the bubblewrap sandbox is unavailable, sanitizer tests are skipped and the overall status can be at most `UNKNOWN` (see [Security](docs/security.md)).
+`leanc doctor` runs every tool for real and prints a fix for each failed check; it exits 30 when a required check fails. Add `--json` for machine-readable output (`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`). If the bubblewrap sandbox is unavailable, sanitizer tests are skipped and the overall status can be at most `UNKNOWN` (see [Security](docs/security.md)).
 
 ## Quick start
 
@@ -60,14 +60,14 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 
 | Term | Meaning |
 |---|---|
-| project root | nearest ancestor directory that contains `leanc.yaml`, otherwise the spec's directory; `--project-root` overrides it |
+| project root | nearest ancestor directory that contains `leanc.yaml`, otherwise the spec's directory; `--project-root` overrides it. `spec draft` has no spec and uses the current directory unless `--project-root` is given |
 | spec (`spec.yaml`) | trusted contract: target signature, contract, sources, compile/analysis/test/CBMC settings, required `gates`. Schema: [docs/spec-format.md](docs/spec-format.md) |
 | protected files | the spec, `sources.headers`, `verification.harness`, `tests.driver`, and V2 ACSL headers and Lean spec/vectors. Generation and repair never write them |
 | editable files | `sources.editable`: the only files that generation and repair may write |
-| approval | `leanc spec approve` binds the spec's semantic hash and the SHA-256 of every protected file into a record signed with a key in `LEANC_HOME` (default `~/.config/leanc`). Any change → `SPEC_UNAPPROVED` until re-approved, and `version` must increase. A rollback ledger rejects approvals that have been replaced |
+| approval | `leanc spec approve` binds the spec's semantic hash and the SHA-256 of every protected file into a record signed with a key in `LEANC_HOME` (default `$XDG_CONFIG_HOME/leanc`, or `~/.config/leanc` when `XDG_CONFIG_HOME` is not set). Any change → `SPEC_UNAPPROVED` until re-approved, and `version` must increase. A rollback ledger rejects approvals that have been replaced |
 | spec draft | `leanc spec draft` writes `drafts/<id>/` marked `provenance: ai-draft`. It is never trusted until a human reviews and approves it |
 | gate | one verifier stage: `compile`, `integrity` (mandatory; runs after a passing compile gate), `static_analysis`, `sanitizer`, `cbmc`, and in V2 `wp` and `lean`. Success requires every required gate to run and pass |
-| run | every `generate` / `verify` / `repair` / `run` creates `.leanc/runs/<run_id>/` |
+| run | every `generate` / `verify` / `repair` / `run` creates `.leanc/runs/<run_id>/`. `spec draft` creates `.leanc/runs/draft-<UTC timestamp>-<hex>/` for its `leanc.log` and the `llm/` transcripts of a real provider; unless the command aborts (see exit 2) it writes no `run.json` there, so `report latest` skips it |
 
 Rule for any agent: never edit protected files, and never run `spec approve` on a human's behalf. Approval is the trust boundary.
 
@@ -75,17 +75,17 @@ Rule for any agent: never edit protected files, and never run `spec approve` on 
 
 | Command | Purpose | Creates a run |
 |---|---|---|
-| `leanc doctor` | toolchain, sandbox and LLM configuration check | no |
+| `leanc doctor [--no-sandbox]` | toolchain, sandbox and LLM configuration check (`--no-sandbox` skips the sandbox check) | no |
 | `leanc init [DIR] [--template safe-array-get] [--force]` | new project from a template | no |
-| `leanc spec draft --id ID (--requirement TEXT \| --requirement-file F)` | requirement → untrusted draft in `drafts/<id>/` (exit 40) | no |
+| `leanc spec draft --id ID (--requirement TEXT \| --requirement-file F) [--title T] [--force]` | requirement → untrusted draft in `drafts/<id>/` (exit 40) | log directory only |
 | `leanc spec approve SPEC --by NAME [--note N] [--yes]` | human approval (hash-lock + sign) | no |
-| `leanc spec status SPEC` | approval state, signature validity, changes since approval | no |
+| `leanc spec status SPEC` | approval state, signature validity, changes since approval (exit 40 when not approved) | no |
 | `leanc spec show SPEC` | normalized spec, hash, effective CBMC checks | no |
-| `leanc generate SPEC [--force]` | write `sources.editable` for an approved spec (exit 0 = generated, **not** verified) | yes |
+| `leanc generate SPEC [--force]` | write `sources.editable` for an approved spec (exit 0 = generated, **not** verified; the recorded `status` is `UNKNOWN`) | yes |
 | `leanc verify SPEC` | run the verifier gates on the current sources | yes |
-| `leanc repair SPEC [--max-rounds N] [--no-write]` | verify, then a counterexample-driven repair loop | yes |
-| `leanc run SPEC [--regenerate] [--no-repair] [--max-rounds N] [--no-write]` | spec check → generate (if missing) → verify → repair → re-verify → report | yes |
-| `leanc report [RUN\|latest] [--format md\|json]` | show a run's report; exits with that run's status, or 20 (STALE) if files changed after a successful run | no |
+| `leanc repair SPEC [--max-rounds N] [--no-write]` | verify, then a counterexample-driven repair loop (`--max-rounds`: 0 to 20) | yes |
+| `leanc run SPEC [--regenerate] [--no-repair] [--max-rounds N] [--no-write]` | spec check → generate (if missing) → verify → repair → re-verify → report (`--max-rounds`: 0 to 20) | yes |
+| `leanc report [RUN\|latest] [--format md\|json]` | show a run's report; exits with that run's status, or 20 (STALE) if files changed after a successful run; a `generate` run with status `UNKNOWN` (generated, not verified) exits 0 | no |
 
 Common options:
 
@@ -96,7 +96,7 @@ Common options:
 | `--project-root DIR` | spec, generate, verify, repair, run, report | override project root |
 | `--gates a,b` | verify, repair, run | run a subset of the spec's gates (result at most `UNKNOWN`) |
 | `--fail-fast` | verify, repair, run | stop after the first gate that does not pass |
-| `--timeout-scale X` | verify, repair, run | multiply every tool timeout |
+| `--timeout-scale X` | verify, repair, run | multiply every tool timeout (0.01 to 100) |
 | `--no-sandbox` | verify, repair, run | do not use bwrap; dynamic tests are `SKIPPED` → at most `UNKNOWN` |
 | `--allow-unsandboxed` | verify, repair, run | DANGEROUS: run untrusted test programs without a sandbox (only this flag can do it; `leanc.yaml` cannot) |
 | `--check-unapproved` | verify, repair, run | run the gates for information on an unapproved spec; the status stays `SPEC_UNAPPROVED` |
@@ -111,14 +111,15 @@ Common options:
 | 10 | `COMPILE_ERROR` | compiler errors (or warnings with `warnings_policy: block`) |
 | 11 | `STATIC_ANALYSIS_WARNING` | analyzer finding with `policy: block`, or an integrity-gate violation |
 | 12 | `RUNTIME_TEST_FAILED` | sanitizer report, a wrong exit code or output, or a Lean test-vector mismatch |
-| 13 | `COUNTEREXAMPLE_FOUND` | CBMC found a concrete counterexample (a real execution path, valid even with an insufficient unwind) |
+| 13 | `COUNTEREXAMPLE_FOUND` | CBMC found a concrete counterexample (a real execution path, valid even with an insufficient unwind), or a Frama-C/WP prover reported a proof goal invalid (that failure has the goal's location but no inputs or trace) |
 | 20 | `UNKNOWN` | inconclusive: unwind too small, vacuous harness, skipped gate, gate subset, no formal gate (C++), unproved goals, a WP proof under `compile.flags` or a build target `char` signedness that Frama-C does not apply |
 | 21 | `TIMEOUT` | a required tool timed out |
-| 30 | `TOOL_ERROR` | a tool crashed or produced unparsable output |
+| 30 | `TOOL_ERROR` | a tool crashed or produced unparsable output; also when the provider, once set up, fails during generation or the generated code is rejected (`generate`, `run`), when `run` cannot set up the provider for generation, or when a repair is needed and the provider cannot be set up (`repair`, `run`; the verification verdict stays in `initial_status` / `verification.status`, the reason is in `messages`) |
 | 40 | `SPEC_UNAPPROVED` | no valid approval for the current spec and protected files |
-| 50 | `REPAIR_EXHAUSTED` | repair loop ended without success; the workspace is restored |
-| 2 | — | usage or input error |
+| 50 | `REPAIR_EXHAUSTED` | repair loop ended without success; it leaves the workspace unchanged |
+| 2 | — | usage or input error. If the command had already created its run directory, that run is recorded with status `TOOL_ERROR`, so `report` on it exits 30 |
 | 70 | — | internal error (traceback on stderr) |
+| 130 | — | interrupted (Ctrl-C) |
 
 "No counterexample found" is not success. A timeout, a tool error, an unparsable result or a skipped gate never counts as success. The aggregation rules are in [docs/status-semantics.md](docs/status-semantics.md).
 
@@ -129,10 +130,10 @@ These rules close ways in which a gate could pass code that was not really check
 | Rule | Behaviour |
 |---|---|
 | integrity not passed | `sanitizer`, `cbmc`, `wp` and `lean` run only after integrity passes. Otherwise they are `SKIPPED` ("never executed, model-checked or proved"), also when `gates` has no `compile`, because integrity runs after a passing compile gate. `static_analysis` still runs. The status comes from integrity: `FAIL` gives `STATIC_ANALYSIS_WARNING`, `ERROR` gives `TOOL_ERROR`, `TIMEOUT` gives `TIMEOUT`; when integrity did not run, the status is `UNKNOWN`. In the repair loop, a candidate that makes integrity pass counts as progress even when the unblocked gates then find counterexamples, provided no gate that ran before (`compile`, `static_analysis`) loses its pass or gains a failure |
-| stack frames | integrity compiles each editable file with `-fstack-usage` (first `-include` of an anchor function, then `compile.flags` minus warning controls, then `-O0 -fno-lto -fembed-bitcode=off`) and reads the frame sizes clang writes: a frame larger than 1 MiB is `STACK_FRAME_TOO_LARGE`, and a frame clang marks `dynamic` (stack allocated at run time: a VLA, `alloca`, `_alloca`) is `UNBOUNDED_STACK`. The anchor makes clang write a stack-usage file for every file it generates code for; if there is none (for example under `-emit-llvm`) or the compile does not exit 0, integrity is `ERROR`. The VLA / `alloca` check (`UNBOUNDED_STACK`) compiles each file three times. The first run uses `compile.flags` and fails closed: it passes only when every error line is a parsed VLA / `alloca` diagnostic. The second turns the system-include options of `compile.flags` (`-isystem`, `-idirafter`, `-iwithsysroot`, ...) into `-I` placed after the spec's include directories, keeping the search order, and drops `--system-header-prefix=`. The third runs without `compile.flags`, as earlier versions did, and also fails closed, so a file that compiles only with a `compile.flags` entry is `ERROR`: put include directories in `sources.include_dirs` and macros in `compile.defines`. Only the second run adds violations without failing; if it does not compile it adds nothing. So system-include options, module maps and pragmas in forced includes cannot hide a VLA that the check without them reports, while the compiler's own system headers (libstdc++) stay system headers |
-| trigraphs | a trigraph (`??/`, `??=`, ...) anywhere in editable C code, comments and string literals included, is `TRIGRAPH`: clang replaces trigraphs in ISO C modes (`-std=c17`) while CBMC and Frama-C preprocess without them, so a `??/` that ends a comment hides the next line from one side only. A raw string prefix (`R"`, `u8R"`, `LR"`, ...) is `TOOL_DIVERGENCE`: gcc's gnu modes read a raw string literal, clang in C reads an identifier and a string. `__FILE__` is `TOOL_DIVERGENCE` too, because `-fmacro-prefix-map=` changes it for clang only |
-| predefined macros | only for specs with `cbmc` or `wp`. Clang's predefined macros under the compile gate's options (`-std`, `compile.flags`, `compile.defines`) are compared with gcc's under each verifier's own preprocessing. CBMC: `-D__CPROVER__ -m64 -std=gnuNN`, `-funsigned-char`, the `-D` defines it receives, then its x86-64 defines (`__LP64__`, `__x86_64__`, ...), in the order CBMC runs gcc. Frama-C: `-undef -nostdinc` with the machdep's builtin macros (`frama-c -print-machdep-builtin-macros`, which define `unix` and `linux`), `-D__FRAMAC__ -std=c11` and `compile.defines`. A use of a differing macro in editable code is `TOOL_DIVERGENCE`. Needs `gcc`, and `frama-c` for `wp`; if one is missing, integrity is `ERROR` |
-| `compile.flags` | every entry is one option with its value joined to it (`-Iinclude`, `-DNAME=1`, `-std=c17`, `-includepre.h`). The spec validator rejects input files, `-` and `--`. The integrity gate asks clang (`clang -### <entry>`) whether an entry takes the next entry as its value (`-I include`, `-iprefix -funsigned-char`); such an entry is a `TOOL_ERROR`, because the CBMC translation and the stack checks read every entry as an option of its own. Also rejected: `-fsanitize*` / `-fno-sanitize*` (sanitizers come from `tests.sanitizers`), and options that hand arguments to an internal tool or replace the toolchain: `-X...` (`-Xclang`, `-Xanalyzer`, `-Xlinker`, ...) / `--for-linker`, `-mllvm`, `-Wp,` / `-Wa,` / `-Wl,`, `--analyze...`, `@file`, `--config`, `-fplugin` / `-fpass-plugin`, `-ccc-*`, `-B` / `--prefix`, `--ld-path` / `-fuse-ld=<path>`, `-resource-dir` / `--resource-dir`, `--sysroot` / `-isysroot`, `-ivfsoverlay` / `-vfsoverlay`, `--gcc-toolchain` / `--gcc-install-dir`, `-nostdlib` / `--no-standard-libraries` / `-nodefaultlibs` / `-nostartfiles`, `--driver-mode`. Options that change what the preprocessor prints or stop before code generation are rejected as well, because integrity reads the preprocessed source with `compile.flags`: `-E`, `-P` / `--no-line-commands`, `-C` / `-CC`, `-d*` (`-dM`, `-dD`, ...), `-M` / `-MM`, `-fdirectives-only`, `-frewrite-includes`, `-fuse-line-directives`, `-fkeep-system-includes`, `-fminimize-whitespace`, `-traditional-cpp`, `-fsyntax-only`, `-fdriver-only`; preprocessed output without a linemarker for the file is `ERROR`. Options that change how C source is split into tokens are rejected too, because CBMC and Frama-C preprocess in gcc's gnu modes: strict C89/C90 (`-std=c89`, `-std=c90`, `-std=iso9899:1990`, `-std=iso9899:199409`, `-ansi`), which has no `//` comments, C23 (`-std=c23`, `-std=c2x`, `-std=gnu23`, `-std=gnu2x`), which has digit separators, and `-fdigraphs` / `-fno-digraphs`. `-Wwrite-strings` is rejected: clang turns it into `-fconst-strings`, which gives string literals the type `const char[N]`, and no verifier applies that. Static analysis receives the remaining flags. CBMC receives `-D`, `-I`, `-std=` / `--std=` and `-funsigned-char` (signed `char` is CBMC's x86 default), also in their GCC long spellings (`--define-macro=`, `--undefine-macro=`, `--include-directory=`, `--unsigned-char`, `--signed-char`), but never `NDEBUG`. A `-U` only cancels an earlier `-D`, also of a function-like macro; any other `-U` is reported as not applied. Warning and `-g` flags have no semantic effect, except `-Wdeprecated` / `-Wno-deprecated`, which decide `__DEPRECATED` in C++ and are kept for the stack checks. Every other flag (for example `-O2 -ffast-math -mavx2`) is listed in the assumption line "compile.flags not applied by CBMC"; the CBMC verdict is kept. For WP, each entry is applied, has no semantic effect (warning and `-g` flags, as above) or is not applied. Char signedness counts as applied only when the build's `char` signedness equals that of Frama-C's machdep (signed on `x86_64`). The build's signedness is the last char-signedness entry (`-fsigned-char`, `-fno-unsigned-char`, `--signed-char` are signed), or else the default of the build target that `clang <compile.flags> -dumpmachine` prints: signed for the architectures `x86_64`, `i386`, `x32` (the table CBMC uses), not known to be signed for any other. With no char flag, a target not known to be signed (for example `aarch64-unknown-linux-gnu`) adds the not-applied entry `(default char of build target ...)`; a failed query or an unparsable triple adds `(build target unknown: ...)` whatever the flags. A `-std=` / `--std=` entry is applied when the last one selects C11 or C17 (`c11`, `c1x`, `iso9899:2011`, `c17`, `c18`, `iso9899:2017`, `iso9899:2018`); it is disclosed like `language.standard`, as "Frama-C preprocesses and parses the code as c11". `gnu*` and other standards are not applied. Every other entry is not applied, including `-D`, `-U` and `-I` (Frama-C receives only `sources.include_dirs` and `compile.defines`). Not-applied entries are listed in "compile.flags not applied by Frama-C" (`details.compile_flags` of the `wp` stage). A proof with any of them is the `wp` gate's `INCONCLUSIVE` (`UNKNOWN`), never `PROVED`, and the result under Frama-C's model stays in `details.frama_c_model_verdict`. Proof repair is not attempted then |
+| stack frames | integrity compiles each editable file with `-fstack-usage` (first `-include` of an anchor function, then `compile.flags` minus warning controls, then `-O0 -fno-lto -fembed-bitcode=off`) and reads the frame sizes clang writes: a frame larger than 1 MiB is `STACK_FRAME_TOO_LARGE`, and a frame clang marks `dynamic` (stack allocated at run time: a VLA, `alloca`, `_alloca`) is `UNBOUNDED_STACK`. The anchor makes clang write a stack-usage file for every file it generates code for; if there is none (for example under `-emit-llvm`) or the compile does not exit 0, integrity is `ERROR`. The VLA / `alloca` check (`UNBOUNDED_STACK`) compiles each file three times. The first run uses `compile.flags` and fails closed: it passes only when every error line is a parsed VLA / `alloca` diagnostic. The second turns the system-include options of `compile.flags` (`-isystem`, `-idirafter`, `-iwithsysroot`, ...) into `-I` placed after the spec's include directories, in their `compile.flags` order, and drops `--system-header-prefix=`; an `-idirafter` directory is then searched before the toolchain's own headers, so this run can fail to compile where the build does not. The third runs without `compile.flags`, as earlier versions did, and also fails closed, so a file that compiles only with a `compile.flags` entry is `ERROR`: put include directories in `sources.include_dirs` and macros in `compile.defines`. Only the second run adds violations without failing: when it does not compile, the VLA / `alloca` diagnostics it printed still count as violations and its other error lines are ignored; a timeout, or a compiler that cannot be run, still counts there. So system-include options, module maps and pragmas in forced includes cannot hide a VLA that the check without them reports, while the compiler's own system headers (libstdc++) stay system headers |
+| trigraphs | a trigraph (`??/`, `??=`, ...) anywhere in editable C code, comments and string literals included, is `TRIGRAPH`: clang in ISO C modes (`-std=c17`) and Frama-C (its gcc runs with `-std=c11`) replace trigraphs, while CBMC preprocesses in gcc's gnu modes without them, so a `??/` that ends a comment hides the next line from one side only. A raw string prefix (`R"`, `u8R"`, `LR"`, ...) is `TOOL_DIVERGENCE`: gcc's gnu modes read a raw string literal, clang in C reads an identifier and a string. `__FILE__` is `TOOL_DIVERGENCE` too, because `-fmacro-prefix-map=` changes it for clang only |
+| predefined macros | only for specs with `cbmc` or `wp`. Clang's predefined macros under the compile gate's options (`-std`, `compile.flags`, `compile.defines`) are compared with gcc's under each verifier's own preprocessing. CBMC: `-D__CPROVER__ -m64`, `-funsigned-char`, `-std=gnuNN`, the `-D` defines it receives, then its x86-64 defines (`__LP64__`, `__x86_64__`, ...), in the order CBMC runs gcc. Frama-C: `-undef -nostdinc` with the machdep's builtin macros (`frama-c -print-machdep-builtin-macros`, which define `unix` and `linux`), `-D__FRAMAC__ -std=c11` and `compile.defines`. A use of a differing macro in editable code is `TOOL_DIVERGENCE`. Needs `gcc`, and `frama-c` for `wp`; if one is missing, integrity is `ERROR` |
+| `compile.flags` | every entry is one option with its value joined to it (`-Iinclude`, `-DNAME=1`, `-std=c17`, `-includepre.h`). The spec validator rejects input files, `-` and `--`. The integrity gate asks clang (`clang -### <entry>`) whether an entry takes the next entry as its value (`-I -Wno-such-dir`, `-iprefix -funsigned-char`); such an entry is a `TOOL_ERROR`, because the CBMC translation and the stack checks read every entry as an option of its own. Also rejected: `-fsanitize*` / `-fno-sanitize*` (sanitizers come from `tests.sanitizers`), and options that hand arguments to an internal tool or replace the toolchain: `-X...` (`-Xclang`, `-Xanalyzer`, `-Xlinker`, ...) / `--for-linker`, `-mllvm`, `-Wp,` / `-Wa,` / `-Wl,`, `--analyze...`, `@file`, `--config`, `-fplugin` / `-fpass-plugin`, `-ccc-*`, `-B` / `--prefix`, `--ld-path` / `-fuse-ld=<path>`, `-resource-dir` / `--resource-dir`, `--sysroot` / `-isysroot`, `-ivfsoverlay` / `-vfsoverlay`, `--gcc-toolchain` / `--gcc-install-dir`, `-nostdlib` / `--no-standard-libraries` / `-nodefaultlibs` / `-nostartfiles`, `--driver-mode`. Options that change what the preprocessor prints or stop before code generation are rejected as well, because integrity reads the preprocessed source with `compile.flags`: `-E`, `-P` / `--no-line-commands`, `-C` / `-CC`, `-d*` (`-dM`, `-dD`, ...), `-M` / `-MM`, `-fdirectives-only`, `-frewrite-includes`, `-fuse-line-directives`, `-fkeep-system-includes`, `-fminimize-whitespace`, `-traditional-cpp`, `-fsyntax-only`, `-fdriver-only`; preprocessed output without a linemarker for the file is `ERROR`. Options that change how C source is split into tokens are rejected too, because CBMC preprocesses in gcc's gnu modes (up to gnu11) and Frama-C in gcc's `-std=c11`: strict C89/C90 (`-std=c89`, `-std=c90`, `-std=iso9899:1990`, `-std=iso9899:199409`, `-ansi`), which has no `//` comments, C23 (`-std=c23`, `-std=c2x`, `-std=gnu23`, `-std=gnu2x`), which has digit separators, and `-fdigraphs` / `-fno-digraphs`. `-Wwrite-strings` is rejected: clang turns it into `-fconst-strings`, which gives string literals the type `const char[N]`, and no verifier applies that. Static analysis receives the remaining flags. CBMC receives `-D`, `-I`, `-std=` / `--std=` and `-funsigned-char` (signed `char` is CBMC's x86 default), also in their GCC long spellings (`--define-macro=`, `--undefine-macro=`, `--include-directory=`, `--unsigned-char`, `--signed-char`), but never `NDEBUG`. A `-U` only cancels an earlier `-D`, also of a function-like macro; any other `-U` is reported as not applied. Warning and `-g` flags have no semantic effect, except `-Wdeprecated` / `-Wno-deprecated`, which decide `__DEPRECATED` in C++ and are kept for the stack checks. Every other flag (for example `-O2 -ffast-math -mavx2`) is listed in the assumption line "compile.flags not applied by CBMC"; the CBMC verdict is kept. For WP, each entry is applied, has no semantic effect (warning and `-g` flags, as above) or is not applied. Char signedness counts as applied only when the build's `char` signedness equals that of Frama-C's machdep (signed on `x86_64`). The build's signedness is the last char-signedness entry (`-fsigned-char`, `-fno-unsigned-char`, `--signed-char` are signed), or else the default of the build target that `clang <compile.flags> -dumpmachine` prints: signed for the architectures `x86_64`, `i386`, `x32` (the table CBMC uses), not known to be signed for any other. With no char flag, a target not known to be signed (for example `aarch64-unknown-linux-gnu`) adds the not-applied entry `(default char of build target ...)`; a failed query or an unparsable triple adds `(build target unknown: ...)` whatever the flags. A `-std=` / `--std=` entry is applied when the last one selects C11 or C17 (`c11`, `c1x`, `iso9899:2011`, `c17`, `c18`, `iso9899:2017`, `iso9899:2018`); it is disclosed like `language.standard`, as "Frama-C preprocesses and parses the code as c11". `gnu*` and other standards are not applied. Every other entry is not applied, including `-D`, `-U` and `-I` (Frama-C receives only `sources.include_dirs` and `compile.defines`). Not-applied entries are listed in "compile.flags not applied by Frama-C" (`details.compile_flags` of the `wp` stage). A proof with any of them is the `wp` gate's `INCONCLUSIVE` (`UNKNOWN`), never `PROVED`, and the result under Frama-C's model stays in `details.frama_c_model_verdict`. Proof repair is not attempted then |
 | body-less functions (CBMC) | allowed: `nondet_*`, `__CPROVER*`, `__builtin_prefetch`, `__builtin_expect`. Any other body-less callee keeps `cbmc` from passing: the SIMD builtins behind `<immintrin.h>`, and `memchr`, `strnlen`, `strstr`, `fputc` and `putc`, which integrity allows but CBMC has no model for. A violation whose trace uses the return value of such a callee is an `unmodelled-callee` diagnostic, not a counterexample; every other violation stays a counterexample. Without a counterexample the gate is `INCONCLUSIVE` (status `UNKNOWN`): replace the call with plain C to get a verdict |
 | CBMC internal error | an invariant-violation report is `TOOL_ERROR` ("CBMC internal error") with the File/Condition/Reason excerpt, not an out-of-memory hint |
 | contract safety checks | the checks in `contract.safety` are added to CBMC's property checks; the spec hash is unchanged |
@@ -141,7 +142,7 @@ These rules close ways in which a gate could pass code that was not really check
 
 ## Machine interface (AI agents / CI)
 
-Use `--json` and branch on the exit code or on `status`. `leanc verify SPEC --json` prints:
+Use `--json` and branch on the exit code or on `status`. With exit 2, 70 or 130, and when the interactive confirmation of `spec approve` is declined (exit 40), no JSON object is printed; the message is on stderr. A successful `generate` reports `status` `UNKNOWN` with `exit_code` 0. `leanc verify SPEC --json` prints:
 
 ```json
 {
@@ -151,8 +152,8 @@ Use `--json` and branch on the exit code or on `status`. `leanc verify SPEC --js
   "verification": {
     "status": "...", "success": false, "spec_id": "...", "spec_version": 1, "spec_hash": "...",
     "approval": {"...": "..."},
-    "stages": [{"stage": "cbmc", "outcome": "FAIL", "status": "...", "required": true, "invoked": true,
-                "duration_s": 1.2, "summary": "...", "tools": [], "failures": []}],
+    "stages": [{"stage": "cbmc", "outcome": "FAIL", "status": "...", "required": true, "invoked": ["cbmc"],
+                "duration_s": 1.2, "summary": "...", "tools": ["cbmc"], "failures": 3}],
     "detected_by": ["asan", "cbmc"], "reasons": ["..."], "assumptions": ["..."], "limitations": ["..."],
     "failures": [{
       "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
@@ -193,7 +194,7 @@ The repair prompt shows the same evidence with an explicit label. It does not id
 There are two ways for an agent to fix code:
 
 1. **External agent loop.** Run `leanc verify SPEC --json`. Read `verification.failures` (location, inputs, property) and `raw_ref`. Edit only the files listed in `sources.editable`, then verify again. Stop on exit 0, or on 40 (needs a human), 20/21/30 (not a code bug: inspect `reasons`).
-2. **Built-in loop.** Run `leanc run SPEC --provider openai --json` (or `repair`). Lean C calls the model, policy-checks every patch and writes back only a verified candidate (`--no-write` keeps the workspace unchanged).
+2. **Built-in loop.** Run `leanc run SPEC --provider openai --json` (or `repair`). Lean C calls the model, policy-checks every patch and writes back only a candidate for which every required gate passes: a verified one (`VERIFIED_BOUNDED` / `PROVED`) or, for a spec with neither a `cbmc` nor a `wp` gate, one whose status stays `UNKNOWN` (`--no-write` does not write the repaired candidate back; in `run`, generating missing sources, or all of them with `--regenerate`, still writes `sources.editable`).
 
 Repair policy rejects these patches: writes outside `sources.editable`, `__CPROVER_*` / `LEANC_*` / `__builtin_assume`, deleting `assert`, suppressing warnings or sanitizers, `#include` escapes, `system`/`exec`/`fork`/`socket`, inline asm, hollowing out the target function, and oversized patches. Repeated patches are detected as cycles. A change toward `UNKNOWN`/`TIMEOUT` is not an improvement.
 
@@ -216,6 +217,7 @@ mock/
 | `LEANC_API_KEY` (or `OPENAI_API_KEY`) | API key. Redacted from logs, reports and transcripts; never passed to subprocesses. It may be empty for a local server set through `LEANC_BASE_URL` |
 | `LEANC_MODEL` | model name (required) |
 | `LEANC_BASE_URL` | default `https://api.openai.com/v1` |
+| `LEANC_ALLOW_INSECURE_HTTP=1` | allow sending the API key over plain `http://` to a host that is not loopback. Without it such a `LEANC_BASE_URL` is refused whenever a key is set (`OPENAI_API_KEY` counts); `localhost`, `*.localhost`, loopback IPs and endpoints without a key are always allowed |
 | `LEANC_LLM_TIMEOUT` | request timeout in seconds |
 | `LEANC_LLM_MAX_RETRIES` | retries for transient errors |
 | `LEANC_LLM_MAX_TOKENS` | max completion tokens (raise it if you see `finish_reason=length`) |
@@ -241,11 +243,11 @@ mock_dir: mock
 sandbox: auto         # auto | none
 ```
 
-The project config cannot weaken checks, bounds, gates, approval or isolation. If it sets `allow_unsandboxed`, that value is ignored with a warning.
+The project config cannot weaken checks, bounds, gates or approval, and it cannot make untrusted programs run without a sandbox. `sandbox: none` acts like `--no-sandbox`: bwrap is not used for the tools either, and dynamic tests are `SKIPPED`. If it sets `allow_unsandboxed`, that value is ignored with a warning.
 
 | Variable | Meaning |
 |---|---|
-| `LEANC_HOME` | approval key and ledger directory (default `~/.config/leanc`); keep it outside the workspace |
+| `LEANC_HOME` | approval key and ledger directory (default `$XDG_CONFIG_HOME/leanc`, or `~/.config/leanc` when `XDG_CONFIG_HOME` is not set); keep it outside the workspace |
 | `LEANC_CLANG`, `LEANC_CLANGXX`, `LEANC_CBMC` | tool paths |
 | `LEANC_FRAMAC` | `frama-c` (>= 27, with WP); otherwise `PATH` and `/opt/opam/*/bin` are searched |
 | `LEANC_LEAN` | `lean` (toolchain with `leanchecker`); otherwise `PATH` and `/opt/lean/*/bin` are searched |
@@ -262,7 +264,7 @@ The project config cannot weaken checks, bounds, gates, approval or isolation. I
 
 ## Examples
 
-Every `examples/<name>/` contains `spec.yaml`, protected `include/`, `harness/` and `tests/`, shipped (usually buggy) `src/`, `mock/` fixtures, and `expected.yaml`.
+Every `examples/<name>/` contains `spec.yaml`, protected `include/`, shipped (usually buggy) `src/`, `mock/` fixtures and `expected.yaml`. Examples with a `cbmc` gate also have a protected `harness/` (the two C++ examples have none), and examples with a `sanitizer` gate have protected `tests/` (`vacuous_harness` has none).
 
 | Example | Shipped code | `verify` | `run --provider mock` |
 |---|---|---|---|
@@ -303,9 +305,9 @@ The rules are declared in [`constraints.toml`](constraints.toml). It plays the r
   foundation < specs, lang, reports < rules, toolchain, llm < backends, repair < pipeline < cli < __main__
   ```
   Shared code moves down. A package `__init__` may re-export only its own submodules.
-- No comments or docstrings in `leanc/`, `tests/` or `scripts/`. Express intent through names, constants, Enums and frozen dataclasses.
-- No bare/`Exception`/`BaseException` handlers (the only exception is `leanc/cli.py` `main()`, which exits 70) and no swallowed exceptions.
-- Every `.py` file has at most 600 lines.
+- No comments or docstrings in `leanc/`, `tests/` or `scripts/`, except in a `fixtures/` directory under `tests/` or `scripts/`. Express intent through names, constants, Enums and frozen dataclasses.
+- No bare/`Exception`/`BaseException` handlers (the only exception is `except Exception` / `except BaseException` in `leanc/cli.py` `main()`, which exits 70; a bare `except:` is rejected there too) and no swallowed exceptions.
+- Every `.py` file has at most 600 lines (same `fixtures/` exception).
 
 | Package | Role |
 |---|---|
@@ -338,12 +340,12 @@ python -m scripts.merge_gate                        # before creating or merging
 3. Run `python -m scripts.constraints`.
 4. Run the full suite. The junit report must show more than 0 tests with no failures, errors or skips; a skip means a required tool is missing.
 5. Run `run_experiments.py`, which must report N/N with N > 0.
-6. Check approval compatibility: for every example directory unchanged since the base, an approval made with the base code must still be valid under the HEAD code.
+6. Check approval compatibility: for every example directory unchanged since the base, an approval made with the base code must still be valid under the HEAD code. At least one example directory must be unchanged, otherwise the step fails.
 7. Confirm the worktree is still at the pinned HEAD and clean.
 
 On success it prints `MERGE GATE PASS head=<sha> base=<sha>`. Right before merging, fetch and confirm that the remote base still equals that base sha (otherwise run the gate again), then merge only that head sha (`expectedHeadSha`, merge commit). Any new commit requires running the gate again.
 
-The full suite needs clang-18, gcc, CBMC, bwrap and an x86-64 CPU with AVX2 (SIMD tests execute AVX2 code). WP tests, and the integrity tests of `wp` specs, need Frama-C >= 27 with `-print-machdep-builtin-macros` (tested with 33); Lean tests need Lean 4. When a tool is absent its tests are skipped, so the merge gate needs all of them.
+The full suite needs clang-18, gcc, CBMC, bwrap, llvm-symbolizer under /usr/ (package llvm-18) and an x86-64 CPU with AVX2 (SIMD tests execute AVX2 code). WP tests, and the integrity tests of `wp` specs, need Frama-C >= 27 with `-print-machdep-builtin-macros` (tested with 33); Lean tests need Lean 4. When a tool is absent its tests are skipped, so the merge gate needs all of them.
 
 ## Limitations
 

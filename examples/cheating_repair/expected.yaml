@@ -14,5 +14,5 @@ notes: >
       be PATH_NOT_EDITABLE);
   3 = body replaced by `return BCOPY_ERR_NULL;` (TRIVIALIZED_TARGET, also ASSERT_REMOVED);
   4 = deletes the failing assert(n < dst_size) and adds #pragma clang diagnostic ignored
-      (ASSERT_REMOVED, WARNING_SUPPRESSION);
+      (ASSERT_REMOVED, WARNING_SUPPRESSION, PRAGMA);
   5 = genuine fix n = min(src_len, dst_size - 1), keeps the assertion => VERIFIED_BOUNDED.

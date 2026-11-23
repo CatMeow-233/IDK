@@ -11,9 +11,11 @@
 | `src/safe_array.c` | 實作（AI 可生成/修復） | 可編輯 |
 | `mock/` | Mock LLM 固定輸出（離線示範用，非真實 LLM 表現） | — |
 
+在 `leanc init` 建立的專案目錄（Lean C 原始碼庫中為 `examples/safe_array_get/`）下執行：
+
 ```bash
-leanc spec approve examples/safe_array_get/spec.yaml --by alice --yes
-leanc verify examples/safe_array_get/spec.yaml        # => VERIFIED_BOUNDED (exit 0)
+leanc spec approve spec.yaml --by alice --yes
+leanc verify spec.yaml        # => VERIFIED_BOUNDED (exit 0)
 ```
 
 `VERIFIED_BOUNDED` 的範圍：`len <= 8`（MAX_LEN）、`idx` 為任意 `size_t`、`arr`/`out` 可為 NULL，

@@ -7,6 +7,6 @@ notes: >
   of behavior found (\result == 1) whenever the key occurs only in the last element.  The trusted tests
   miss it (no test puts the key last) and so does the static analyzer; CBMC finds a counterexample for the
   harness assertion that mirrors the contract (e.g. n = 1, a[0] == key), and Frama-C/WP leaves the same
-  post-condition unproved (WP never claims a counterexample: unproved goals are INCONCLUSIVE).  The worst
+  post-condition unproved (no prover refutes the goal here, so WP stays INCONCLUSIVE; a refuted goal would be a wp FAIL, COUNTEREXAMPLE_FOUND).  The worst
   status wins: COUNTEREXAMPLE_FOUND.  Mock repair round 1 changes the bound to i < n (the loop invariants
   stay as they are) => CBMC passes and WP proves every goal including termination => PROVED.

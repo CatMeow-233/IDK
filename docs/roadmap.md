@@ -1,6 +1,6 @@
 # Roadmap 與 V1 範圍
 
-## V1（本版本）——已實作並測試
+## V1——已實作並測試
 
 * C17 單檔案與小型多檔案專案（`sources.editable` 多個 `.c`，例如 `examples/ring_buffer`）
 * 自然語言需求 → **不受信任**的規格草案（`leanc spec draft`）→ 人工批准（雜湊鎖定 + HMAC 簽章）
@@ -27,10 +27,10 @@
 |---|---|
 | C++ 形式化關卡 | ESBMC（clang 前端，支援現代 C++）。在本環境中執行下載的 ESBMC 執行檔未獲許可，因此尚未整合 |
 | 多 TU 靜態分析 | Clang CTU |
-| Harness / 契約審查輔助 | 覆蓋率、變異測試評估 harness 與 ACSL 契約強度 |
+| Harness / 契約審查輔助 | 變異測試、ACSL 契約強度評估（harness 的位置覆蓋率已由 `verification.coverage` 提供） |
 | 更強的隔離 | gVisor / Firecracker / 每次執行一個容器 |
 
-## 已知限制（V1）
+## 已知限制
 
 * `VERIFIED_BOUNDED` 只涵蓋 harness 所描述的輸入空間與界限，不是無界證明；`PROVED` 只涵蓋已批准的 ACSL 契約。
 * 規格品質取決於人工審查；Lean C 能檢查「程式是否符合 harness」，不能檢查「harness 是否符合需求」。

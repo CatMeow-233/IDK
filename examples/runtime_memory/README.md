@@ -13,7 +13,7 @@ NUL 字元、參數為 NULL 或欄位過長，必須回傳錯誤、輸出清空�
 | CBMC（規格的檢查：bounds, pointer, …, unsigned-overflow；**沒有** memory-leak） | 否 | 記憶體安全與功能後置條件皆成立，6 個探針全部可達 |
 | ASan/UBSan/**LSan**（可信任測試） | **是** | `separator_in_field`、`nul_in_field`：`Direct leak of 6 byte(s) … allocated from join_with_sep src/join.c:22` |
 
-（對照：若規格加入 `memory-leak` 檢查，CBMC 也會報告 `__CPROVER_start.memory-leak.1: FAILURE`。
+（對照：若規格加入 `memory-leak` 檢查，CBMC 也會報告 `__CPROVER__start.memory-leak.1: FAILURE`。
 本例刻意不開，以示範各 gate 的互補：洩漏屬於規格的 POST6/SAFE4，由 sanitizer gate 負責。）
 
 | 檔案 | 角色 | 信任 |
