@@ -155,6 +155,7 @@ int main(void) {
 ```
 
 * 每個分支至少一個 `LEANC_REACH`，呼叫之後至少一個。任何探針不可達 → `UNKNOWN`（vacuous）。
+* 每個 `nondet_*` 都要有宣告：`leanc.h` 宣告了 `nondet_int`、`nondet_uint`、`nondet_long`、`nondet_ulong`、`nondet_llong`、`nondet_size_t`、`nondet_char`、`nondet_uchar`、`nondet_short`、`nondet_bool`、`nondet_int32_t`、`nondet_uint32_t`、`nondet_int64_t`、`nondet_uint64_t`，其他的（如 `unsigned long long nondet_ulonglong(void);`）在 harness 中宣告。CBMC 把未宣告的函式當成回傳 `int`，輸入只涵蓋 `int` 的值；CBMC 的 `function 'f' is not declared` 警告會使 `cbmc` 關卡為 `INCONCLUSIVE`（`UNKNOWN`）。
 * 後置條件要「強」：檢查實際值（`*out == arr[idx]`），不只是回傳碼範圍，避免「固定回傳值」式修復。
 * `LEANC_ASSUME` 只表達真正的前置條件；過強的 assume 會讓驗證失去意義（`coverage: true` 可協助發現）。
 * harness 只能由人撰寫/審查；可編輯原始碼中禁止出現 `__CPROVER_*` / `LEANC_*`。

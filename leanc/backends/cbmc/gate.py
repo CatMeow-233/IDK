@@ -7,12 +7,15 @@ from typing import Any
 from leanc.backends.cbmc.argv import Mode, compile_translation
 from leanc.backends.cbmc.assumptions import scope_assumptions
 from leanc.backends.cbmc.bodiless import (
+    UNDECLARED_CONSEQUENCE,
     DependentViolation,
     ViolationSplit,
     bodiless_function,
     call_list,
     is_modelled_bodiless,
     split_violations,
+    undeclared_function,
+    undeclared_reason,
     unmodelled_reason,
 )
 from leanc.backends.cbmc.compile_flags import (
@@ -94,6 +97,7 @@ def _initial_details(ctx: BackendContext, compile_options: CompileFlagTranslatio
         "unwind_failures": [],
         "unmodelled_violations": [],
         "bodiless_functions": {"modelled": [], "unmodelled": []},
+        "undeclared_functions": [],
         "compile_flags": compile_options.details(),
         "vacuity": {"status": "skipped", "probes": {}},
         "coverage": None,
@@ -115,6 +119,7 @@ class _Gate:
     failures: list[FailureReport] = field(default_factory=list)
     platform: str | None = None
     bodiless_functions: list[str] = field(default_factory=list)
+    undeclared_functions: list[str] = field(default_factory=list)
 
     @classmethod
     def start(cls, ctx: BackendContext) -> _Gate:
@@ -147,6 +152,7 @@ class _Gate:
             "modelled": [function for function in self.bodiless_functions if is_modelled_bodiless(function)],
             "unmodelled": self.unmodelled_functions(),
         }
+        self.details["undeclared_functions"] = list(self.undeclared_functions)
         self.details["assumptions"] = scope_assumptions(
             self.ctx,
             version=self.details.get("cbmc_version"),
@@ -194,6 +200,10 @@ class _Gate:
             if function is not None and function not in self.bodiless_functions:
                 self.bodiless_functions.append(function)
                 self.diagnostics.append(_no_body_diagnostic(function, warning))
+            undeclared = undeclared_function(text)
+            if undeclared is not None and undeclared not in self.undeclared_functions:
+                self.undeclared_functions.append(undeclared)
+                self.diagnostics.append(_undeclared_diagnostic(undeclared, warning))
 
 
 def _no_body_diagnostic(function: str, warning: dict) -> Diagnostic:
@@ -215,6 +225,16 @@ def _no_body_diagnostic(function: str, warning: dict) -> Diagnostic:
             "pointer arguments dropped, its memory accesses unchecked); the CBMC result cannot be a verified verdict"
         ),
         location=location,
+    )
+
+
+def _undeclared_diagnostic(function: str, warning: dict) -> Diagnostic:
+    return Diagnostic(
+        tool=TOOL,
+        rule_id="undeclared-function",
+        severity="warning",
+        message=f"function {function} is not declared: " + UNDECLARED_CONSEQUENCE,
+        location=location_from_cbmc(warning.get("sourceLocation")),
     )
 
 
@@ -401,7 +421,7 @@ def _counterexample_verdict(
         summary += f"; and {len(counterexamples) - MAX_LISTED_ITEMS} more"
     if unwind_text:
         summary += f". In addition, {unwind_text}"
-    summary += "".join(f". In addition, {reason}" for reason in _unmodelled_reasons(gate, findings.split))
+    summary += "".join(f". In addition, {reason}" for reason in _model_gap_reasons(gate, findings.split))
     if tally.undecided:
         summary += f". {len(tally.undecided)} property(ies) could not be decided"
         if ran_out_of_memory(verify_run):
@@ -475,9 +495,12 @@ def _record_informational_coverage(gate: _Gate) -> None:
         )
 
 
-def _unmodelled_reasons(gate: _Gate, split: ViolationSplit) -> list[str]:
+def _model_gap_reasons(gate: _Gate, split: ViolationSplit) -> list[str]:
     unmodelled = gate.unmodelled_functions()
-    return [unmodelled_reason(unmodelled, split.dependent)] if unmodelled else []
+    reasons = [unmodelled_reason(unmodelled, split.dependent)] if unmodelled else []
+    if gate.undeclared_functions:
+        reasons.append(undeclared_reason(gate.undeclared_functions))
+    return reasons
 
 
 def _pass_summary(gate: _Gate, tally: PropertyTally) -> str:
@@ -525,7 +548,7 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
         return _undecided_verdict(gate, tally, verify_run)
 
     vacuity_problem, vacuity_reasons = _check_vacuity(gate, harness_text, unwind_insufficient=bool(unwind_reports))
-    inconclusive = _unmodelled_reasons(gate, split) + ([unwind_text] if unwind_text else []) + vacuity_reasons
+    inconclusive = _model_gap_reasons(gate, split) + ([unwind_text] if unwind_text else []) + vacuity_reasons
     if vacuity_problem is not None:
         also = ". Also: " + "; ".join(inconclusive) if inconclusive else ""
         return gate.fail_with(vacuity_problem, vacuity_problem.summary + also)
