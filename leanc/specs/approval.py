@@ -284,6 +284,10 @@ def approve_spec(
         raise ApprovalError("approver name is required")
     if any(has_lone_surrogate(text) for text in (approved_by, note, spec_rel_path)):
         raise ApprovalError("approver name, note and spec path must be valid Unicode text (not raw non-UTF-8 bytes)")
+    if spec_rel_path in spec.editable_paths():
+        raise ApprovalError(
+            f"the spec file {spec_rel_path} is also an editable file of the spec; repair could rewrite it"
+        )
     key = load_key(create=True)
     assert key is not None
     content_hash = spec_hash(spec)

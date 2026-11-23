@@ -201,8 +201,9 @@ def normalized_header_path(name: str) -> str:
 
 def _non_header_files(spec: Spec) -> list[str]:
     harness = [spec.verification.harness] if spec.verification else []
+    inductive = [spec.inductive.harness, spec.inductive.contracts] if spec.inductive else []
     driver = [spec.tests.driver] if spec.tests.driver else []
-    return [*harness, *spec.sources.editable] + driver
+    return [*harness, *inductive, *spec.sources.editable] + driver
 
 
 def _protected_header_spellings(spec: Spec) -> set[str]:

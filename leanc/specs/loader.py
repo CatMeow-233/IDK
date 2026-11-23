@@ -14,6 +14,7 @@ from leanc.specs.model import Spec
 
 MAX_SPEC_BYTES = 1024 * 1024
 MAX_DIFF_VALUE_CHARS = 200
+SECTIONS_ABSENT_FROM_CANONICAL_FORM_WHEN_UNSET: tuple[str, ...] = ("inductive",)
 
 
 class _DuplicateKeyRejectingSafeLoader(yaml.SafeLoader):
@@ -87,8 +88,13 @@ def load_spec(path: str | Path) -> Spec:
     return parse_spec_text(text, source=str(p))
 
 
+def _is_unset_optional_section(key: str, value: Any) -> bool:
+    return key in SECTIONS_ABSENT_FROM_CANONICAL_FORM_WHEN_UNSET and value is None
+
+
 def spec_canonical_dict(spec: Spec) -> dict[str, Any]:
-    return spec.model_dump(mode="json")
+    dumped = spec.model_dump(mode="json")
+    return {key: value for key, value in dumped.items() if not _is_unset_optional_section(key, value)}
 
 
 def spec_hash(spec: Spec) -> str:

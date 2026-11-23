@@ -49,6 +49,8 @@ OPT_IN_V2_GATES: tuple[str, ...] = ("wp", "lean")
 GATE_ORDER: tuple[str, ...] = DEFAULT_V1_GATES + OPT_IN_V2_GATES
 C_SUFFIXES = (".c",)
 CPP_SUFFIXES = (".cpp", ".cc", ".cxx")
+INDUCTIVE_CONTRACTS_SUFFIX = ".json"
+LEANC_STATE_DIR = ".leanc"
 
 
 NUL_ALLOWED_FIELDS = frozenset({("TestCase", "stdin"), ("TestCase", "expect_stdout")})
@@ -306,6 +308,27 @@ class LeanConfig(_M):
     timeout_s: float = Field(default=300, gt=0, le=86400)
 
 
+class InductiveConfig(_M):
+    harness: str = Field(description="trusted C file with main(): state invariant, claimed calls, assertions")
+    contracts: str = Field(description="loop-contract .json file that generation/repair may write")
+    functions: list[str] = Field(min_length=1, description="claimed C functions; must include target.function")
+
+    @field_validator("functions")
+    @classmethod
+    def _unique_identifiers(cls, v: list[str]) -> list[str]:
+        for name in v:
+            if not C_IDENT_RE.match(name):
+                raise ValueError(f"not a C identifier: {name!r}")
+        duplicates = sorted({name for name in v if v.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate claimed functions: {duplicates}")
+        return v
+
+
+def _is_in_leanc_state_dir(path: str) -> bool:
+    return path.startswith(LEANC_STATE_DIR + "/")
+
+
 class RepairConfig(_M):
     max_rounds: int = Field(default=5, ge=0, le=20)
     max_changed_lines: int = Field(default=200, ge=1, le=5000)
@@ -333,6 +356,7 @@ class Spec(_M):
     verification: VerificationConfig | None = None
     wp: WPConfig | None = None
     lean: LeanConfig | None = None
+    inductive: InductiveConfig | None = None
     gates: list[GateName] = Field(default_factory=lambda: list(DEFAULT_V1_GATES))
     repair: RepairConfig = Field(default_factory=RepairConfig)
     provenance: Provenance = Field(default_factory=Provenance)
@@ -351,6 +375,7 @@ class Spec(_M):
         self._reject_duplicate_source_paths()
         self._normalise_trusted_and_lean_paths()
         self._require_language_suffix_on_editable_sources()
+        self._require_claimed_target()
         self._require_gate_prerequisites()
         self._reject_files_both_editable_and_protected()
         self._reject_duplicate_gates()
@@ -381,6 +406,24 @@ class Spec(_M):
             self.tests.driver = _validated_relpath(self.tests.driver)
         if self.lean is not None:
             self._normalise_lean_paths(self.lean)
+        if self.inductive is not None:
+            self._normalise_inductive_paths(self.inductive)
+
+    @staticmethod
+    def _normalise_inductive_paths(inductive: InductiveConfig) -> None:
+        inductive.harness = _validated_relpath(inductive.harness)
+        inductive.contracts = _validated_relpath(inductive.contracts)
+        if not inductive.contracts.endswith(INDUCTIVE_CONTRACTS_SUFFIX):
+            raise ValueError(f"inductive.contracts must end in {INDUCTIVE_CONTRACTS_SUFFIX}: {inductive.contracts}")
+        if _is_in_leanc_state_dir(inductive.contracts):
+            raise ValueError(f"inductive.contracts must not be inside {LEANC_STATE_DIR}/: {inductive.contracts}")
+
+    def _require_claimed_target(self) -> None:
+        if self.inductive is not None and self.target.function not in self.inductive.functions:
+            raise ValueError(
+                f"inductive.functions must include the target function {self.target.function!r}: "
+                f"{self.inductive.functions}"
+            )
 
     @staticmethod
     def _normalise_lean_paths(lean: LeanConfig) -> None:
@@ -448,7 +491,13 @@ class Spec(_M):
             out.append(self.lean.spec_file)
             if self.lean.vectors is not None:
                 out += [self.lean.vectors.generator, self.lean.vectors.driver]
+        if self.inductive is not None:
+            out.append(self.inductive.harness)
         return out
 
     def editable_paths(self) -> list[str]:
-        return [*self.sources.editable, *(self.lean.proofs if self.lean else [])]
+        return [
+            *self.sources.editable,
+            *(self.lean.proofs if self.lean else []),
+            *([self.inductive.contracts] if self.inductive else []),
+        ]

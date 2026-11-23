@@ -13,7 +13,7 @@ from leanc.rules.cpp_rules import find_cpp_function_definitions
 from leanc.rules.definitions import FunctionDefinition, find_function_definitions
 from leanc.rules.lean_rules import LEAN_RULES, check_lean_file, is_lean_path
 from leanc.rules.source import source_violations
-from leanc.specs.model import CPP_SUFFIXES, Spec
+from leanc.specs.model import CPP_SUFFIXES, LEANC_STATE_DIR, Spec
 
 __all__ = [
     "MAX_ANALYZED_CHARS",
@@ -65,7 +65,6 @@ _WP_GATE_ACSL_RULES: dict[str, str] = {
 RULES: dict[str, str] = {**_CANDIDATE_RULES, **_SOURCE_INTEGRITY_GATE_RULES, **_WP_GATE_ACSL_RULES, **LEAN_RULES}
 
 MAX_ANALYZED_CHARS = 1_000_000
-LEANC_STATE_DIR = ".leanc"
 CONFIGURATION_SUFFIXES = (".yaml", ".yml", ".json")
 SHOWN_TRIVIAL_BODY_CHARS = 100
 
@@ -73,6 +72,8 @@ SHOWN_TRIVIAL_BODY_CHARS = 100
 def _describe_protected_path(spec: Spec, norm: str) -> str:
     if spec.verification is not None and norm == spec.verification.harness:
         return "the trusted verification harness"
+    if spec.inductive is not None and norm == spec.inductive.harness:
+        return "the trusted inductive harness"
     if spec.tests.driver and norm == spec.tests.driver:
         return "the trusted test driver"
     if norm in spec.sources.headers:
@@ -104,8 +105,8 @@ def _path_violation(spec: Spec, path: str) -> PolicyViolation | None:
         return None
     return PolicyViolation(
         rule="PATH_NOT_EDITABLE",
-        message=f"{norm!r} is {_describe_protected_path(spec, norm)}; only spec.sources.editable and lean.proofs "
-        f"may be changed: {', '.join(editable)}",
+        message=f"{norm!r} is {_describe_protected_path(spec, norm)}; only spec.sources.editable, lean.proofs and "
+        f"inductive.contracts may be changed: {', '.join(editable)}",
         file=norm,
     )
 
