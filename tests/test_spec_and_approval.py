@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from leanc.foundation.errors import ApprovalError, SpecError, WorkspaceError
 from leanc.foundation.workspace import Workspace, normalize_relpath, safe_rmtree
@@ -99,6 +100,21 @@ def test_duplicate_keys_are_rejected(project):
     text = (project / "spec.yaml").read_text() + "\nversion: 2\n"
     with pytest.raises(SpecError, match="duplicate key"):
         parse_spec_text(text)
+
+
+@pytest.mark.parametrize(
+    "key, value, repeated_value", [("version", 1, 7), ("unwind", 9, 8)], ids=["top-level", "nested"]
+)
+def test_duplicate_keys_are_rejected_in_json_specs(project, key, value, repeated_value):
+    json_spec = project / "spec.json"
+    unique_keys = json.dumps(yaml.safe_load((project / "spec.yaml").read_text()))
+    json_spec.write_text(unique_keys)
+    assert load_spec(json_spec).version == 1
+    once = f'"{key}": {value}'
+    assert unique_keys.count(once) == 1
+    json_spec.write_text(unique_keys.replace(once, f'{once}, "{key}": {repeated_value}'))
+    with pytest.raises(SpecError, match=f"duplicate key '{key}'"):
+        load_spec(json_spec)
 
 
 def test_harness_cannot_be_editable(project):

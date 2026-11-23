@@ -14,7 +14,7 @@ Lean C 把所有產物分成三類：
 
 `leanc spec approve <spec> --by <name>` 會：
 
-1. 以 pydantic 驗證規格（未知欄位、YAML 重複鍵、路徑穿越、editable/受保護重疊 → 拒絕）；
+1. 以 pydantic 驗證規格（未知欄位、重複鍵、路徑穿越、editable/受保護重疊 → 拒絕）；
 2. 計算規格的**語意雜湊**（正規化後的 JSON；註解/排版變更不影響，任何欄位變更都會改變）；
 3. 計算每個受保護檔（harness、測試 driver、標頭）的 SHA-256；
 4. 寫入 `.leanc/approvals/<spec_id>.json`（`current` + `history`），並以存放在**工作區外**的金鑰

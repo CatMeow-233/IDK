@@ -15,7 +15,9 @@ import pytest
 from leanc.foundation import runner
 from leanc.foundation.runner import Limits, minimal_env, run_command
 from leanc.foundation.sandbox import (
+    PROBE_PATH,
     NetworkIsolation,
+    Sandbox,
     SandboxMounts,
     detect_sandbox,
     network_probe_blocked,
@@ -25,6 +27,8 @@ SH = shutil.which("sh") or "/bin/sh"
 CAT = shutil.which("cat") or "/bin/cat"
 PYTHON_VISIBLE_IN_SANDBOX = "/usr/bin/python3"
 BWRAP_SIGNAL_EXIT_BASE = 128
+PARENT_ONLY_SECRET = "sk-parent-only-0123456789abcdef"
+LOOPBACK_ONLY_PROC_NET_DEV = "Inter-|   Receive\n face |bytes\n    lo:       0\n"
 
 
 def _alive_and_not_zombie(pid: int) -> bool:
@@ -365,6 +369,23 @@ def test_network_probe_reports_loopback_only_inside_bwrap(sandbox, tmp_path):
 
 def test_network_probe_cannot_confirm_isolation_without_a_sandbox(tmp_path):
     assert network_probe_blocked(detect_sandbox("none"), tmp_path) is NetworkIsolation.UNCONFIRMED
+
+
+def _bwrap_stand_in_recording_its_environment(directory: Path) -> tuple[Sandbox, Path]:
+    recorded_environ = directory / "bwrap.environ"
+    stand_in = directory / "bwrap"
+    stand_in.write_text(
+        f"#!/bin/sh\ncat /proc/$$/environ > '{recorded_environ}'\nprintf '%s' '{LOOPBACK_ONLY_PROC_NET_DEV}'\n"
+    )
+    stand_in.chmod(0o755)
+    return Sandbox(kind="bwrap", executable=str(stand_in)), recorded_environ
+
+
+def test_network_probe_launches_bwrap_with_only_the_probe_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", PARENT_ONLY_SECRET)
+    sandbox, recorded_environ = _bwrap_stand_in_recording_its_environment(tmp_path)
+    assert network_probe_blocked(sandbox, tmp_path) is NetworkIsolation.BLOCKED
+    assert recorded_environ.read_bytes() == f"PATH={PROBE_PATH}\0".encode()
 
 
 def test_detect_sandbox_none_preference():
