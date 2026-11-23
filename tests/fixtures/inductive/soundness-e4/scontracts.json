@@ -1,0 +1,3 @@
+[{"function": "sponge_mix", "loop": 0, "invariants": ["k <= 144"], "assigns": ["k", "__CPROVER_object_upto(s->acc, 28)"], "decreases": "144 - k"},
+ {"function": "sponge_absorb", "loop": 0, "invariants": ["i <= len", "s->fill < 144"], "assigns": ["i", "__CPROVER_object_whole(s)"], "decreases": "len - i"},
+ {"function": "sponge_finalize", "loop": 0, "invariants": ["k <= 144"], "assigns": ["k", "__CPROVER_object_upto(s->block, 144)"], "decreases": "144 - k"}]

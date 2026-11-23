@@ -1,0 +1,8 @@
+{"leanc_loop_contracts": 1, "loops": [
+ {"file": "src/iset.c", "function": "lower_bound", "index": 0,
+  "assigns": ["lo", "hi"], "invariant": ["0 <= lo && lo <= hi && hi <= len"], "decreases": ["hi - lo"]},
+ {"file": "src/iset.c", "function": "iset_insert", "index": 0,
+  "assigns": ["k", "__CPROVER_object_whole(s->items)"], "invariant": ["pos <= k && k <= s->len"], "decreases": ["k - pos"]},
+ {"file": "src/iset.c", "function": "iset_remove", "index": 0,
+  "assigns": ["k", "__CPROVER_object_whole(s->items)"], "invariant": ["pos <= k && k < s->len"], "decreases": ["s->len - k"]}
+]}

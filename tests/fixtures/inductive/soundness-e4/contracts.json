@@ -1,0 +1,1 @@
+[{"function": "lower_bound", "loop": 0, "invariants": ["0 <= lo", "lo <= hi", "hi <= len"], "assigns": ["lo", "hi"], "decreases": "hi - lo"}]

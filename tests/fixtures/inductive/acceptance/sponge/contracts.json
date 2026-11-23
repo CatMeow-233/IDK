@@ -1,0 +1,8 @@
+{"leanc_loop_contracts": 1, "loops": [
+ {"file": "src/sponge.c", "function": "sponge_mix", "index": 0,
+  "assigns": ["k", "__CPROVER_object_upto(s->acc, SPONGE_OUT)"], "invariant": ["k <= SPONGE_RATE"], "decreases": ["SPONGE_RATE - k"]},
+ {"file": "src/sponge.c", "function": "sponge_absorb", "index": 0,
+  "assigns": ["i", "__CPROVER_object_whole(s)"], "invariant": ["i <= len && s->fill < SPONGE_RATE"], "decreases": ["len - i"]},
+ {"file": "src/sponge.c", "function": "sponge_finalize", "index": 0,
+  "assigns": ["k", "__CPROVER_object_upto(s->block, SPONGE_RATE)"], "invariant": ["s->fill < k && k <= SPONGE_RATE"], "decreases": ["SPONGE_RATE - k"]}
+]}
