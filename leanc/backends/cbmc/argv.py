@@ -77,6 +77,17 @@ def _memory_model_args(verification: VerificationConfig) -> list[str]:
     return args
 
 
+def cbmc_source_args(ctx: BackendContext) -> list[str]:
+    compile_options = compile_translation(ctx.spec)
+    return [
+        *compile_options.include_args,
+        *ctx.include_args(),
+        f"-I{os.path.abspath(ctx.include_dir)}",
+        *compile_options.macro_args,
+        *compile_options.semantic_args,
+    ]
+
+
 def build_cbmc_argv(ctx: BackendContext, *, mode: Mode = "verify") -> list[str]:
     if mode not in MODES:
         raise ValueError(f"unknown CBMC mode {mode!r} (expected one of {', '.join(MODES)})")
@@ -85,16 +96,11 @@ def build_cbmc_argv(ctx: BackendContext, *, mode: Mode = "verify") -> list[str]:
         raise ValueError("cbmc is not available (ctx.tools.cbmc is None)")
     spec = ctx.spec
     verification = spec.verification
-    compile_options = compile_translation(spec)
     argv: list[str] = [
         cbmc,
         *spec.sources.editable,
         verification.harness,
-        *compile_options.include_args,
-        *ctx.include_args(),
-        f"-I{os.path.abspath(ctx.include_dir)}",
-        *compile_options.macro_args,
-        *compile_options.semantic_args,
+        *cbmc_source_args(ctx),
         *_mode_args(spec, mode),
         *_unwind_args(verification),
     ]

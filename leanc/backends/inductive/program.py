@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+
+from leanc.backends.inductive.link import Undeclared, compile_units, read_symbol_table, undeclared_functions
+from leanc.backends.inductive.problems import BuildProblem, contract_rejected, inconclusive, tool_error
+from leanc.backends.inductive.steps import StepRun, ToolSteps, output_excerpt
+from leanc.backends.inductive.symbols import SymbolTable, capture_problems, trusted_definitions
+from leanc.foundation.reasons import Reason
+
+TRUSTED_MODELS_STEM = "trusted_0_models"
+TRUSTED_HARNESS_STEM = "trusted_1_harness"
+EDITABLE_STEM_FORMAT = "editable_{index:02d}"
+UNIT_SUFFIX = ".i"
+PROGRAM_SUFFIX = ".goto"
+LINKED_PROGRAM = "program.goto"
+EDITABLE_PROGRAM = "editable.goto"
+
+
+class BuildMode(str, Enum):
+    VERIFY = "verify"
+    VACUITY = "vacuity"
+
+
+@dataclass(frozen=True)
+class TrustedUnit:
+    path: Path
+    definitions: SymbolTable
+
+    @property
+    def stem(self) -> str:
+        return self.path.stem
+
+
+@dataclass(frozen=True)
+class LinkedProgram:
+    mode: BuildMode
+    path: Path
+    table: SymbolTable
+    undeclared: tuple[Undeclared, ...] = ()
+
+
+def _undeclared_in(runs: Sequence[StepRun]) -> tuple[Undeclared, ...]:
+    found: dict[str, Undeclared] = {}
+    for run in runs:
+        for item in undeclared_functions(run):
+            found.setdefault(item.function, item)
+    return tuple(found.values())
+
+
+def editable_stem(index: int) -> str:
+    return EDITABLE_STEM_FORMAT.format(index=index)
+
+
+def write_unit(directory: Path, stem: str, text: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{stem}{UNIT_SUFFIX}"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _compile_failure(run: StepRun, what: str) -> str:
+    excerpt = output_excerpt(run.proc)
+    return f"goto-cc could not compile {what} (exit code {run.proc.exit_code})" + (f": {excerpt}" if excerpt else "")
+
+
+def compile_trusted(steps: ToolSteps, mode: BuildMode, unit: Path, compiles: list[StepRun]) -> TrustedUnit | BuildProblem:
+    output = unit.with_suffix(PROGRAM_SUFFIX)
+    run = compile_units(steps, f"{mode.value} compile {unit.stem}", output, [unit])
+    compiles.append(run)
+    problem = steps.run_problem(run)
+    if problem is not None:
+        return problem
+    if run.proc.exit_code != 0:
+        return tool_error(_compile_failure(run, f"the trusted unit {unit.stem} on its own"))
+    table = read_symbol_table(steps, f"{mode.value} symbols {unit.stem}", output)
+    if isinstance(table, BuildProblem):
+        return table
+    return TrustedUnit(unit, trusted_definitions(table, unit.stem))
+
+
+def compile_editable(
+    steps: ToolSteps, mode: BuildMode, units: Sequence[Path], contracted: bool, compiles: list[StepRun]
+) -> BuildProblem | None:
+    output = units[0].parent / EDITABLE_PROGRAM
+    run = compile_units(steps, f"{mode.value} compile editable", output, units)
+    compiles.append(run)
+    problem = steps.run_problem(run)
+    if problem is not None or run.proc.exit_code == 0:
+        return problem
+    summary = _compile_failure(run, "the editable sources with the inserted loop clauses")
+    if contracted:
+        return contract_rejected(summary)
+    return tool_error(summary)
+
+
+def link_program(
+    steps: ToolSteps,
+    mode: BuildMode,
+    trusted: Sequence[TrustedUnit],
+    editable: Sequence[Path],
+    editable_files: Sequence[str],
+    compiles: list[StepRun],
+) -> LinkedProgram | BuildProblem:
+    output = editable[0].parent / LINKED_PROGRAM if editable else trusted[-1].path.parent / LINKED_PROGRAM
+    run = compile_units(steps, f"{mode.value} link", output, [*(unit.path for unit in trusted), *editable])
+    compiles.append(run)
+    problem = steps.run_problem(run)
+    if problem is not None:
+        return problem
+    if run.proc.exit_code != 0:
+        return tool_error(_compile_failure(run, "the trusted units linked with the editable sources"))
+    table = read_symbol_table(steps, f"{mode.value} symbols linked", output)
+    if isinstance(table, BuildProblem):
+        return table
+    captured = capture_problems(table, [unit.definitions for unit in trusted], editable_files)
+    if captured:
+        return tool_error("the linked program breaks the trusted-symbol rules (a trusted name redefined, renamed or rebound, or an editable leanc_ name)", captured)
+    return LinkedProgram(mode, output, table, _undeclared_in(compiles))
+
+
+def undeclared_problem(program: LinkedProgram) -> BuildProblem | None:
+    if not program.undeclared:
+        return None
+    details = [
+        f"{item.location.short()}: {item.function}" if item.location else item.function for item in program.undeclared
+    ]
+    return inconclusive(
+        Reason.UNDECLARED_FUNCTION,
+        "goto-cc reports calls of undeclared functions; CBMC types them as returning int, so an input generated by "
+        "such a call covers only part of its type's range",
+        details,
+    )

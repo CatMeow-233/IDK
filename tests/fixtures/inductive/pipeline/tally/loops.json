@@ -1,0 +1,5 @@
+{"loops": [
+  {"file": "src/tally.c", "line": 6, "invariant": ["0 <= i", "i <= n", "0 <= c", "c <= i"], "assigns": ["i", "c"], "decreases": "n - i"},
+  {"file": "src/tally.c", "line": 18, "invariant": ["1 <= i", "i <= n", "best >= a[0]"], "assigns": ["i", "best"], "decreases": "n - i"},
+  {"file": "src/tally.c", "line": 29, "invariant": ["0 <= i", "i <= n"], "assigns": ["i", "__CPROVER_object_whole(a)"], "decreases": "n - i"}
+]}
