@@ -130,8 +130,8 @@ def _repair_and_record(
         rec.messages.append(f"wrote {what} sources back to the workspace: " + ", ".join(outcome.written_back))
     elif args.no_write and is_success(outcome.status):
         rec.messages.append(
-            "--no-write: the workspace was NOT changed and is NOT verified; the verified candidate is in "
-            f"{run_dir / 'verified-candidate'}"
+            "--no-write: the verified candidate was NOT written back and the workspace is NOT verified; "
+            f"the candidate is in {run_dir / 'verified-candidate'}"
         )
 
 

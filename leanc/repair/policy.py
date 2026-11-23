@@ -104,8 +104,8 @@ def _path_violation(spec: Spec, path: str) -> PolicyViolation | None:
         return None
     return PolicyViolation(
         rule="PATH_NOT_EDITABLE",
-        message=f"{norm!r} is {_describe_protected_path(spec, norm)}; only spec.sources.editable may be changed: "
-        f"{', '.join(editable)}",
+        message=f"{norm!r} is {_describe_protected_path(spec, norm)}; only spec.sources.editable and lean.proofs "
+        f"may be changed: {', '.join(editable)}",
         file=norm,
     )
 

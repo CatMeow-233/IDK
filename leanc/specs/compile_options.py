@@ -87,8 +87,8 @@ PREPROCESSOR_OUTPUT_MESSAGE = (
 LEXICAL_MESSAGE = (
     "compile.flags must not change how C source is split into tokens: strict C89/C90 (-std=c89, -std=c90, "
     "-std=iso9899:1990, -std=iso9899:199409, -ansi) has no // comments, C23 (-std=c23, -std=c2x, -std=gnu23, "
-    "-std=gnu2x) has digit separators and -fdigraphs / -fno-digraphs switch digraphs, while CBMC and Frama-C "
-    "preprocess in gcc's gnu modes up to gnu11"
+    "-std=gnu2x) has digit separators and -fdigraphs / -fno-digraphs switch digraphs, while CBMC preprocesses in "
+    "gcc's gnu modes up to gnu11 and Frama-C in gcc's -std=c11"
 )
 CONST_STRING_MESSAGE = (
     f"{CONST_STRING_FLAG} gives C string literals the type const char[N] (clang passes -fconst-strings to the "
