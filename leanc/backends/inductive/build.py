@@ -21,6 +21,7 @@ from leanc.backends.inductive.harness_calls import (
     CallSite,
     HarnessLayout,
     ReturnKind,
+    assumption_texts,
     harness_layout,
     instrumented_harness,
     return_probe_label,
@@ -78,6 +79,8 @@ class InductiveBuild:
     argv: dict[str, list[str]] = field(default_factory=dict)
     contracts: tuple[MatchedLoop, ...] = ()
     claimed_calls: tuple[CallSite, ...] = ()
+    entries: tuple[FunctionEntry, ...] = ()
+    harness_assumptions: tuple[str, ...] = ()
     returns: Mapping[str, ReturnKind] = field(default_factory=dict)
     function_probes: tuple[str, ...] = ()
     loop_probes: tuple[str, ...] = ()
@@ -198,6 +201,7 @@ class _Builder:
         if self.layouts[BuildMode.VERIFY].call_sequence() != self.layouts[BuildMode.VACUITY].call_sequence():
             return tool_error(f"the inductive harness {harness} makes different claimed calls in its vacuity build")
         self.result.claimed_calls = self.layouts[BuildMode.VERIFY].calls
+        self.result.harness_assumptions = assumption_texts(self.harness[BuildMode.VERIFY].text, self.layouts[BuildMode.VERIFY])
         return None
 
     def match_sites(self) -> BuildProblem | None:
@@ -209,6 +213,7 @@ class _Builder:
             return tool_error("the claimed functions cannot be located in the editable sources", entries.problems)
         self.result.contracts = match.matched
         self.entries = entries.entries
+        self.result.entries = entries.entries
         self.result.function_probes = tuple(function_probe_labels(self.claimed))
         self.result.loop_probes = tuple(loop_probe_labels(match.matched))
         return None
