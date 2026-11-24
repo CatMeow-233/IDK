@@ -18,6 +18,7 @@ from leanc.rules.source import source_violations
 from leanc.specs.model import CPP_SUFFIXES, LEANC_STATE_DIR, Spec
 
 __all__ = [
+    "CONTRACTS_ONLY_RULE",
     "MAX_ANALYZED_CHARS",
     "RULES",
     "check_candidate",
@@ -48,6 +49,12 @@ _CANDIDATE_RULES: dict[str, str] = {
     "from review and from this policy",
     "MISSING_TARGET": "the generated code does not define the target function",
 }
+CONTRACTS_ONLY_RULE = "CONTRACTS_ONLY_ROUND"
+_PROOF_ROUND_RULES: dict[str, str] = {
+    CONTRACTS_ONLY_RULE: "changes a file other than inductive.contracts in a repair round where only proof gates "
+    "are open and the inductive gate is one of them (a code change there could trade correctness at large sizes "
+    "for an inductive proof)",
+}
 _SOURCE_INTEGRITY_GATE_RULES: dict[str, str] = {
     "TOOL_DIVERGENCE": "code that can differ between clang, the sanitizer build and CBMC (conditionals on "
     "compiler/optimiser/verifier macros, non-standard directives, optimisation-dependent built-ins)",
@@ -66,6 +73,7 @@ _WP_GATE_ACSL_RULES: dict[str, str] = {
 }
 RULES: dict[str, str] = {
     **_CANDIDATE_RULES,
+    **_PROOF_ROUND_RULES,
     **_SOURCE_INTEGRITY_GATE_RULES,
     **_WP_GATE_ACSL_RULES,
     **LEAN_RULES,
@@ -331,19 +339,34 @@ def _file_violations(
     )
 
 
+def _outside_contracts_violations(spec: Spec, changed: list[str]) -> list[PolicyViolation]:
+    contracts = spec.inductive.contracts if spec.inductive is not None else None
+    return [
+        PolicyViolation(
+            rule=CONTRACTS_ONLY_RULE,
+            message=f"{path!r} changed, but only proof gates are open and the inductive gate is one of them: this "
+            f"round may change only the loop-contract file {contracts!r}",
+            file=path,
+        )
+        for path in changed
+        if path != contracts
+    ]
+
+
 def check_candidate(
     spec: Spec,
     old: dict[str, str],
     new: dict[str, str],
     *,
     max_changed_lines: int | None = None,
+    contracts_only: bool = False,
 ) -> PolicyDecision:
     changed = changed_paths(old, new)
     if not changed:
         return _decision(
             [PolicyViolation(rule="NO_CHANGE", message="the candidate is identical to the current sources")]
         )
-    violations: list[PolicyViolation] = []
+    violations: list[PolicyViolation] = _outside_contracts_violations(spec, changed) if contracts_only else []
     content_paths: list[str] = []
     oversized: set[str] = set()
     for path in changed:

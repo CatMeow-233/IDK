@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
+from inductive_iset_support import SOURCE, approved, cli, iset_project
 
-from leanc.cli import main
 from leanc.foundation.models import StageResult
 from leanc.foundation.reasons import Reason
 from leanc.foundation.status import Outcome, Status, exit_code
@@ -16,14 +15,6 @@ from leanc.specs.model import INDUCTIVE_GATE
 
 pytestmark = pytest.mark.usefixtures("needs_toolchain")
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "inductive"
-ISET_ACCEPTANCE = FIXTURES / "acceptance" / "iset"
-ISET_PIPELINE = FIXTURES / "pipeline" / "iset"
-SPEC_TEMPLATE = FIXTURES / "e2e" / "iset_spec.yaml"
-SPEC_FILE = "spec.yaml"
-SOURCE = "src/iset.c"
-VARIANT_FILES = (SOURCE, "include/iset.h", "harness/iset_harness.c")
-PIPELINE_FILES = {"harness/inductive.c": "harness/inductive.c", "inductive/loops.json": "loops.json"}
 GATES_IN_ORDER = ["spec", "compile", "integrity", "static_analysis", "cbmc", INDUCTIVE_GATE]
 VERIFICATION_REPORT = Path("verify") / "verification.md"
 VERIFICATION_RECORD = Path("verify") / "verification.json"
@@ -54,32 +45,8 @@ TERMINATING_CALL = "    return lower_bound(s->items, s->len, x);\n}\n\nint iset_
 ABORTING_CALL = "    if (x == 7) {\n        abort();\n    }\n" + TERMINATING_CALL
 
 
-def iset_project(tmp_path: Path, variant: str) -> Path:
-    root = tmp_path / variant
-    for rel in VARIANT_FILES:
-        (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ISET_ACCEPTANCE / variant / rel, root / rel)
-    for rel, source in PIPELINE_FILES.items():
-        (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ISET_PIPELINE / source, root / rel)
-    shutil.copyfile(SPEC_TEMPLATE, root / SPEC_FILE)
-    return root
-
-
-def _cli(capsys, *argv: str) -> tuple[int, dict]:
-    rc = main([*argv, "--json"])
-    return rc, json.loads(capsys.readouterr().out)
-
-
-def _approved(capsys, root: Path) -> Path:
-    spec = root / SPEC_FILE
-    rc, payload = _cli(capsys, "spec", "approve", str(spec), "--by", "e2e-reviewer", "--yes")
-    assert rc == 0, payload
-    return spec
-
-
 def _verified(capsys, root: Path) -> tuple[int, dict]:
-    return _cli(capsys, "verify", str(_approved(capsys, root)))
+    return cli(capsys, "verify", str(approved(capsys, root)))
 
 
 def _stages(verification: dict) -> dict[str, dict]:
@@ -158,7 +125,7 @@ def test_integrity_failure_skips_the_inductive_gate_with_gate_skipped(tmp_path, 
     text = source.read_text(encoding="utf-8")
     assert TERMINATING_CALL in text
     source.write_text(text.replace(TERMINATING_CALL, ABORTING_CALL), encoding="utf-8")
-    spec = _approved(capsys, root)
+    spec = approved(capsys, root)
     called: list[str] = []
 
     def tripwire(ctx) -> StageResult:

@@ -7,6 +7,7 @@ from leanc.foundation.models import (
     Diagnostic,
     FailureReport,
     ProviderInfo,
+    ReasonCode,
     VerificationResult,
 )
 from leanc.specs.model import Spec
@@ -58,6 +59,8 @@ class RepairRequest:
     failures: list[FailureReport]
     history: list[dict]
     protected_context: dict[str, str] = field(default_factory=dict)
+    reason_codes: list[ReasonCode] = field(default_factory=list)
+    contracts_only: bool = False
 
 
 @dataclass

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from leanc.llm.base import RepairRequest
 from leanc.llm.cpp_prompts import cpp_system
+from leanc.llm.inductive_prompts import inductive_feedback, inductive_repair_note
 from leanc.llm.prompts.rendering import (
     interface_summary,
     render_diagnostics,
@@ -18,7 +19,6 @@ from leanc.llm.prompts.text import (
     truncate,
 )
 from leanc.llm.wp_prompts import wp_repair_note
-from leanc.specs.model import Spec
 
 REPAIR_SYSTEM = """\
 You are the repair agent of Lean C, a spec-first verification pipeline for C17. The code you change is checked by \
@@ -66,6 +66,11 @@ REPAIR_ANSWER_INSTRUCTION = (
 )
 
 PROTECTED_BEYOND_SPEC_FILES = ("the spec file", "leanc.h")
+EDITABLE_HEADING = "## Editable files (the ONLY files you may change)"
+CONTRACTS_ONLY_HEADING = (
+    "## Editable files in THIS round (only the loop-contract file may change; the other editable sources are "
+    "shown below for reading)"
+)
 
 
 def _bullets(items: list[str]) -> str:
@@ -86,16 +91,24 @@ def _files_quotable_in_failure_excerpts(req: RepairRequest) -> dict[str, str]:
     return quotable
 
 
+def _changeable_paths(req: RepairRequest) -> tuple[str, list[str]]:
+    spec = req.spec
+    if req.contracts_only and spec.inductive is not None:
+        return CONTRACTS_ONLY_HEADING, [spec.inductive.contracts]
+    return EDITABLE_HEADING, spec.editable_paths()
+
+
 def _task_parts(req: RepairRequest, sources: str, limits: PromptLimits) -> list[str]:
     spec = req.spec
     editable = spec.editable_paths()
     protected = sorted(set(spec.protected_paths()))
+    changeable_heading, changeable = _changeable_paths(req)
     parts = [
         f"## Repair round {req.round} for spec `{spec.spec_id}` v{spec.version}: {spec.title}",
         "## Requirement (informative)\n" + fence(truncate(req.requirement, limits.max_requirement_chars, label="requirement")),
         "## Approved spec (protected)\n" + fence(truncate(req.spec_yaml, limits.max_spec_chars, label="spec"), "yaml"),
         "## Interface\n" + interface_summary(spec),
-        "## Editable files (the ONLY files you may change)\n" + _bullets(editable),
+        changeable_heading + "\n" + _bullets(changeable),
         "## Protected files (never change)\n" + _bullets([*protected, *PROTECTED_BEYOND_SPEC_FILES]),
         "## Current editable sources\n" + sources,
     ]
@@ -128,11 +141,15 @@ def _trusted_file_parts(req: RepairRequest, limits: PromptLimits) -> list[str]:
     return parts
 
 
-def _proof_rule_parts(spec: Spec) -> list[str]:
+def _proof_rule_parts(req: RepairRequest, limits: PromptLimits) -> list[str]:
+    spec = req.spec
     parts = [LEAN_PROOF_RULES] if spec.lean is not None else []
-    wp_note = wp_repair_note(spec)
-    if wp_note:
-        parts.append(wp_note)
+    notes = (
+        wp_repair_note(spec),
+        inductive_repair_note(spec, contracts_only=req.contracts_only),
+        inductive_feedback(spec, req.reason_codes, limits.max_item_chars),
+    )
+    parts.extend(note for note in notes if note)
     return parts
 
 
@@ -144,7 +161,7 @@ def build_repair_prompt(req: RepairRequest, limits: PromptLimits = DEFAULT_LIMIT
     parts = _task_parts(req, sources, limits)
     parts += _tool_evidence_parts(req, limits)
     parts += _trusted_file_parts(req, limits)
-    parts += _proof_rule_parts(spec)
+    parts += _proof_rule_parts(req, limits)
     if truncated:
         parts.append(PATCH_FALLBACK_NOTE.format(paths=", ".join(truncated)))
     parts.append(REPAIR_ANSWER_INSTRUCTION)

@@ -15,6 +15,7 @@ from leanc.foundation.models import (
     FailureReport,
     PolicyDecision,
     PolicyViolation,
+    ReasonCode,
     RepairRound,
     StageResult,
     VerificationResult,
@@ -30,7 +31,9 @@ from leanc.foundation.status import (
 )
 from leanc.foundation.workspace import Workspace
 from leanc.llm.base import RepairProposal, RepairRequest
-from leanc.pipeline.controller import verify
+from leanc.llm.inductive_prompts import by_feedback_priority, reason_code_text
+from leanc.pipeline.controller import VERIFIED_INDUCTIVE_REASON, verify
+from leanc.pipeline.reason_codes import stage_reason_codes
 from leanc.repair.patch import (
     candidate_hash,
     changed_paths,
@@ -40,12 +43,21 @@ from leanc.repair.patch import (
 )
 from leanc.repair.policy import check_candidate
 from leanc.specs.loader import spec_to_yaml
-from leanc.specs.model import Spec
+from leanc.specs.model import INDUCTIVE_GATE, Spec
 from leanc.toolchain.context import VerifyOptions
 
 log = logging.getLogger("leanc.repair")
 
-PROOF_GATES = ("wp", "lean")
+PROOF_GATES = ("wp", "lean", INDUCTIVE_GATE)
+STAGES_PROGRESSING_BY_REASON_CODES = (INDUCTIVE_GATE,)
+MAX_PROOF_FEEDBACK_ITEMS = 3
+MAX_PROOF_FEEDBACK_ITEM_CHARS = 280
+PROOF_FEEDBACK_HEAD = "; proof feedback: "
+PROOF_FEEDBACK_SEPARATOR = " | "
+INDUCTIVE_ACCEPTED_NOTE = (
+    "accepted (VERIFIED_INDUCTIVE: relative to the protected inductive harness and its claimed functions; "
+    "never PROVED)"
+)
 INCONCLUSIVE_FAILURE_KINDS = ("unwind", "vacuity")
 CRLF = "\r\n"
 LF = "\n"
@@ -53,6 +65,8 @@ LF = "\n"
 _DEFINITE_OUTCOMES = (Outcome.PASS, Outcome.FAIL)
 INTEGRITY_STAGE = "integrity"
 _LINE_NUMBER_IN_FINGERPRINT_RE = re.compile(r"@(.*?):(?:\d+|\?):")
+_NUMBER_RE = re.compile(r"\d+")
+_NUMBER_PLACEHOLDER = "#"
 
 
 @dataclass
@@ -68,15 +82,40 @@ def _compare_key(failure: FailureReport) -> str:
     return _LINE_NUMBER_IN_FINGERPRINT_RE.sub(lambda m: f"@{m.group(1)}:", fingerprint(failure), count=1)
 
 
+def _reason_code_key(code: ReasonCode) -> str:
+    where = f"{code.location.file}:{code.location.function}" if code.location is not None else ""
+    return f"{code.stage}:{code.code.value}@{where}:{_NUMBER_RE.sub(_NUMBER_PLACEHOLDER, code.detail)}"
+
+
+def _reason_code_counter(vr: VerificationResult) -> Counter:
+    return Counter(
+        _reason_code_key(code)
+        for stage in vr.stages
+        if stage.stage in STAGES_PROGRESSING_BY_REASON_CODES
+        for code in stage_reason_codes(stage)
+    )
+
+
 def _failure_counter(vr: VerificationResult) -> Counter:
     return Counter(_compare_key(f) for f in vr.all_failures())
 
 
-def _diff_failures(before: VerificationResult, after: VerificationResult) -> tuple[list[str], list[str]]:
-    counted_before, counted_after = _failure_counter(before), _failure_counter(after)
+def _progress_counter(vr: VerificationResult) -> Counter:
+    return _failure_counter(vr) + _reason_code_counter(vr)
+
+
+def _diff(counted_before: Counter, counted_after: Counter) -> tuple[list[str], list[str]]:
     fixed = sorted((counted_before - counted_after).elements())
     introduced = sorted((counted_after - counted_before).elements())
     return fixed, introduced
+
+
+def _diff_failures(before: VerificationResult, after: VerificationResult) -> tuple[list[str], list[str]]:
+    return _diff(_failure_counter(before), _failure_counter(after))
+
+
+def _diff_progress(before: VerificationResult, after: VerificationResult) -> tuple[list[str], list[str]]:
+    return _diff(_progress_counter(before), _progress_counter(after))
 
 
 def _inconclusive_failure_counter(vr: VerificationResult) -> Counter:
@@ -113,7 +152,7 @@ def _goal_reached(vr: VerificationResult) -> bool:
     return is_success(vr.status) or all_gates_pass(vr)
 
 
-def _proof_open_to_code_edits(stage: StageResult) -> bool:
+def _proof_open_to_repair(stage: StageResult) -> bool:
     return (
         stage.stage in PROOF_GATES
         and stage.outcome is Outcome.INCONCLUSIVE
@@ -121,17 +160,25 @@ def _proof_open_to_code_edits(stage: StageResult) -> bool:
     )
 
 
+def _open_gates(vr: VerificationResult) -> list[StageResult]:
+    return [s for s in _required_gates(vr) if s.outcome is not Outcome.PASS]
+
+
 def proof_repairable(vr: VerificationResult) -> bool:
     if vr.status is not Status.UNKNOWN:
         return False
-    still_open = [s for s in _required_gates(vr) if s.outcome is not Outcome.PASS]
-    return bool(still_open) and all(_proof_open_to_code_edits(s) for s in still_open)
+    still_open = _open_gates(vr)
+    return bool(still_open) and all(_proof_open_to_repair(s) for s in still_open)
+
+
+def contracts_only_round(vr: VerificationResult) -> bool:
+    return proof_repairable(vr) and any(s.stage == INDUCTIVE_GATE for s in _open_gates(vr))
 
 
 def _is_proof_improvement(before: VerificationResult, after: VerificationResult) -> bool:
     if not proof_repairable(after):
         return False
-    fixed, introduced = _diff_failures(before, after)
+    fixed, introduced = _diff_progress(before, after)
     return bool(fixed) and not introduced
 
 
@@ -175,9 +222,9 @@ def is_improvement(before: VerificationResult, after: VerificationResult) -> boo
         return True
     if rank(after.status) < rank(before.status):
         return False
-    fixed, introduced = _diff_failures(before, after)
-    return bool(fixed) and not introduced and sum(_failure_counter(after).values()) < sum(
-        _failure_counter(before).values()
+    fixed, introduced = _diff_progress(before, after)
+    return bool(fixed) and not introduced and sum(_progress_counter(after).values()) < sum(
+        _progress_counter(before).values()
     )
 
 
@@ -198,7 +245,11 @@ def _history_entry(r: RepairRound) -> dict:
 
 def _unrepairable_outcome(initial: VerificationResult, max_rounds: int) -> RepairOutcome | None:
     if is_success(initial.status):
-        return RepairOutcome(status=initial.status, final=initial, message="already verified; no repair needed")
+        return RepairOutcome(
+            status=initial.status,
+            final=initial,
+            message=f"already verified{_success_scope(initial)}; no repair needed",
+        )
     if all_gates_pass(initial):
         return RepairOutcome(
             status=initial.status,
@@ -291,6 +342,8 @@ def _record_candidate(rr: RepairRound, round_dir: Path, run_dir: Path, sources: 
 
 
 def _accepted_note(vr: VerificationResult) -> str:
+    if vr.status is Status.VERIFIED_INDUCTIVE:
+        return INDUCTIVE_ACCEPTED_NOTE
     if is_success(vr.status):
         return "accepted (verified)"
     if all_gates_pass(vr):
@@ -307,6 +360,16 @@ def _reverted_note(rr: RepairRound, vr: VerificationResult, regressions: list[st
     if regressions:
         note += " (gate regression: " + "; ".join(regressions) + ")"
     return note
+
+
+def proof_feedback(vr: VerificationResult) -> str:
+    codes = by_feedback_priority(code for code in vr.reason_codes if code.stage == INDUCTIVE_GATE)
+    items = [reason_code_text(code)[:MAX_PROOF_FEEDBACK_ITEM_CHARS] for code in codes[:MAX_PROOF_FEEDBACK_ITEMS]]
+    return PROOF_FEEDBACK_HEAD + PROOF_FEEDBACK_SEPARATOR.join(items) if items else ""
+
+
+def _success_scope(vr: VerificationResult) -> str:
+    return f" as VERIFIED_INDUCTIVE ({VERIFIED_INDUCTIVE_REASON})" if vr.status is Status.VERIFIED_INDUCTIVE else ""
 
 
 def _save_sources(directory: Path, sources: dict[str, str]) -> None:
@@ -378,6 +441,8 @@ class _RepairSession:
             failures=self.best_vr.all_failures(),
             history=[_history_entry(r) for r in self.rounds],
             protected_context=self.trusted.protected_context,
+            reason_codes=list(self.best_vr.reason_codes),
+            contracts_only=contracts_only_round(self.best_vr),
         )
 
     def _editable_only(self, candidate: dict[str, str]) -> dict[str, str]:
@@ -428,7 +493,11 @@ class _RepairSession:
 
     def _admissible(self, rr: RepairRound, number: int, candidate: dict[str, str]) -> bool:
         decision = check_candidate(
-            self.spec, self.best_sources, candidate, max_changed_lines=self.spec.repair.max_changed_lines
+            self.spec,
+            self.best_sources,
+            candidate,
+            max_changed_lines=self.spec.repair.max_changed_lines,
+            contracts_only=contracts_only_round(self.best_vr),
         )
         rr.policy = decision
         if not decision.allowed:
@@ -451,7 +520,7 @@ class _RepairSession:
             rr.note = _accepted_note(vr)
         else:
             rr.reverted = True
-            rr.note = _reverted_note(rr, vr, regressions)
+            rr.note = _reverted_note(rr, vr, regressions) + proof_feedback(vr)
         log.info("round %d: %s -> %s (%s)", number, rr.status_before, vr.status, rr.note)
 
     def outcome(self, ws: Workspace, write_back: bool) -> RepairOutcome:
@@ -469,7 +538,8 @@ class _RepairSession:
         _save_sources(verified_dir, self.best_sources)
         written = _write_back(ws, self.best_sources, self.run_dir / "backup" / "before-writeback") if write_back else []
         message = (
-            f"verified after {len(self.rounds)} repair round(s); verified sources saved in {verified_dir}"
+            f"verified after {len(self.rounds)} repair round(s){_success_scope(self.best_vr)}; verified sources "
+            f"saved in {verified_dir}"
             if is_success(self.best_vr.status)
             else f"all required gates pass after {len(self.rounds)} repair round(s), but the spec has no formal gate: "
             f"status remains {self.best_vr.status.value}; sources saved in {verified_dir}"
