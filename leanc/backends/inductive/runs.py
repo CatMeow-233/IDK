@@ -20,6 +20,7 @@ INDUCTIVE_CHECKS: tuple[str, ...] = MANDATORY_CHECKS
 NO_LIBRARY_FLAG = "--no-library"
 UNWIND_FLAG = "--unwind"
 UNWINDING_ASSERTIONS_FLAG = "--unwinding-assertions"
+NO_SELF_LOOPS_FLAG = "--no-self-loops-to-assumptions"
 OBJECT_BITS_FLAG = "--object-bits"
 JSON_UI_FLAG = "--json-ui"
 ASSIGNS_UNWIND_MARGIN = 2
@@ -69,6 +70,7 @@ def cbmc_argv(steps: ToolSteps, mode: BuildMode, program: Path, unwind: int) -> 
         UNWIND_FLAG,
         str(unwind),
         UNWINDING_ASSERTIONS_FLAG,
+        *([NO_SELF_LOOPS_FLAG] if mode is BuildMode.VERIFY else []),
         *([OBJECT_BITS_FLAG, str(object_bits)] if object_bits else []),
         JSON_UI_FLAG,
     ]

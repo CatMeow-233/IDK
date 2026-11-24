@@ -42,7 +42,8 @@ MAX_SUMMARY_DETAILS = 2
 INCONCLUSIVE_HEAD = "inductive verdict inconclusive (no VERIFIED_INDUCTIVE): "
 ALSO = ". Also found before the gate stopped: "
 PASS_GAPS = (
-    "known gaps: copies overflowing into a neighbouring field or into a string literal are not reported, and "
+    "known gaps: harness code other than LEANC_ASSUME narrows the covered states without being listed (review the "
+    "whole harness), copies overflowing into a neighbouring field or into a string literal are not reported, and "
     "library string functions with loops fail closed"
 )
 
@@ -189,8 +190,9 @@ class _Gate:
         probes = sum(entry["reported"] for entry in self.details["vacuity"].get("inserted", {}).values())
         probes += len(self.details["vacuity"].get("properties", {}))
         return (
-            f"inductive: all {self.details['properties']['total']} properties hold from every state admitted by the "
-            f"{len(self.build.harness_assumptions)} harness assumption(s) of {inductive.harness}, for the claimed "
+            f"inductive: all {self.details['properties']['total']} properties hold on every execution of main() of "
+            f"{inductive.harness} as written (within its {len(self.build.harness_assumptions)} harness assumption(s), "
+            "narrowed further by its other code), for the claimed "
             f"function(s) {', '.join(f'{name}()' for name in inductive.functions)} with one claimed call per path; "
             f"contracted loops proved by induction: {loops}; checks: {', '.join(INDUCTIVE_CHECKS)} only, plus the "
             f"harness assertions; all {probes} probe(s) reached; {PASS_GAPS}; VERIFIED_INDUCTIVE scope, not PROVED"

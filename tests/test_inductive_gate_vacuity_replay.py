@@ -23,6 +23,7 @@ from leanc.backends.cbmc.execution import CbmcRun
 from leanc.backends.cbmc.output import interpret_output
 from leanc.backends.inductive import CallSite
 from leanc.backends.inductive.probes import expected_probes, judge_probes
+from leanc.foundation.inductive_scope import HARNESS_NARROWING
 from leanc.foundation.models import ToolInvocation
 from leanc.foundation.reasons import Reason
 from leanc.foundation.runner import ProcResult
@@ -261,8 +262,14 @@ def test_the_pass_scope_names_everything_that_was_and_was_not_proved(tmp_path, r
         "is not PROVED",
         "static objects start arbitrary",
         "allocations never fail",
+        "harness/inductive.c (sha256 ",
+        ") as written, with at most one call of a claimed function per path, satisfies the harness assertions",
+        "the LEANC_ASSUMEs only, an upper bound of the covered states",
+        f"known gap (not detected): {HARNESS_NARROWING}",
     ):
         assert needed in text, needed
+    for overclaim in ("assumptions admit", "every state of the harness inputs"):
+        assert overclaim not in text, overclaim
     assert "#" not in text.split("harness assumptions", 1)[1].split("\n", 1)[0]
 
 
@@ -281,3 +288,4 @@ def test_scope_details_record_the_proof_inputs(tmp_path, recording):
     assert scope["loops"][0]["decreases"] and scope["loops"][0]["assigns"] == ["i", "c"]
     assert scope["property_classes"]["loop_decreases"] == 3
     assert result.details["harness_assumptions"] == scope["harness_assumptions"]
+    assert scope["known_gaps"][0] == f"known gap (not detected): {HARNESS_NARROWING}"

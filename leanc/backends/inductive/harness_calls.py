@@ -6,7 +6,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from leanc.backends.inductive.harness_narrowing import Span, main_exit_problems, pre_call_write_problems
 from leanc.lang.c_lexer import CSource
+from leanc.rules.c_names import TERMINATION_NAMES
 from leanc.rules.definitions import function_definition_sites
 from leanc.rules.loop_sites import Origin, origin_lines
 from leanc.rules.preprocessor import linemarker
@@ -17,6 +19,8 @@ __all__ = [
     "CLAIMED_CALLS_COUNTER",
     "CLAIMED_CALL_LABEL_PREFIX",
     "ENTRY_POINT",
+    "FREE_ANCHOR_CALL",
+    "FREE_DECLARATION",
     "RETURN_PROBE_PREFIX",
     "AssumeSite",
     "CallSite",
@@ -37,6 +41,9 @@ RETURN_PROBE_PREFIX = "leanc_return:"
 RETURNED_VALUE = "leanc_returned"
 ASSUMED_VALUE = "leanc_assumed"
 ASSUME_BUILTIN = "__CPROVER_assume"
+FREE_FUNCTION = "free"
+FREE_DECLARATION = f"void {FREE_FUNCTION}(void *);"
+FREE_ANCHOR_CALL = f"{FREE_FUNCTION}((void *)0);"
 ENTRY_POINT = "main"
 CALL_OPEN = "("
 ARGUMENT_SEPARATOR = ","
@@ -46,6 +53,8 @@ LINEMARKER_ESCAPES = {"\\": "\\\\", '"': '\\"'}
 _NON_SPACE_RE = re.compile(r"\S")
 _RECORD_HEAD_RE = re.compile(r"\b(?:struct|union)\b[\s\w]*$")
 _RESERVED_IDENTIFIER_RE = re.compile(r"(?<![\w$])leanc_\w*", re.IGNORECASE)
+_TAG_KEYWORD_RE = re.compile(r"(?<![\w$])(?:struct|union|enum)\s*$")
+TAG_LOOKBEHIND_CHARS = 32
 BLOCK_OPEN = "{"
 
 
@@ -310,6 +319,52 @@ def _reserved_identifier_problems(view: _View) -> list[str]:
     ]
 
 
+def _is_tag(view: _View, offset: int) -> bool:
+    return _TAG_KEYWORD_RE.search(view.code, max(0, offset - TAG_LOOKBEHIND_CHARS), offset) is not None
+
+
+def _may_end_paths(view: _View, reference: _Reference) -> bool:
+    scope = view.context_of(reference.start)
+    if scope in (Scope.BODY, Scope.UNKNOWN_BLOCK):
+        return True
+    return scope is Scope.FILE and view.call_open(reference.end) is None and not _is_tag(view, reference.start)
+
+
+def _termination_problems(view: _View) -> list[str]:
+    return [
+        f"{view.where(reference.start)}: {reference.name} ends the path or jumps out of it without a check; CBMC "
+        "prunes such a path like an assumption, so the inductive harness and the code it includes must not use it "
+        "(not even as a function pointer value)"
+        for reference in view.references(sorted(TERMINATION_NAMES))
+        if _may_end_paths(view, reference)
+    ]
+
+
+def _main_span(view: _View, main_body_open: int | None) -> Span | None:
+    if main_body_open is None or main_body_open not in view.pairs:
+        return None
+    return Span(main_body_open, view.pairs[main_body_open])
+
+
+def _in_main(view: _View, main: Span, offset: int) -> bool:
+    body = view.body_of(offset)
+    return body is not None and body.open == main.open
+
+
+def _narrowing_problems(view: _View, main: Span | None, calls: list[CallSite], assumes: list[AssumeSite]) -> list[str]:
+    if main is None:
+        return []
+    problems = main_exit_problems(view.code, view.pairs, main, view.where)
+    main_calls = [call for call in calls if _in_main(view, main, call.start)]
+    if not main_calls:
+        return problems
+    first = min(main_calls, key=lambda call: call.start)
+    earlier = [assume.close for assume in assumes if _in_main(view, main, assume.start) and assume.close < first.start]
+    window = Span(max(earlier, default=main.open) + 1, first.close + 1)
+    writes = pre_call_write_problems(view.code, view.pairs, main, window, first.function, first.where, view.where)
+    return problems + writes
+
+
 def _uncalled_problems(calls: list[CallSite], claimed: Sequence[str]) -> list[str]:
     called = {call.function for call in calls}
     return [f"claimed function {name} is never called from the harness" for name in claimed if name not in called]
@@ -325,11 +380,12 @@ def harness_layout(pp: str, claimed: Sequence[str], harness: str) -> HarnessLayo
     view = _View(pp)
     main_body_open, problems = _main_problems(view, harness)
     problems = _first_line_problems(pp) + problems
-    problems += _entry_point_problems(view) + _reserved_identifier_problems(view)
+    problems += _entry_point_problems(view) + _reserved_identifier_problems(view) + _termination_problems(view)
     calls, call_problems = _call_sites(view, claimed)
     assumes, assume_problems = _assume_sites(view)
     problems += call_problems + assume_problems
     problems += _calls_inside_assumes(view, calls, assumes) + _assume_order_problems(view, calls, assumes)
+    problems += _narrowing_problems(view, _main_span(view, main_body_open), calls, assumes)
     problems += _uncalled_problems(calls, claimed)
     return HarnessLayout(tuple(calls), tuple(assumes), main_body_open, tuple(problems))
 
@@ -380,7 +436,7 @@ def _assume_wrap(assume: AssumeSite) -> _Wrap:
 
 
 def _reset_wrap(main_body_open: int, end: int) -> _Wrap:
-    return _Wrap(main_body_open + 1, f" {CLAIMED_CALLS_COUNTER} = 0; ", end, "")
+    return _Wrap(main_body_open + 1, f" {CLAIMED_CALLS_COUNTER} = 0; {FREE_ANCHOR_CALL} ", end, "")
 
 
 def _insertions(pp: str, layout: HarnessLayout, returns: Mapping[str, ReturnKind] | None) -> dict[int, list[str]]:
@@ -417,4 +473,4 @@ def instrumented_harness(
         end = offset
     out.append(pp[:end])
     body = "".join(reversed(out))
-    return f"{_linemarker(harness)}\nstatic int {CLAIMED_CALLS_COUNTER};\n{body}"
+    return f"{_linemarker(harness)}\nstatic int {CLAIMED_CALLS_COUNTER};\n{FREE_DECLARATION}\n{body}"

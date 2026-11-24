@@ -19,8 +19,8 @@ NON_TERMINATION_CLASS = "loop_decreases"
 UNDEFINED_FUNCTION_DESCRIPTION = "undefined function should be unreachable"
 NOT_A_COUNTEREXAMPLE = (
     " It is not a counterexample: the inductive run starts every claimed call and every contracted loop from an "
-    "arbitrary state admitted by the harness assumptions and the loop invariants, so the failing state may be "
-    "unreachable in real executions."
+    "arbitrary state admitted by the harness code before the call (its assumptions included) and the loop "
+    "invariants, so the failing state may be unreachable in real executions."
 )
 EXPLANATIONS: dict[Reason, str] = {
     Reason.INDUCTIVE_STEP_FAILED: (
@@ -39,7 +39,10 @@ EXPLANATIONS: dict[Reason, str] = {
         "The program calls a function that has no body; CBMC cannot model its effect, so nothing that "
         "depends on the call is verified."
     ),
-    Reason.PROPERTY_UNPROVED: "CBMC could not show this property for every state admitted by the harness assumptions.",
+    Reason.PROPERTY_UNPROVED: (
+        "CBMC could not show this property on every execution of the harness as written, from every state its code "
+        "admits before the claimed call."
+    ),
 }
 
 

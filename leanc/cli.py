@@ -44,11 +44,19 @@ VERIFIED_BOUNDED only means: no violation of the checked properties exists withi
 approved harness, input constraints and unwind bound (all loops fully unwound, harness
 non-vacuous). It is never reported as PROVED.
 
-VERIFIED_INDUCTIVE adds only: from every state admitted by the harness assumptions of the
-protected inductive harness, each harness call of a claimed function satisfies the harness
-assertions and the mandatory check classes only, with every contracted loop proved by
-induction; static objects start arbitrary and allocations are assumed to succeed.
-Functions that are not claimed, states outside the harness assumptions and the extra
+VERIFIED_INDUCTIVE adds only: every execution of main() of the protected inductive harness
+as written, with at most one call of a claimed function per path, satisfies the harness
+assertions that execute on it and the mandatory check classes only, with every contracted
+loop proved by induction; static objects start arbitrary and allocations are assumed to
+succeed. A return before the end of main(), goto in main(), exit/abort-like calls and
+writes between the last LEANC_ASSUME and the first claimed call are harness errors. Harness
+code other than LEANC_ASSUME also narrows the covered states and is not listed (declaration
+initialisers; writes before the last LEANC_ASSUME; writes after the first claimed call of
+main(), before a later claimed call included; any write in main() when it calls no claimed
+function directly; branches around the assertions; helper functions): the listed
+LEANC_ASSUMEs are an upper bound of the covered states, not the covered set, so the approver
+must review the whole harness.
+Functions that are not claimed, states the harness as written does not reach and the extra
 verification.checks classes have only the bounded CBMC result. Known gaps: a
 memcpy/memmove/memset that overflows into a neighbouring field of the same object, or that
 writes into a string literal, is not reported; library models such as strlen make the gate

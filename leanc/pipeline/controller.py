@@ -15,6 +15,7 @@ from leanc.backends.lean import run_lean
 from leanc.backends.sanitizer import run_sanitizer_tests, sanitizer_plan
 from leanc.backends.wp import run_wp
 from leanc.foundation.errors import LeanCError, WorkspaceError
+from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, UNREACHED_STATES
 from leanc.foundation.models import (
     ApprovalCheck,
     StageResult,
@@ -80,27 +81,23 @@ PROVED_REASON = (
 )
 VERIFIED_BOUNDED_REASON = "all required gates passed; CBMC found no violation within the approved bounds"
 VERIFIED_INDUCTIVE_REASON = (
-    "all required gates passed; CBMC found no violation within the approved bounds, and the inductive gate showed, "
-    "from every state admitted by the harness assumptions (the LEANC_ASSUMEs of the protected inductive harness), "
-    "that each harness call of a claimed function (spec inductive.functions) satisfies the harness assertions and "
-    f"the mandatory check classes only ({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by "
-    "induction (invariant, assigns, decreases), static objects starting arbitrary and allocations assumed to "
-    "succeed; not proved: functions that are not claimed, states outside the harness assumptions and the extra "
-    "verification.checks classes, for which only the bounded CBMC result holds; known gaps: a memcpy, memmove "
-    "or memset that overflows into a neighbouring field of the same object, or that writes into a string "
-    "literal, is not reported, and calls of CBMC library models such as strlen, strcpy, strncpy and strncat "
-    "make the gate fail closed (incomplete, never a pass); this is not PROVED"
+    "all required gates passed; CBMC found no violation within the approved bounds, and the inductive gate showed "
+    f"that {COVERED_EXECUTIONS} and the mandatory check classes only ({', '.join(MANDATORY_CHECKS)}), with every "
+    "contracted loop proved by induction (invariant, assigns, decreases), static objects starting arbitrary and "
+    f"allocations assumed to succeed; {HARNESS_NARROWING}; not proved: functions that are not claimed, "
+    f"{UNREACHED_STATES} and the extra verification.checks classes, for which only the bounded CBMC result holds; "
+    "known gaps: a memcpy, memmove or memset that overflows into a neighbouring field of the same object, or that "
+    "writes into a string literal, is not reported, and calls of CBMC library models such as strlen, strcpy, "
+    "strncpy and strncat make the gate fail closed (incomplete, never a pass); this is not PROVED"
 )
 INDUCTIVE_LIMITATION = (
-    "The inductive gate (VERIFIED_INDUCTIVE, never PROVED) holds only for the claimed functions (spec "
-    "inductive.functions), each called once per path from every state admitted by the harness assumptions (the "
-    "LEANC_ASSUMEs of the protected inductive harness), for the harness assertions and the mandatory check classes "
-    f"only ({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by induction; static objects start "
-    "arbitrary and allocations are assumed to succeed. Not covered: functions that are not claimed, states outside "
-    "the harness assumptions and the extra verification.checks classes, for which only the bounded CBMC result "
-    "holds. Known gaps: a memcpy, memmove or memset that overflows into a neighbouring field of the same object, or "
-    "that writes into a string literal, is not reported; calls of CBMC library models such as strlen make the gate "
-    "fail closed."
+    "The inductive gate (VERIFIED_INDUCTIVE, never PROVED) holds only in this sense: "
+    f"{COVERED_EXECUTIONS} and the mandatory check classes only ({', '.join(MANDATORY_CHECKS)}), with every "
+    "contracted loop proved by induction; static objects start arbitrary and allocations are assumed to succeed. "
+    f"Note: {HARNESS_NARROWING}. Not covered: functions that are not claimed, {UNREACHED_STATES} and the extra "
+    "verification.checks classes, for which only the bounded CBMC result holds. Known gaps: a memcpy, memmove or "
+    "memset that overflows into a neighbouring field of the same object, or that writes into a string literal, is "
+    "not reported; calls of CBMC library models such as strlen make the gate fail closed."
 )
 NO_FORMAL_GATE_REASONS = [
     "no formal verification gate (cbmc or wp) is required by the spec; "

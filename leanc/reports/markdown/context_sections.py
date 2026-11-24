@@ -12,8 +12,9 @@ PROVED_IS_CONTRACT_RELATIVE = (
     "**PROVED is relative to the approved ACSL contract: review that the contract states what you need.**"
 )
 VERIFIED_INDUCTIVE_IS_HARNESS_RELATIVE = (
-    "**VERIFIED_INDUCTIVE is relative to the protected inductive harness: review that its assumptions and "
-    "assertions state what you need; it is never PROVED.**"
+    "**VERIFIED_INDUCTIVE is relative to the protected inductive harness as written: review the whole harness "
+    "(its assumptions, every other statement, which narrows the covered states too, and its assertions); it is "
+    "never PROVED.**"
 )
 
 

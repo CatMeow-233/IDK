@@ -22,7 +22,7 @@ from leanc.pipeline.repair_loop import (
     PROOF_FEEDBACK_HEAD,
     repair_loop,
 )
-from leanc.repair.policy import CONTRACTS_ONLY_RULE
+from leanc.repair.policy import CONTRACTS_ONLY_RULE, INDUCTIVE_CODE_EDIT_RULE
 from leanc.specs.loader import load_spec
 from leanc.specs.model import INDUCTIVE_GATE
 
@@ -32,6 +32,8 @@ CLAMP = ("    int lo = 0;\n", "    if (len > (1 << 29)) {\n        return 0;\n  
 CLAMPED_LINE = CONTRACTED_LINE + 3
 WEAK_INVARIANT = ["0 <= lo", "lo <= hi"]
 PROTECTED_FILES = (INDUCTIVE_HARNESS, "harness/iset_harness.c", "include/iset.h")
+RANK_RETURN = "    return lower_bound(s->items, s->len, x);\n}\n\nint iset_len"
+SMALL_RANK_BUG = "    if (s->len == 1 && x > s->items[0]) {\n        return 0;\n    }\n" + RANK_RETURN
 
 
 def _clamped(source: str) -> str:
@@ -107,3 +109,24 @@ def test_a_clamp_that_would_reach_verified_inductive_is_rejected_in_a_proof_roun
     assert rejected["violations"] == [CONTRACTS_ONLY_RULE] and CONTRACTS_ONLY_RULE in rejected["note"]
     assert (root / SOURCE).read_text(encoding="utf-8") == source
     assert (root / CONTRACTS).read_text(encoding="utf-8") == CONTRACTS_FIXTURE.read_text(encoding="utf-8")
+
+
+def test_a_clamp_that_also_fixes_a_bounded_counterexample_is_not_written_back(tmp_path, capsys):
+    root = iset_project(tmp_path, "buggy")
+    buggy = (root / SOURCE).read_text(encoding="utf-8")
+    assert buggy.count(RANK_RETURN) == 1
+    (root / SOURCE).write_text(buggy.replace(RANK_RETURN, SMALL_RANK_BUG, 1), encoding="utf-8")
+    before = _bytes(root, (SOURCE, CONTRACTS))
+    spec_path = approved(capsys, root)
+    clamp = {SOURCE: _clamped(buggy), CONTRACTS: contracts_text(line=CLAMPED_LINE)}
+    mock = write_mock_rounds(tmp_path / "mock", clamp)
+    rc, payload = cli(
+        capsys, "repair", str(spec_path), "--provider", "mock", "--mock-dir", str(mock), "--max-rounds", "1"
+    )
+    assert payload["initial_status"] == Status.COUNTEREXAMPLE_FOUND.value
+    assert payload["status"] == Status.REPAIR_EXHAUSTED.value and rc == exit_code(Status.REPAIR_EXHAUSTED)
+    (blocked,) = payload["repair_rounds"]
+    assert blocked["policy_allowed"] is False and blocked["reverted"] is True
+    assert blocked["status_after"] == Status.VERIFIED_INDUCTIVE.value
+    assert blocked["violations"] == [INDUCTIVE_CODE_EDIT_RULE]
+    assert _bytes(root, (SOURCE, CONTRACTS)) == before

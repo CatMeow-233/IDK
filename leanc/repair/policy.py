@@ -19,6 +19,7 @@ from leanc.specs.model import CPP_SUFFIXES, LEANC_STATE_DIR, Spec
 
 __all__ = [
     "CONTRACTS_ONLY_RULE",
+    "INDUCTIVE_CODE_EDIT_RULE",
     "MAX_ANALYZED_CHARS",
     "RULES",
     "check_candidate",
@@ -50,10 +51,15 @@ _CANDIDATE_RULES: dict[str, str] = {
     "MISSING_TARGET": "the generated code does not define the target function",
 }
 CONTRACTS_ONLY_RULE = "CONTRACTS_ONLY_ROUND"
+INDUCTIVE_CODE_EDIT_RULE = "INDUCTIVE_CODE_EDIT"
 _PROOF_ROUND_RULES: dict[str, str] = {
     CONTRACTS_ONLY_RULE: "changes a file other than inductive.contracts in a repair round where only proof gates "
     "are open and the inductive gate is one of them (a code change there could trade correctness at large sizes "
     "for an inductive proof)",
+    INDUCTIVE_CODE_EDIT_RULE: "reaches an inductive gate PASS on editable code (other than inductive.contracts) "
+    "that the repair session changed although the inductive gate was not PASS when the session started; checked "
+    "after verification, never written back (a code change could trade correctness at large sizes for an "
+    "inductive proof, in any round)",
 }
 _SOURCE_INTEGRITY_GATE_RULES: dict[str, str] = {
     "TOOL_DIVERGENCE": "code that can differ between clang, the sanitizer build and CBMC (conditionals on "

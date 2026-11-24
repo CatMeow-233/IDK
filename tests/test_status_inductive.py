@@ -6,6 +6,7 @@ import pytest
 from status_support import gate_stages, stage_result
 
 from leanc.cli import EPILOG
+from leanc.foundation.inductive_scope import HARNESS_NARROWING
 from leanc.foundation.models import StageResult
 from leanc.foundation.status import (
     EXIT_CODES,
@@ -121,10 +122,14 @@ SCOPE_PATTERNS = tuple(
     for pattern in (
         r"claimed function",
         r"contracted loop",
-        r"admitted by the harness assumptions|harness assumptions admit",
+        r"every execution of main\(\) of the protected inductive harness(?: `[^`]+`)? as written",
+        r"harness assertions that execute on it",
+        r"harness code other than leanc_assume also narrows the covered states",
+        r"upper bound of the covered states, not the covered set",
+        r"review the whole harness",
         r"mandatory check classes only",
         r"functions that are not claimed",
-        r"states outside the harness assumptions",
+        r"states the harness as written does not reach",
         r"extra verification\.checks classes",
         r"only the bounded cbmc result",
         r"static objects start(?:ing)? arbitrary",
@@ -136,6 +141,14 @@ SCOPE_PATTERNS = tuple(
     )
 )
 NOT_PROVED = re.compile(r"\b(?:not|never)\b[^.;]*\bPROVED\b")
+OVERCLAIMS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"admitted by the harness assumptions",
+        r"harness assumptions admit",
+        r"states outside the harness assumptions",
+    )
+)
 NON_REQUIRED_CBMC_OUTCOMES = (FAIL, INCONCLUSIVE, ERROR, TIMEOUT, SKIPPED)
 
 
@@ -242,6 +255,9 @@ def test_inductive_texts_state_scope_gaps_and_never_proved(label):
     lowered = " ".join(text.lower().split())
     for pattern in SCOPE_PATTERNS:
         assert pattern.search(lowered), (label, pattern.pattern)
+    for pattern in OVERCLAIMS:
+        assert not pattern.search(lowered), (label, pattern.pattern)
+    assert " ".join(HARNESS_NARROWING.lower().split()) in lowered, label
     assert NOT_PROVED.search(text), label
     if label in TEXTS_LISTING_CHECK_CLASSES:
         for check in MANDATORY_CHECKS:

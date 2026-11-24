@@ -22,9 +22,9 @@ FEEDBACK_PRIORITY: tuple[Reason, ...] = (
 
 INDUCTIVE_REPAIR_NOTE = """\
 ## Inductive loop contracts (this spec uses the `inductive` gate)
-The inductive gate checks each call of the claimed functions ({functions}) made by the protected inductive \
-harness `{harness}`, from every state its harness assumptions admit, for its assertions and the mandatory check \
-classes ({checks}). Every loop those calls reach needs a loop contract, which CBMC proves by induction: the \
+The inductive gate checks every execution of main() of the protected inductive harness `{harness}` as written, \
+with at most one call of a claimed function ({functions}) per path, for the harness assertions that execute on it \
+and the mandatory check classes ({checks}). Every loop those calls reach needs a loop contract, which CBMC proves by induction: the \
 invariant holds at loop entry and after one iteration from an arbitrary state satisfying it, the loop writes only \
 what assigns names, and decreases strictly decreases. The contracts live ONLY in the editable JSON file \
 `{contracts}` (it may not exist yet); answer with its complete new text under "files":

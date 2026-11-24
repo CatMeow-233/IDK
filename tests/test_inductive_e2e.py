@@ -32,7 +32,7 @@ SCOPE_STATEMENTS = (
     "src/iset.c:11 in lower_bound()",
     "every execution of main() of the protected inductive harness harness/inductive.c",
     "with at most one call of a claimed function per path",
-    "harness assumptions of harness/inductive.c (executions outside them are not covered): "
+    "harness assumptions of harness/inductive.c (the LEANC_ASSUMEs only, an upper bound of the covered states; executions outside them are not covered): "
     "harness/inductive.c:12: 0 <= s.len && s.len <= s.cap && s.cap <= 0x7fffffff",
     "checked property classes: the mandatory CBMC check classes only (bounds, pointer, div-by-zero, "
     "signed-overflow, pointer-overflow, undefined-shift)",

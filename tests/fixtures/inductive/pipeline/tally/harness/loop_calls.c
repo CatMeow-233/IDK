@@ -10,8 +10,10 @@ int main(void)
     LEANC_ASSUME(1 <= n && n <= 1000000);
     int *a = malloc((size_t)n * sizeof(int));
     LEANC_ASSUME(a != NULL);
-    for (int round = 0; round < 2; round++) {
+    int round = 0;
+    while (round < 2) {
         tally_clear(a, n);
+        round++;
     }
     LEANC_REACH("cleared");
     free(a);

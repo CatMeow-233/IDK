@@ -32,7 +32,7 @@ SPONGE_SCOPE = (
     "claimed functions: sponge_absorb(); functions that are not claimed have only the bounded CBMC result",
     "contracted loops proved by induction (invariant at entry and after one step, assigns, decreases): "
     "src/sponge.c:9 in sponge_mix(), src/sponge.c:35 in sponge_absorb()",
-    "harness assumptions of harness/sponge_inductive.c (executions outside them are not covered): "
+    "harness assumptions of harness/sponge_inductive.c (the LEANC_ASSUMEs only, an upper bound of the covered states; executions outside them are not covered): "
     "harness/sponge_inductive.c:11: s != ((void *)0); harness/sponge_inductive.c:12: s->fill < 144; "
     "harness/sponge_inductive.c:14: len <= ((size_t)1 << 48); harness/sponge_inductive.c:16: data != ((void *)0)",
     "checked property classes: the mandatory CBMC check classes only (bounds, pointer, div-by-zero, "
@@ -63,7 +63,7 @@ ISET_SCOPE = (
     "claimed functions: iset_insert(); functions that are not claimed have only the bounded CBMC result",
     "contracted loops proved by induction (invariant at entry and after one step, assigns, decreases): "
     "src/iset.c:11 in lower_bound(), src/iset.c:92 in iset_insert()",
-    "harness assumptions of harness/inductive.c (executions outside them are not covered): "
+    "harness assumptions of harness/inductive.c (the LEANC_ASSUMEs only, an upper bound of the covered states; executions outside them are not covered): "
     "harness/inductive.c:12: 0 <= s.len && s.len <= s.cap && s.cap <= 0x7fffffff; "
     "harness/inductive.c:14: s.items != ((void *)0)",
 )

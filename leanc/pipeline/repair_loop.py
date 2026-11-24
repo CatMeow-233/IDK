@@ -33,6 +33,7 @@ from leanc.foundation.workspace import Workspace
 from leanc.llm.base import RepairProposal, RepairRequest
 from leanc.llm.inductive_prompts import by_feedback_priority, reason_code_text
 from leanc.pipeline.controller import VERIFIED_INDUCTIVE_REASON, verify
+from leanc.pipeline.inductive_code_guard import BLOCKED_CANDIDATE_DIR, InductiveCodeGuard, blocked_rounds_note
 from leanc.pipeline.reason_codes import stage_reason_codes
 from leanc.repair.patch import (
     candidate_hash,
@@ -416,6 +417,7 @@ class _RepairSession:
         self.best_sources = sources
         self.base_run_id = initial.run_id
         self.seen = {candidate_hash(sources)}
+        self.guard = InductiveCodeGuard.start(spec, initial, sources)
         self.spec_yaml = spec_to_yaml(spec)
         self.rounds: list[RepairRound] = []
         self.repair_dir = run_dir / "repair"
@@ -515,7 +517,12 @@ class _RepairSession:
         rr.status_after = vr.status
         rr.fixed_failures, rr.introduced_failures = _diff_failures(self.best_vr, vr)
         regressions = stage_regressions(self.best_vr, vr) if not is_success(vr.status) else []
-        if is_improvement(self.best_vr, vr):
+        blocked = self.guard.blocked(self._editable_only(candidate), vr)
+        if blocked is not None:
+            rr.policy, rr.reverted = blocked, True
+            _save_sources(round_dir / BLOCKED_CANDIDATE_DIR, self._editable_only(candidate))
+            rr.note = f"rejected by repair policy after verification ({vr.status.value}): {blocked.violations[0].rule}"
+        elif is_improvement(self.best_vr, vr):
             self.best_vr, self.best_sources = vr, self._editable_only(candidate)
             rr.note = _accepted_note(vr)
         else:
@@ -529,7 +536,7 @@ class _RepairSession:
         _save_sources(self.run_dir / "best-candidate", self.best_sources)
         message = (
             f"no verified candidate after {len(self.rounds)} round(s); best status {self.best_vr.status.value}; "
-            "workspace left unchanged"
+            f"workspace left unchanged{blocked_rounds_note(self.rounds)}"
         )
         return RepairOutcome(status=Status.REPAIR_EXHAUSTED, final=self.best_vr, rounds=self.rounds, message=message)
 

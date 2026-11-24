@@ -12,6 +12,7 @@ from leanc.foundation.errors import (
     ProviderError,
     WorkspaceError,
 )
+from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, UNREACHED_STATES
 from leanc.foundation.models import FailureReport, ProviderInfo, VerificationResult
 from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import (
@@ -37,12 +38,11 @@ GENERATION_FIXTURE_DIR = "generate"
 EXPLANATION_FIXTURE = "explain.md"
 MAX_SUMMARY_INPUTS = 10
 INDUCTIVE_SUMMARY_SCOPE = (
-    "VERIFIED_INDUCTIVE holds only for the claimed functions called by the protected inductive harness, from the "
-    "states its harness assumptions admit, for its assertions and the mandatory check classes only "
+    f"VERIFIED_INDUCTIVE holds only in this sense: {COVERED_EXECUTIONS} and the mandatory check classes only "
     f"({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by induction; static objects start "
-    "arbitrary and allocations are assumed to succeed; functions that are not claimed, states outside the harness "
-    "assumptions and the extra verification.checks classes have only the bounded CBMC result; known gaps: a "
-    "memcpy, memmove or memset that overflows into a neighbouring field of the same object, or that writes into "
+    f"arbitrary and allocations are assumed to succeed; {HARNESS_NARROWING}; functions that are not claimed, "
+    f"{UNREACHED_STATES} and the extra verification.checks classes have only the bounded CBMC result; known gaps: "
+    "a memcpy, memmove or memset that overflows into a neighbouring field of the same object, or that writes into "
     "a string literal, is not reported, and library models such as strlen make the gate fail closed; it is not "
     "PROVED."
 )

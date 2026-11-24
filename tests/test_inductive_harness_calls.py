@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from leanc.backends.inductive.harness_narrowing import EARLY_EXIT_RULE, PRE_CALL_WRITE_RULE
 from leanc.backends.inductive.harness_calls import (
     ASSUME_AFTER_CLAIMED_CALL_LABEL,
     CLAIMED_CALLS_COUNTER,
+    FREE_ANCHOR_CALL,
+    FREE_DECLARATION,
     ReturnKind,
     body_references,
     claimed_call_label,
@@ -21,7 +24,7 @@ MARKER = f'# 1 "{HARNESS}"\n'
 HEADER_MARKER = f'# 1 "{HEADER}" 1\n'
 BACK_MARKER = f'# 3 "{HARNESS}" 2\n'
 PROTOTYPES = "int step(int *s);\nvoid reset(int *s);\n"
-RESET_STATEMENT = f" {CLAIMED_CALLS_COUNTER} = 0; "
+RESET_STATEMENT = f" {CLAIMED_CALLS_COUNTER} = 0; {FREE_ANCHOR_CALL} "
 
 
 def preprocessed(body: str, *, before: str = "", header: str = PROTOTYPES) -> str:
@@ -65,7 +68,7 @@ def test_header_prototypes_are_not_calls():
 
 def test_member_named_like_a_claimed_function_is_not_a_call():
     pp = preprocessed(
-        "    struct ops o;\n    o.step = 0;\n    struct ops *p = &o;\n    p -> step = 1;\n    step(0);\n    reset(0);\n",
+        "    step(0);\n    struct ops o;\n    o.step = 0;\n    struct ops *p = &o;\n    p -> step = 1;\n    reset(0);\n",
         header=PROTOTYPES + "struct ops { int step; };\n",
     )
     layout = harness_layout(pp, CLAIMED, HARNESS)
@@ -195,6 +198,125 @@ def test_probe_labels_in_string_literals_are_not_identifiers():
     assert problems_of(pp) == ()
 
 
+TERMINATION_RULE = "ends the path or jumps out of it without a check"
+
+
+@pytest.mark.parametrize("call", ["exit(0)", "abort()", "_Exit(1)", "quick_exit(0)", "longjmp(env, 1)"])
+def test_a_path_ending_call_after_the_claimed_call_is_a_problem(call):
+    pp = preprocessed(f"    int s = step(0);\n    if (s) {{\n        {call};\n    }}\n    reset(&s);\n")
+    (problem,) = [problem for problem in problems_of(pp) if TERMINATION_RULE in problem]
+    assert problem.startswith(f"{HARNESS}:") and call.partition("(")[0] in problem
+
+
+def test_a_path_ending_call_in_a_header_helper_is_a_problem_but_its_prototype_is_not():
+    header = PROTOTYPES + "void abort(void);\nstatic inline void bail(void) { abort(); }\n"
+    pp = preprocessed("    step(0);\n    reset(0);\n    bail();\n", header=header)
+    assert [problem for problem in problems_of(pp) if TERMINATION_RULE in problem] == [
+        f"{HEADER}:4: abort {TERMINATION_RULE}; CBMC prunes such a path like an assumption, so the inductive "
+        "harness and the code it includes must not use it (not even as a function pointer value)"
+    ]
+
+
+def test_members_and_prototypes_named_like_termination_calls_are_not_problems():
+    header = PROTOTYPES + "void exit(int);\nstruct opts { int exit; };\n"
+    pp = preprocessed("    struct opts o;\n    int r = step(0);\n    o.exit = r;\n    reset(&o.exit);\n", header=header)
+    assert problems_of(pp) == ()
+
+
+@pytest.mark.parametrize(
+    "value", ["exit", "&abort", "(_Exit)", "longjmp"], ids=["plain", "address", "parenthesised", "longjmp"]
+)
+def test_a_termination_function_taken_as_a_file_scope_value_is_a_problem(value):
+    before = f"static void (*const bail)(int) = {value};\n"
+    pp = preprocessed("    int s = step(0);\n    if (s) {\n        bail(0);\n    }\n    reset(&s);\n", before=before)
+    (problem,) = [problem for problem in problems_of(pp) if TERMINATION_RULE in problem]
+    assert problem.startswith(f"{HARNESS}:3: {value.strip('&()')} ")
+
+
+def test_a_struct_tag_named_like_a_termination_call_is_not_a_problem():
+    header = PROTOTYPES + "struct sigaction { int flags; };\nint sigaction(int sig, const struct sigaction *act);\n"
+    pp = preprocessed("    step(0);\n    reset(0);\n", header=header)
+    assert problems_of(pp) == ()
+
+
+def exit_problems(body: str, *, before: str = "") -> list[str]:
+    return [problem for problem in problems_of(preprocessed(body, before=before)) if EARLY_EXIT_RULE in problem]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    int s = step(0);\n    if (s) {\n        return 1;\n    }\n    reset(&s);\n    return 0;\n",
+        "    int s = step(0);\n    reset(&s);\n    if (s) return 1;\n",
+        "    int s = step(0);\n    reset(&s);\n    {\n        return 0;\n    }\n",
+        "    int s = step(0);\n    reset(&s);\n    if (s) {\n    } else return 0;\n",
+        "    int s = step(0);\n    reset(&s);\n    return 0;\n    s = 1;\n",
+        "    int s = step(0);\n    if (s) {\n        goto done;\n    }\n    reset(&s);\ndone:\n    return 0;\n",
+    ],
+    ids=["return_in_branch", "conditional_last_return", "return_in_block", "else_return", "statement_after_return", "goto"],
+)
+def test_a_return_or_goto_that_can_skip_assertions_is_a_problem(body):
+    problems = exit_problems(body)
+    assert problems and all(problem.startswith(f"{HARNESS}:") for problem in problems)
+    assert any(("goto" if "goto" in body else "return") + " " in problem for problem in problems)
+
+
+def test_one_final_return_and_returns_in_helpers_are_not_problems():
+    helper = "static int pick(int s)\n{\n    if (s) {\n        return 1;\n    }\n    goto out;\nout:\n    return 0;\n}\n"
+    assert exit_problems("    int s = step(0);\n    reset(&s);\n    return pick(s);\n", before=helper) == []
+    assert exit_problems("    int s = step(0);\n    reset(&s);\n") == []
+
+
+def write_problems(body: str, *, before: str = "") -> list[str]:
+    return [problem for problem in problems_of(preprocessed(body, before=before)) if PRE_CALL_WRITE_RULE in problem]
+
+
+ASSUMED = "    int s = nondet_int();\n    __CPROVER_assume(s >= 0);\n"
+
+
+@pytest.mark.parametrize(
+    "write, operator",
+    [
+        ("    s = s % 8;\n", "="),
+        ("    s %= 8;\n", "%="),
+        ("    s <<= 1;\n", "<<="),
+        ("    s++;\n", "++"),
+        ("    --s;\n", "--"),
+        ("    if (s > 7) s = 0;\n", "="),
+        ("    (void)(s %= 8);\n", "%="),
+        ("    int t = (s = 1);\n", "="),
+        ("    int a = 1, b = (s = 2);\n", "="),
+        ("    for (int k = 0; k < 1; k++) {\n    }\n", "++"),
+    ],
+    ids=["assign", "compound", "shift", "increment", "decrement", "conditional", "cast", "initialiser", "second_declarator", "for_step"],
+)
+def test_a_write_between_the_last_assume_and_the_claimed_call_is_a_problem(write, operator):
+    problems = write_problems(ASSUMED + write + "    step(&s);\n    reset(&s);\n")
+    assert problems and all(problem.startswith(f"{HARNESS}:") for problem in problems)
+    assert any(f": {operator} writes in main()" in problem for problem in problems)
+    assert all("claimed function step at harness/inductive.c:" in problem for problem in problems)
+
+
+def test_a_write_inside_the_claimed_call_arguments_is_a_problem():
+    (problem,) = write_problems(ASSUMED + "    step((s = 1, &s));\n    reset(&s);\n")
+    assert ": = writes in main()" in problem
+
+
+def test_declarations_comparisons_and_writes_outside_the_window_are_not_problems():
+    body = (
+        "    int s = nondet_int();\n    s = s + 1;\n    __CPROVER_assume(s >= 0);\n"
+        "    int t = s == 1 && s <= 2 && s >= 0 && s != 3;\n    struct ops *p = 0;\n    unsigned char buf[2] = {0};\n"
+        "    if (t) {\n        int r = step(&s);\n        s = r;\n    }\n    s++;\n    reset(&s);\n"
+    )
+    assert write_problems(body, before="struct ops { int x; };\n") == []
+
+
+def test_writes_in_main_are_not_checked_when_main_calls_no_claimed_function_directly():
+    helper = "static int wrapped(int *s)\n{\n    return step(s);\n}\n"
+    body = "    int s = nondet_int();\n    __CPROVER_assume(s >= 0);\n    s = 1;\n    wrapped(&s);\n"
+    assert write_problems(body, before=helper) == []
+
+
 def test_preprocessed_harness_must_start_with_a_linemarker():
     pp = "int pad;\n" + preprocessed("    step(0);\n    reset(0);\n")
     assert any("does not start with a linemarker" in problem for problem in problems_of(pp))
@@ -203,15 +325,24 @@ def test_preprocessed_harness_must_start_with_a_linemarker():
 def test_verify_instrumentation_resets_counts_and_checks_assumes():
     layout = harness_layout(BRANCHES, CLAIMED, HARNESS)
     text = instrumented_harness(BRANCHES, layout, HARNESS)
-    first_line, declaration, rest = text.split("\n", 2)
+    first_line, declaration, free_declaration, rest = text.split("\n", 3)
     assert first_line == f'# 1 "{HARNESS}"'
     assert declaration == f"static int {CLAIMED_CALLS_COUNTER};"
+    assert free_declaration == FREE_DECLARATION == "void free(void *);"
     assert rest.count("\n") == BRANCHES.count("\n")
     assert "{" + RESET_STATEMENT + "\n    int s;" in rest
     check = f'__CPROVER_assert({CLAIMED_CALLS_COUNTER} == 0, "{claimed_call_label("step")}")'
     assert f"int r = ({check}, {CLAIMED_CALLS_COUNTER} = 1, step(&s));" in rest
     assert f"    {checked_assume('s >= 0')};\n" in rest
     assert "leanc_return" not in rest
+
+
+def test_main_starts_with_a_no_op_free_so_dfcc_links_the_free_model():
+    text = instrumented_harness(BRANCHES, harness_layout(BRANCHES, CLAIMED, HARNESS), HARNESS)
+    assert FREE_ANCHOR_CALL == "free((void *)0);"
+    assert text.count(FREE_ANCHOR_CALL) == 1
+    assert text.index(FREE_DECLARATION) < text.index("int main(void)") < text.index(FREE_ANCHOR_CALL)
+    assert "int main(void)\n{" + RESET_STATEMENT in text
 
 
 def test_vacuity_instrumentation_probes_value_and_void_returns():

@@ -28,7 +28,7 @@ from leanc.toolchain.context import VerifyOptions
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 PLAIN_EXAMPLE = "safe_array_get"
 SPEC_HASH = "ab" * 32
-INDUCTIVE_ASSUMPTION = "every execution of main() of harness/inductive.c from every state its LEANC_ASSUMEs admit"
+INDUCTIVE_ASSUMPTION = "every execution of main() of harness/inductive.c as written satisfies the assertions that execute"
 RECHECK_BEFORE_INDUCTIVE = f"before the {INDUCTIVE_GATE} gate"
 TAMPERED_REASON = "protected file harness/inductive.c changed"
 

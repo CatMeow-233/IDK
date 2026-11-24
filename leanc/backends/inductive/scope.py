@@ -11,6 +11,7 @@ from leanc.backends.cbmc.compile_flags import platform_architecture
 from leanc.backends.inductive.build import InductiveBuild
 from leanc.backends.inductive.evidence import EvidencedLoop
 from leanc.backends.inductive.runs import INDUCTIVE_CHECKS
+from leanc.foundation.inductive_scope import HARNESS_NARROWING
 from leanc.foundation.status import Outcome
 from leanc.toolchain.context import BackendContext
 
@@ -28,6 +29,11 @@ LIBRARY_GAP = (
     + ") fail their loop-contract write-set checks, so such code never passes this gate (INCONCLUSIVE, never a pass)"
 )
 NOT_PROVED = "VERIFIED_INDUCTIVE is not PROVED: PROVED is reached only through a passing required wp gate"
+ASSUMPTIONS_BOUND = (
+    "the LEANC_ASSUMEs only, an upper bound of the covered states; executions outside them are not covered"
+)
+NARROWED_BY_HARNESS_CODE = "the other harness code can still narrow the covered states"
+HARNESS_GAP = f"known gap (not detected): {HARNESS_NARROWING}"
 NO_CLAIM = (
     "the inductive gate ended {outcome}: it establishes no inductive claim, and VERIFIED_INDUCTIVE needs a "
     "passing required inductive gate"
@@ -62,10 +68,8 @@ def _loops_statement(build: InductiveBuild, loops: Mapping[str, EvidencedLoop]) 
 
 def _assumptions_statement(build: InductiveBuild, harness: str) -> str:
     if not build.harness_assumptions:
-        return f"harness assumptions of {harness}: none (every state of the harness inputs)"
-    return f"harness assumptions of {harness} (executions outside them are not covered): " + "; ".join(
-        build.harness_assumptions
-    )
+        return f"harness assumptions of {harness}: none (no LEANC_ASSUME; {NARROWED_BY_HARNESS_CODE})"
+    return f"harness assumptions of {harness} ({ASSUMPTIONS_BOUND}): " + "; ".join(build.harness_assumptions)
 
 
 def _checks_statement(ctx: BackendContext) -> str:
@@ -97,11 +101,13 @@ def scope_statements(ctx: BackendContext, build: InductiveBuild, inputs: ScopeIn
         (
             f"inductive proof with CBMC {inputs.version or '(unknown version)'} and DFCC loop contracts: every "
             f"execution of main() of the protected inductive harness {harness} (sha256 {_sha256(ctx, harness)}) "
-            "from every state its harness assumptions admit, with at most one call of a claimed function per path"
+            "as written, with at most one call of a claimed function per path, satisfies the harness assertions "
+            "that execute on it"
         ),
         f"claimed functions: {functions}; functions that are not claimed have only the bounded CBMC result",
         _loops_statement(build, inputs.loops),
         _assumptions_statement(build, harness),
+        HARNESS_GAP,
         _checks_statement(ctx),
         (
             "memory model: " + ", ".join(MEMORY_MODELS) + " are replaced by models that check the source and "
@@ -155,7 +161,7 @@ def scope_details(
         "check_classes": list(INDUCTIVE_CHECKS),
         "harness_assumptions": list(build.harness_assumptions),
         "memory_models": list(MEMORY_MODELS),
-        "known_gaps": [COPY_GAP, LIBRARY_GAP],
+        "known_gaps": [HARNESS_GAP, COPY_GAP, LIBRARY_GAP],
         "unwind": inputs.unwind,
         "object_bits": verification.object_bits if verification else None,
         "cbmc_version": inputs.version,
