@@ -9,6 +9,7 @@ from pathlib import Path
 from leanc.backends.analyzer import run_static_analysis
 from leanc.backends.cbmc import run_cbmc
 from leanc.backends.clang import run_compile
+from leanc.backends.inductive import run_inductive
 from leanc.backends.integrity import run_integrity
 from leanc.backends.lean import run_lean
 from leanc.backends.sanitizer import run_sanitizer_tests, sanitizer_plan
@@ -27,7 +28,7 @@ from leanc.reports.json_report import atomic_write_text, write_json
 from leanc.reports.markdown import render_verification_md
 from leanc.specs.approval import check_approval
 from leanc.specs.loader import load_spec
-from leanc.specs.model import GATE_ORDER, MANDATORY_CHECKS, Spec
+from leanc.specs.model import GATE_ORDER, INDUCTIVE_GATE, MANDATORY_CHECKS, Spec
 from leanc.toolchain.context import (
     BackendContext,
     VerifyOptions,
@@ -78,7 +79,6 @@ PROVED_REASON = (
     "and every runtime-error guard"
 )
 VERIFIED_BOUNDED_REASON = "all required gates passed; CBMC found no violation within the approved bounds"
-INDUCTIVE_GATE = "inductive"
 VERIFIED_INDUCTIVE_REASON = (
     "all required gates passed; CBMC found no violation within the approved bounds, and the inductive gate showed, "
     "from every state admitted by the harness assumptions (the LEANC_ASSUMEs of the protected inductive harness), "
@@ -90,6 +90,17 @@ VERIFIED_INDUCTIVE_REASON = (
     "or memset that overflows into a neighbouring field of the same object, or that writes into a string "
     "literal, is not reported, and calls of CBMC library models such as strlen, strcpy, strncpy and strncat "
     "make the gate fail closed (incomplete, never a pass); this is not PROVED"
+)
+INDUCTIVE_LIMITATION = (
+    "The inductive gate (VERIFIED_INDUCTIVE, never PROVED) holds only for the claimed functions (spec "
+    "inductive.functions), each called once per path from every state admitted by the harness assumptions (the "
+    "LEANC_ASSUMEs of the protected inductive harness), for the harness assertions and the mandatory check classes "
+    f"only ({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by induction; static objects start "
+    "arbitrary and allocations are assumed to succeed. Not covered: functions that are not claimed, states outside "
+    "the harness assumptions and the extra verification.checks classes, for which only the bounded CBMC result "
+    "holds. Known gaps: a memcpy, memmove or memset that overflows into a neighbouring field of the same object, or "
+    "that writes into a string literal, is not reported; calls of CBMC library models such as strlen make the gate "
+    "fail closed."
 )
 NO_FORMAL_GATE_REASONS = [
     "no formal verification gate (cbmc or wp) is required by the spec; "
@@ -116,6 +127,7 @@ _GATE_RUNNERS: dict[str, Callable[[BackendContext], StageResult]] = {
     "static_analysis": run_static_analysis,
     "sanitizer": run_sanitizer_tests,
     "cbmc": run_cbmc,
+    INDUCTIVE_GATE: run_inductive,
     "integrity": run_integrity,
     "wp": run_wp,
     "lean": run_lean,
@@ -355,6 +367,8 @@ def _limitations(spec: Spec, ctx: BackendContext, approval: ApprovalCheck, stage
         limitations.append(WP_LIMITATION)
     if "lean" in spec.gates:
         limitations.append(LEAN_LIMITATION)
+    if INDUCTIVE_GATE in spec.gates:
+        limitations.append(INDUCTIVE_LIMITATION)
     limitations.extend(memory_limitations(spec, stages))
     if not ctx.sandbox.active:
         limitations.append(f"no sandbox available: {ctx.sandbox.note}")

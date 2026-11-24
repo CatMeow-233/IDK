@@ -30,7 +30,7 @@ from leanc.specs.loader import (
     spec_to_json,
     spec_to_yaml,
 )
-from leanc.specs.model import Spec
+from leanc.specs.model import DEFAULT_V1_GATES, GATE_ORDER, INDUCTIVE_GATE, OPT_IN_V2_GATES, Spec
 
 EXAMPLE_SPEC_HASHES_BEFORE_THE_INDUCTIVE_SECTION = {
     "array_oob/spec.yaml": "d2d8ea6d05c7dcc3d88b01c9c0e987abdf2c8ae380ebc5d391e5ea396abdc030",
@@ -228,8 +228,47 @@ def test_section_text_rules_apply():
         spec_with(inductive_section(harness="inductive/x\x00.c"))
 
 
-def test_gate_name_is_not_accepted_before_the_gate_exists():
+def _with_gates(gates: list[str], **verification) -> dict:
     data = spec_data()
-    data["gates"] = [*data["gates"], SECTION_KEY]
-    with pytest.raises(SpecError, match=r"gates\.4: Input should be"):
+    data["gates"] = gates
+    data["verification"].update(verification)
+    return data
+
+
+def test_gate_with_the_section_and_the_cbmc_gate_is_accepted():
+    spec = spec_with(inductive_section(), _with_gates([*spec_data()["gates"], INDUCTIVE_GATE]))
+    assert spec.gates[-1] == INDUCTIVE_GATE and spec.inductive is not None
+
+
+def test_gate_runs_right_after_cbmc_and_before_the_proof_gates():
+    assert GATE_ORDER.index(INDUCTIVE_GATE) == GATE_ORDER.index("cbmc") + 1
+    assert GATE_ORDER[GATE_ORDER.index(INDUCTIVE_GATE) + 1 :] == OPT_IN_V2_GATES
+    assert INDUCTIVE_GATE not in DEFAULT_V1_GATES
+
+
+def test_gate_requires_the_section():
+    data = _with_gates(["compile", "cbmc", INDUCTIVE_GATE])
+    with pytest.raises(SpecError, match=r"gate 'inductive' requires an 'inductive' section"):
+        parse_spec_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+
+
+@pytest.mark.parametrize("gates", [["compile", INDUCTIVE_GATE], ["compile", "sanitizer", INDUCTIVE_GATE, "wp"]])
+def test_gate_requires_the_cbmc_gate(gates):
+    with pytest.raises(SpecError, match=r"gate 'inductive' requires the 'cbmc' gate"):
+        spec_with(inductive_section(), _with_gates(gates))
+
+
+def test_gate_rejects_malloc_may_fail():
+    data = _with_gates(["compile", "cbmc", INDUCTIVE_GATE], malloc_may_fail=True)
+    with pytest.raises(SpecError, match=r"gate 'inductive' does not support verification\.malloc_may_fail: true"):
         spec_with(inductive_section(), data)
+
+
+def test_section_without_the_gate_still_allows_malloc_may_fail():
+    spec = spec_with(inductive_section(), _with_gates(["compile", "cbmc"], malloc_may_fail=True))
+    assert spec.verification.malloc_may_fail and INDUCTIVE_GATE not in spec.gates
+
+
+def test_gate_may_be_listed_only_once():
+    with pytest.raises(SpecError, match=r"duplicate gates"):
+        spec_with(inductive_section(), _with_gates(["compile", "cbmc", INDUCTIVE_GATE, INDUCTIVE_GATE]))

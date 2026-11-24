@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+from spec_inductive_support import inductive_section, spec_data, spec_with
+
+from leanc.backends.inductive import run_inductive
 from leanc.foundation.models import ApprovalCheck, StageResult
 from leanc.foundation.status import Outcome, Status
 from leanc.pipeline import controller
@@ -9,11 +13,14 @@ from leanc.pipeline.controller import (
     FORMAL_GATES,
     GATES_ANALYSING_OR_EXECUTING_CANDIDATE_CODE,
     INDUCTIVE_GATE,
+    INDUCTIVE_LIMITATION,
     INTEGRITY_FAILED,
     INTEGRITY_NOT_RUN,
     PROTECTED_FILE_CHANGED,
     _assumptions,
+    _GATE_RUNNERS,
     _GateSequence,
+    _limitations,
 )
 from leanc.specs.loader import load_spec
 from leanc.toolchain.context import VerifyOptions
@@ -112,3 +119,24 @@ def test_inductive_assumptions_reach_the_verification_result():
     stage = StageResult(stage=INDUCTIVE_GATE, outcome=Outcome.PASS, details={"assumptions": [INDUCTIVE_ASSUMPTION]})
     assumptions = _assumptions(spec, [stage], ApprovalCheck(approved=True, spec_hash=SPEC_HASH))
     assert INDUCTIVE_ASSUMPTION in assumptions
+
+
+SANDBOXED = SimpleNamespace(sandbox=SimpleNamespace(active=True, note=""))
+
+
+def _spec_with_gates(gates: list[str]):
+    data = spec_data()
+    data["gates"] = gates
+    return spec_with(inductive_section(), data)
+
+
+def test_inductive_gate_is_registered_with_its_runner():
+    assert _GATE_RUNNERS[INDUCTIVE_GATE] is run_inductive
+
+
+def test_inductive_limitation_is_listed_only_when_the_spec_requires_the_gate():
+    approval = ApprovalCheck(approved=True, spec_hash=SPEC_HASH)
+    with_gate = _spec_with_gates(["compile", "cbmc", INDUCTIVE_GATE])
+    section_only = _spec_with_gates(["compile", "cbmc"])
+    assert INDUCTIVE_LIMITATION in _limitations(with_gate, SANDBOXED, approval, [])
+    assert INDUCTIVE_LIMITATION not in _limitations(section_only, SANDBOXED, approval, [])

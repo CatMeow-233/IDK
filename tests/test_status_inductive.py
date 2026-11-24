@@ -25,6 +25,7 @@ from leanc.llm.prompts import EXPLAIN_SYSTEM
 from leanc.pipeline.controller import (
     FORMAL_GATE_DID_NOT_PASS_REASON,
     INDUCTIVE_GATE,
+    INDUCTIVE_LIMITATION,
     NO_FORMAL_GATE_REASONS,
     PROVED_REASON,
     VERIFIED_BOUNDED_REASON,
@@ -149,8 +150,9 @@ SCOPED_TEXTS = {
     "mock summary": INDUCTIVE_SUMMARY_SCOPE,
     "cli epilog": " ".join(_epilog_paragraph("VERIFIED_INDUCTIVE").split()),
     "explain prompt": EXPLAIN_SYSTEM,
+    "limitation": INDUCTIVE_LIMITATION,
 }
-TEXTS_LISTING_CHECK_CLASSES = ("aggregate reason", "status meaning", "mock summary")
+TEXTS_LISTING_CHECK_CLASSES = ("aggregate reason", "status meaning", "mock summary", "limitation")
 
 
 @pytest.mark.parametrize("cbmc,inductive,wp,expected", AGGREGATE_MATRIX)

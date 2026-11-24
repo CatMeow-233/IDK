@@ -21,7 +21,7 @@ from leanc.pipeline.controller import (
 from leanc.specs.loader import load_spec
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
-CANDIDATE_GATES = ("sanitizer", "cbmc", "wp", "lean")
+CANDIDATE_GATES = ("sanitizer", "cbmc", "inductive", "wp", "lean")
 SPURIOUS = "spurious finding on rejected code"
 WP_EXAMPLE = "wp_safe_array_get"
 LEAN_EXAMPLE = "lean_clamp"

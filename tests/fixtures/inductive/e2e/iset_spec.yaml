@@ -1,0 +1,23 @@
+leanc_spec: 1
+spec_id: iset-inductive
+version: 1
+title: Sorted integer set
+requirement: Sorted set of distinct ints with binary-search rank and membership queries.
+language: {name: c, standard: c11}
+target:
+  function: iset_rank
+  signature: "int iset_rank(const struct iset *s, int x)"
+  returns: {type: int}
+sources:
+  editable: [src/iset.c]
+  headers: [include/iset.h]
+  include_dirs: [include]
+verification:
+  harness: harness/iset_harness.c
+  unwind: 5
+  timeout_s: 600
+inductive:
+  harness: harness/inductive.c
+  contracts: inductive/loops.json
+  functions: [iset_rank, iset_contains]
+gates: [compile, static_analysis, cbmc, inductive]

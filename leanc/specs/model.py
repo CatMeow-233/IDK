@@ -43,10 +43,11 @@ MANDATORY_CHECKS: tuple[str, ...] = (
     "undefined-shift",
 )
 
-GateName = Literal["compile", "static_analysis", "sanitizer", "cbmc", "wp", "lean"]
+GateName = Literal["compile", "static_analysis", "sanitizer", "cbmc", "inductive", "wp", "lean"]
 DEFAULT_V1_GATES: tuple[str, ...] = ("compile", "static_analysis", "sanitizer", "cbmc")
+INDUCTIVE_GATE: str = "inductive"
 OPT_IN_V2_GATES: tuple[str, ...] = ("wp", "lean")
-GATE_ORDER: tuple[str, ...] = DEFAULT_V1_GATES + OPT_IN_V2_GATES
+GATE_ORDER: tuple[str, ...] = DEFAULT_V1_GATES + (INDUCTIVE_GATE,) + OPT_IN_V2_GATES
 C_SUFFIXES = (".c",)
 CPP_SUFFIXES = (".cpp", ".cc", ".cxx")
 INDUCTIVE_CONTRACTS_SUFFIX = ".json"
@@ -457,6 +458,16 @@ class Spec(_M):
             raise ValueError("gate 'wp' (Frama-C) supports C only")
         if "lean" in self.gates and self.lean is None:
             raise ValueError("gate 'lean' requires a 'lean' section")
+        if INDUCTIVE_GATE in self.gates:
+            self._require_inductive_prerequisites()
+
+    def _require_inductive_prerequisites(self) -> None:
+        if self.inductive is None:
+            raise ValueError(f"gate {INDUCTIVE_GATE!r} requires an {INDUCTIVE_GATE!r} section")
+        if "cbmc" not in self.gates:
+            raise ValueError(f"gate {INDUCTIVE_GATE!r} requires the 'cbmc' gate (VERIFIED_INDUCTIVE needs cbmc PASS)")
+        if self.verification.malloc_may_fail:
+            raise ValueError(f"gate {INDUCTIVE_GATE!r} does not support verification.malloc_may_fail: true")
 
     def _reject_files_both_editable_and_protected(self) -> None:
         overlap = set(self.protected_paths()) & set(self.editable_paths())
