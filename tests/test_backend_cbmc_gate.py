@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 
+from cbmc_replay_support import DIVERGENCE_PREPROCESS_RUNS, SYMBOL_TABLE_RUNS, checking_runs
 from cbmc_support import _fake_tools, make_cbmc_project
 
 from leanc.backends.cbmc import execution as cbmc_execution
@@ -45,12 +46,14 @@ def test_correct_code_passes_with_vacuity_ok(tmp_path, needs_cbmc):
         raw = ctx.raw_dir / f"cbmc-{mode}.json"
         assert raw.is_file()
         json.loads(raw.read_text())
-    assert [i.tool for i in res.invocations] == ["cbmc", "cbmc"]
+    assert [i.tool for i in res.invocations] == ["cbmc"] * (2 + DIVERGENCE_PREPROCESS_RUNS + SYMBOL_TABLE_RUNS)
+    assert ["--preprocess" in i.argv for i in res.invocations] == [*[True] * DIVERGENCE_PREPROCESS_RUNS, False, False, False]
+    assert ["--show-symbol-table" in i.argv for i in res.invocations] == [False] * (DIVERGENCE_PREPROCESS_RUNS + 1) + [True, False]
     assert all(i.exit_code is not None and i.stdout_path for i in res.invocations)
     assert res.invocations[0].sandbox == ctx.sandbox.kind
     text = " ".join(d["assumptions"])
     assert "unwound at most 5" in text and "unwinding assertions" in text
-    assert "inputs as constrained by the approved harness harness/h.c" in text
+    assert "inputs as constrained by the approved harness harness/h.c (its code and its LEANC_ASSUME" in text
     assert "bounds" in text and "signed-overflow" in text
     assert "malloc model" in text and "non-vacuity" in text
     assert d["cbmc_version"] in text
@@ -87,7 +90,7 @@ def test_off_by_one_counterexample_shows_idx_equal_len(tmp_path, needs_cbmc):
     assert all(d.tool == "cbmc" and d.severity == "error" for d in res.diagnostics)
     assert res.details["vacuity"]["status"] == "skipped"
     assert res.details["properties_failed"] == len(res.failures)
-    assert len(res.invocations) == 1
+    assert len(checking_runs(res)) == 1
 
 
 def test_division_by_zero(tmp_path, needs_cbmc):
@@ -173,7 +176,7 @@ def test_timeout_on_hard_problem(tmp_path, needs_cbmc):
     assert res.outcome is Outcome.TIMEOUT, res.summary
     assert res.status is Status.TIMEOUT
     assert "timed out after 2s" in res.summary
-    assert res.invocations[0].timed_out
+    assert checking_runs(res)[0].timed_out
     assert res.duration_s < 30
     assert (ctx.raw_dir / "cbmc-verify.json").is_file()
     assert res.details["assumptions"]
@@ -291,7 +294,7 @@ def test_coverage_details(tmp_path, needs_cbmc):
     assert set(res.details["argv"]) == {"verify", "vacuity", "coverage"}
     assert "--cover" in res.details["argv"]["coverage"]
     assert (ctx.raw_dir / "cbmc-coverage.json").is_file()
-    assert len(res.invocations) == 3
+    assert len(res.invocations) == 3 + DIVERGENCE_PREPROCESS_RUNS + SYMBOL_TABLE_RUNS
 
 
 def test_coverage_reveals_branch_the_harness_never_takes(tmp_path, needs_cbmc):

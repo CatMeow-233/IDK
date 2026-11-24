@@ -4,8 +4,8 @@ import posixpath
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from leanc.backends.cbmc.symbol_table import CODE_TYPE_ID, SymbolTable
 from leanc.backends.inductive.harness_calls import CLAIMED_CALLS_COUNTER, CLAIMED_ENTERED_FLAG, EDITABLE_ENTERED_FLAG
-from leanc.backends.inductive.symbols import CODE_TYPE_ID, SymbolTable
 from leanc.lang.c_lexer import CSource
 from leanc.rules.definitions import function_definition_sites
 from leanc.rules.loop_sites import BODY_OPEN, Insertion, origin_lines

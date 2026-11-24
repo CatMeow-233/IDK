@@ -1,157 +1,28 @@
 from __future__ import annotations
 
-import json
 import posixpath
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Any
 
+from leanc.backends.cbmc.symbol_table import CODE_TYPE_ID, Symbol, SymbolTable
 from leanc.backends.inductive.harness_calls import ENTRY_POINT, ReturnKind
 
 __all__ = [
     "RENAME_REMEDY",
     "RESERVED_PREFIX",
-    "Symbol",
-    "SymbolTable",
     "capture_problems",
     "claimed_problems",
-    "parse_symbol_table",
     "return_kinds",
     "trusted_definitions",
 ]
 
-SYMBOL_TABLE_KEY = "symbolTable"
-MESSAGE_TYPE_KEY = "messageType"
-MESSAGE_TEXT_KEY = "messageText"
-ERROR_MESSAGE_TYPE = "ERROR"
-LOCAL_SCOPE_SEPARATOR = "::"
-PSEUDO_FILE_PREFIX = "<"
-NO_VALUE_IDS = frozenset({"", "nil"})
 VOID_TYPE_ID = "empty"
-CODE_TYPE_ID = "code"
 RESERVED_PREFIX = "leanc_"
 LINK_RENAME_RE = re.compile(r"^(?P<base>.+)\$link\d+$")
-SYMBOL_EXPRESSION_ID = "symbol"
-IDENTIFIER_KEY = "identifier"
-SOURCE_LOCATION_KEY = "#source_location"
 RENAME_REMEDY = (
     "a name the harness translation unit defines, its headers included, must not be defined again by the editable "
     "sources, not even as a static: rename the editable one"
 )
-
-
-@dataclass(frozen=True)
-class Symbol:
-    name: str
-    base_name: str
-    module: str
-    file: str | None
-    line: str | None
-    file_local: bool
-    has_value: bool
-    static_lifetime: bool
-    extern: bool
-    is_type: bool
-    type_id: str
-    return_type_id: str | None
-    type_node: Any = field(default=None, compare=False, hash=False, repr=False)
-    value_symbols: frozenset[str] = frozenset()
-
-    @property
-    def is_global_name(self) -> bool:
-        return LOCAL_SCOPE_SEPARATOR not in self.name
-
-    @property
-    def defines(self) -> bool:
-        return self.has_value or (self.static_lifetime and not self.extern)
-
-    @property
-    def real_file(self) -> bool:
-        return bool(self.file) and not str(self.file).startswith(PSEUDO_FILE_PREFIX)
-
-    def where(self) -> str:
-        return f"{self.file}:{self.line}" if self.file else "no location"
-
-
-SymbolTable = dict[str, Symbol]
-
-
-def _named(node: Any, key: str) -> Any:
-    named = node.get("namedSub") if isinstance(node, dict) else None
-    return named.get(key) if isinstance(named, dict) else None
-
-
-def _id(node: Any) -> str | None:
-    value = node.get("id") if isinstance(node, dict) else None
-    return value if isinstance(value, str) else None
-
-
-def _referenced_symbols(value: Any) -> frozenset[str]:
-    found: set[str] = set()
-    pending = [value]
-    while pending:
-        node = pending.pop()
-        if isinstance(node, list):
-            pending.extend(node)
-            continue
-        if not isinstance(node, dict):
-            continue
-        named = node.get("namedSub")
-        if node.get("id") == SYMBOL_EXPRESSION_ID:
-            identifier = _id(named.get(IDENTIFIER_KEY)) if isinstance(named, dict) else None
-            if identifier:
-                found.add(identifier)
-        if isinstance(named, dict):
-            pending.extend(child for key, child in named.items() if key != SOURCE_LOCATION_KEY)
-        pending.append(node.get("sub"))
-    return frozenset(found)
-
-
-def _symbol(name: str, entry: Any) -> Symbol | None:
-    if not isinstance(entry, dict):
-        return None
-    location = entry.get("location")
-    symbol_type = entry.get("type")
-    return_type = _named(symbol_type, "return_type")
-    return Symbol(
-        name=name,
-        base_name=str(entry.get("baseName", "")),
-        module=str(entry.get("module", "")),
-        file=_id(_named(location, "file")),
-        line=_id(_named(location, "line")),
-        file_local=entry.get("isFileLocal") is True,
-        has_value=(_id(entry.get("value")) or "") not in NO_VALUE_IDS,
-        static_lifetime=entry.get("isStaticLifetime") is True,
-        extern=entry.get("isExtern") is True,
-        is_type=entry.get("isType") is True,
-        type_id=_id(symbol_type) or "",
-        return_type_id=_id(return_type) if return_type is not None else None,
-        type_node=symbol_type,
-        value_symbols=_referenced_symbols(entry.get("value")),
-    )
-
-
-def parse_symbol_table(stdout: str) -> SymbolTable | str:
-    try:
-        messages = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        return f"the symbol table is not valid JSON ({exc.msg} at offset {exc.pos})"
-    if not isinstance(messages, list):
-        return "the symbol table output is not a JSON list"
-    errors = [m.get(MESSAGE_TEXT_KEY) for m in messages if isinstance(m, dict) and m.get(MESSAGE_TYPE_KEY) == ERROR_MESSAGE_TYPE]
-    if errors:
-        return f"goto-instrument reported errors: {errors[:3]}"
-    tables = [m[SYMBOL_TABLE_KEY] for m in messages if isinstance(m, dict) and SYMBOL_TABLE_KEY in m]
-    if len(tables) != 1 or not isinstance(tables[0], dict):
-        return f"expected one {SYMBOL_TABLE_KEY} object, found {len(tables)}"
-    table: SymbolTable = {}
-    for name, entry in tables[0].items():
-        symbol = _symbol(str(name), entry)
-        if symbol is None:
-            return f"symbol {name!r} is not a JSON object"
-        table[symbol.name] = symbol
-    return table
 
 
 def trusted_definitions(table: SymbolTable, module: str) -> SymbolTable:

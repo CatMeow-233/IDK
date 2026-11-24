@@ -171,7 +171,9 @@ class _Gate:
             return checked.problem
         unwind_cut = bool(tally_properties(checked.results).unwinding_failed)
         expected = expected_probes(build.entries, build.contracts, build.claimed_calls)
-        judgement = judge_probes(checked.run, self.harness_text(), self.ctx.spec.inductive.harness, expected, unwind_cut)
+        judgement = judge_probes(
+            checked.run, self.harness_text(), self.ctx.spec.inductive.harness, expected, unwind_cut, build.reach_sites
+        )
         self.details["vacuity"] = judgement.details
         self.details["notes"].extend(judgement.notes)
         if judgement.problem is not None:

@@ -51,8 +51,8 @@ class ToolSteps:
             cwd=Path(os.path.abspath(ctx.snapshot_dir)),
         )
 
-    def run(self, tool: str, label: str, argv: list[str]) -> StepRun:
-        proc = self.ctx.run(argv, limits=self.limits, cwd=self.cwd, mounts=self.mounts)
+    def run(self, tool: str, label: str, argv: list[str], env_extra: dict[str, str] | None = None) -> StepRun:
+        proc = self.ctx.run(argv, limits=self.limits, cwd=self.cwd, mounts=self.mounts, env_extra=env_extra)
         self.argv[label] = list(argv)
         self.invocations.append(proc.to_invocation(tool, self.ctx.run_dir, self.ctx.log_name(STAGE, label)))
         return StepRun(label, proc)

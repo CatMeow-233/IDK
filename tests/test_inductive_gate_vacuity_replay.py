@@ -21,6 +21,7 @@ from inductive_replay_support import mutated
 
 from leanc.backends.cbmc.execution import CbmcRun
 from leanc.backends.cbmc.output import interpret_output
+from leanc.backends.cbmc.vacuity_divergence import ReachSite
 from leanc.backends.inductive import CallSite
 from leanc.backends.inductive.probes import expected_probes, judge_probes
 from leanc.foundation.inductive_scope import HARNESS_NARROWING
@@ -120,12 +121,44 @@ def call(line: int) -> CallSite:
 
 REACH_HARNESS = 'int main(void) { LEANC_REACH("end"); return 0; }'
 REACHED_END = probe_result("leanc_reach:end", 30, VIOLATED)
+END_SITE = ReachSite(Origin("harness/inductive.c", 30), "end")
+ALIASED_SITE = ReachSite(Origin("harness/inductive.c", 12), "dead")
+
+
+def judged_sites(*sites: ReachSite):
+    return judge_probes(probe_run([REACHED_END]), REACH_HARNESS, "harness/inductive.c", [], False, sites)
+
+
+def test_every_reported_site_keeps_the_probes_ok():
+    judgement = judged_sites(END_SITE)
+    assert judgement.problem is None and judgement.findings == []
+    assert judgement.details["status"] == "ok" and judgement.details["sites"] == 1
+
+
+def test_a_site_without_a_reported_probe_at_its_line_and_label_is_a_vacuous_harness():
+    judgement = judged_sites(END_SITE, ALIASED_SITE, ReachSite(Origin("harness/inductive.c", 31), "end"))
+    assert [finding.reason for finding in judgement.findings] == [Reason.VACUOUS_HARNESS] * 2
+    assert judgement.details["status"] == "vacuous"
+    assert judgement.details["unreported_sites"] == [
+        'LEANC_REACH("dead") at harness/inductive.c:12',
+        'LEANC_REACH("end") at harness/inductive.c:31',
+    ]
+    assert judgement.findings[0].location.line == 12 and judgement.findings[0].failure.kind == "unproved"
+
+
+def test_one_reported_probe_matches_one_site_only():
+    judgement = judged_sites(END_SITE, END_SITE, END_SITE)
+    assert judgement.details["unreported_sites"] == ['LEANC_REACH("end") at harness/inductive.c:30'] * 2
+    assert [finding.failure.id for finding in judgement.findings] == [
+        "inductive:vacuity:end@harness/inductive.c:30",
+        "inductive:vacuity:end@harness/inductive.c:30#2",
+    ]
 
 
 def judged_returns(*statuses: tuple[int, str]):
     (expected,) = expected_probes((), (), (call(15), call(20)))
     results = [probe_result("leanc_return:tally_below", line, status) for line, status in statuses]
-    return expected, judge_probes(probe_run([*results, REACHED_END]), REACH_HARNESS, "harness/inductive.c", [expected], False)
+    return expected, judge_probes(probe_run([*results, REACHED_END]), REACH_HARNESS, "harness/inductive.c", [expected], False, ())
 
 
 def test_return_probes_are_expected_once_per_call_site():

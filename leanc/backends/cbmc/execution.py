@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -76,13 +77,13 @@ def cbmc_limits(ctx: BackendContext) -> Limits:
     )
 
 
-def _absolute_dir_for_sandbox_chdir(ctx: BackendContext) -> Path:
+def snapshot_cwd(ctx: BackendContext) -> Path:
     return Path(os.path.abspath(ctx.snapshot_dir))
 
 
-def execute_cbmc(ctx: BackendContext, mode: Mode, limits: Limits) -> CbmcRun:
-    argv = build_cbmc_argv(ctx, mode=mode)
-    proc = ctx.run(argv, limits=limits, cwd=_absolute_dir_for_sandbox_chdir(ctx))
+def execute_cbmc(ctx: BackendContext, mode: Mode, limits: Limits, inputs: Sequence[str]) -> CbmcRun:
+    argv = build_cbmc_argv(ctx, mode=mode, inputs=inputs)
+    proc = ctx.run(argv, limits=limits, cwd=snapshot_cwd(ctx))
     raw_path = ctx.raw_dir / f"cbmc-{mode}.json"
     raw_path.write_text(proc.stdout, encoding="utf-8")
     note = f"output truncated at {limits.max_output_bytes} bytes" if proc.output_truncated else None
@@ -96,6 +97,19 @@ def execute_cbmc(ctx: BackendContext, mode: Mode, limits: Limits) -> CbmcRun:
         output=interpret_output(proc.stdout),
         invocation=invocation,
     )
+
+
+def auxiliary_run_problem(what: str, proc: ProcResult, limits: Limits) -> ToolProblem | None:
+    if proc.error:
+        return ToolProblem(Outcome.ERROR, f"{what} could not be started: {proc.error}")
+    if proc.timed_out:
+        return ToolProblem(Outcome.TIMEOUT, f"{what} timed out after {limits.timeout_s:g}s; no verdict")
+    if proc.output_truncated:
+        return ToolProblem(Outcome.ERROR, f"{what} output exceeded {limits.max_output_bytes} bytes and was truncated")
+    if proc.exit_code != 0:
+        excerpt = "; ".join(line.strip() for line in proc.stderr.strip().splitlines()[-MAX_LISTED_ITEMS:] if line.strip())
+        return ToolProblem(Outcome.ERROR, f"{what} failed with exit code {proc.exit_code}" + (f": {excerpt}" if excerpt else ""))
+    return None
 
 
 def _signal_name(number: int) -> str:

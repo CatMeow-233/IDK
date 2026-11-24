@@ -8,18 +8,22 @@ from cbmc_support import FIX, _fake_tools, make_cbmc_project
 
 from leanc.backends.cbmc import (
     CHECK_FLAGS,
+    VACUITY_DEFINE,
     build_cbmc_argv,
     count_harness_assertions,
     find_probes,
     probe_occurrences,
     strip_c_comments,
 )
+from leanc.backends.cbmc.preprocess import preprocess_argv
 from leanc.backends.termination import (
     trusted_tool_terminating_signal,
     untrusted_program_terminating_signal,
 )
 from leanc.foundation.runner import ProcResult
 from leanc.specs.model import CheckName, SafetyProperty
+
+UNITS = ["/build/cbmc/verify/src/impl.i", "/build/cbmc/verify/harness/h.i"]
 
 
 def test_check_flags_cover_every_spec_check():
@@ -44,12 +48,13 @@ def test_build_argv_verify_mode(tmp_path):
         object_bits=12,
     )
     _fake_tools(ctx)
-    argv = build_cbmc_argv(ctx, mode="verify")
-    assert argv[:3] == ["/opt/cbmc/bin/cbmc", "src/impl.c", "harness/h.c"]
-    assert "-Iinclude" in argv
-    assert f"-I{os.path.abspath(ctx.include_dir)}" in argv
-    assert "-DMAX=4" in argv and "-DFOO" in argv
-    assert not any("NDEBUG" in a for a in argv), "NDEBUG would disable the harness assertions"
+    argv = build_cbmc_argv(ctx, mode="verify", inputs=UNITS)
+    assert argv[:3] == ["/opt/cbmc/bin/cbmc", *UNITS]
+    assert not [a for a in argv if a.startswith(("-I", "-D"))], "the preprocessed units need no preprocessor options"
+    preprocess = preprocess_argv(ctx, "harness/h.c", vacuity=False)
+    assert "-Iinclude" in preprocess and f"-I{os.path.abspath(ctx.include_dir)}" in preprocess
+    assert "-DMAX=4" in preprocess and "-DFOO" in preprocess
+    assert not any("NDEBUG" in a for a in preprocess), "NDEBUG would disable the harness assertions"
     flags = [a for a in argv if a.endswith("-check")]
     assert flags == [CHECK_FLAGS[c] for c in ctx.spec.verification.effective_checks()]
     assert flags[:6] == [
@@ -73,20 +78,22 @@ def test_build_argv_verify_mode(tmp_path):
 def test_build_argv_vacuity_and_coverage_modes(tmp_path):
     ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
     _fake_tools(ctx)
-    vac = build_cbmc_argv(ctx, mode="vacuity")
-    assert "-DLEANC_VACUITY_CHECK" in vac
+    vac = build_cbmc_argv(ctx, mode="vacuity", inputs=UNITS)
+    assert VACUITY_DEFINE not in vac and VACUITY_DEFINE in preprocess_argv(ctx, "harness/h.c", vacuity=True)
     assert not [a for a in vac if a.endswith("-check")]
     assert "--unwinding-assertions" in vac and vac[-1] == "--json-ui"
     assert "--unwindset" not in vac and "--malloc-may-fail" not in vac and "--object-bits" not in vac
-    cov = build_cbmc_argv(ctx, mode="coverage")
+    cov = build_cbmc_argv(ctx, mode="coverage", inputs=UNITS)
     assert cov[cov.index("--cover") + 1] == "location"
     assert "--unwinding-assertions" not in cov
     assert "-DLEANC_VACUITY_CHECK" not in cov and not [a for a in cov if a.endswith("-check")]
     with pytest.raises(ValueError):
-        build_cbmc_argv(ctx, mode="prove")
+        build_cbmc_argv(ctx, mode="prove", inputs=UNITS)
+    with pytest.raises(ValueError):
+        build_cbmc_argv(ctx, inputs=[])
     _fake_tools(ctx, cbmc=None)
     with pytest.raises(ValueError):
-        build_cbmc_argv(ctx)
+        build_cbmc_argv(ctx, inputs=UNITS)
 
 
 def test_find_probes_ignores_comments():
@@ -156,4 +163,4 @@ def test_contract_safety_checks_reach_the_cbmc_verify_run(tmp_path):
     ctx.spec.contract.safety.append(SafetyProperty(id="SAFE9", text="no leaks", checks=["memory-leak"]))
     _fake_tools(ctx)
     assert "memory-leak" not in ctx.spec.verification.effective_checks()
-    assert CHECK_FLAGS["memory-leak"] in build_cbmc_argv(ctx, mode="verify")
+    assert CHECK_FLAGS["memory-leak"] in build_cbmc_argv(ctx, mode="verify", inputs=UNITS)

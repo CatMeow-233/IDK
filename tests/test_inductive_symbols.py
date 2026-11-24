@@ -6,12 +6,11 @@ from typing import Any
 import pytest
 
 from leanc.backends.inductive.harness_calls import ReturnKind
+from leanc.backends.cbmc.symbol_table import SymbolTable, parse_symbol_table
 from leanc.backends.inductive.symbols import (
     RENAME_REMEDY,
-    SymbolTable,
     capture_problems,
     claimed_problems,
-    parse_symbol_table,
     return_kinds,
     trusted_definitions,
 )

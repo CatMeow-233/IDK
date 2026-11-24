@@ -7,9 +7,9 @@ from pathlib import Path
 
 from leanc.backends.cbmc.bodiless import undeclared_function
 from leanc.backends.cbmc.compile_flags import cbmc_preprocessor_macro_args
+from leanc.backends.cbmc.symbol_table import SHOW_SYMBOL_TABLE, SymbolTable, parse_symbol_table
 from leanc.backends.inductive.problems import BuildProblem, tool_error
 from leanc.backends.inductive.steps import StepRun, ToolSteps
-from leanc.backends.inductive.symbols import SymbolTable, parse_symbol_table
 from leanc.foundation.models import Location
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cprover import CproverTool
@@ -17,7 +17,6 @@ from leanc.toolchain.cprover import CproverTool
 GOTO_CC_VERBOSITY = ("--verbosity", "2")
 OBJECT_BITS_FLAG = "--object-bits"
 OUTPUT_FLAG = "-o"
-SHOW_SYMBOL_TABLE = ("--show-symbol-table", "--json-ui")
 _DIAGNOSTIC_LOCATION_RE = re.compile(r"^(?P<file>[^:\n]+):(?P<line>\d+)(?::\d+)?: ")
 
 

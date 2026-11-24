@@ -109,7 +109,7 @@ def scope_assumptions(
         + ", ".join(ctx.spec.effective_cbmc_checks())
         + " - plus every assertion of the approved harness; other properties are not checked",
         (
-            f"inputs as constrained by the approved harness {verification.harness} (its LEANC_ASSUME preconditions) "
+            f"inputs as constrained by the approved harness {verification.harness} (its code and its LEANC_ASSUME preconditions) "
             f"calling {ctx.spec.target.function}(); executions outside these constraints are not covered"
         ),
     ]

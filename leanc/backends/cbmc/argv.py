@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from typing import Literal
 
 from leanc.backends.cbmc.compile_flags import (
@@ -52,7 +53,7 @@ def _property_check_flags(spec: Spec) -> list[str]:
 
 def _mode_args(spec: Spec, mode: Mode) -> list[str]:
     if mode == "vacuity":
-        return [VACUITY_DEFINE]
+        return []
     if mode == "verify":
         return _property_check_flags(spec)
     return list(COVERAGE_CRITERION)
@@ -90,19 +91,20 @@ def cbmc_source_args(ctx: BackendContext) -> list[str]:
     ]
 
 
-def build_cbmc_argv(ctx: BackendContext, *, mode: Mode = "verify") -> list[str]:
+def build_cbmc_argv(ctx: BackendContext, *, mode: Mode = "verify", inputs: Sequence[str]) -> list[str]:
     if mode not in MODES:
         raise ValueError(f"unknown CBMC mode {mode!r} (expected one of {', '.join(MODES)})")
     cbmc = ctx.tools.cbmc
     if not cbmc:
         raise ValueError("cbmc is not available (ctx.tools.cbmc is None)")
+    if not inputs:
+        raise ValueError("the CBMC run needs the preprocessed translation units")
     spec = ctx.spec
     verification = spec.verification
     argv: list[str] = [
         cbmc,
-        *spec.sources.editable,
-        verification.harness,
-        *cbmc_source_args(ctx),
+        *inputs,
+        *compile_translation(spec).semantic_args,
         *_mode_args(spec, mode),
         *_unwind_args(verification),
     ]

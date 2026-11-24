@@ -19,11 +19,12 @@ from inductive_build_support import (
 )
 from inductive_replay_support import load_recording, record_build
 
+from leanc.backends.cbmc.symbol_table import parse_symbol_table
 from leanc.backends.inductive import ASSUME_AFTER_CLAIMED_CALL_LABEL, BuildMode
 from leanc.backends.inductive.harness_calls import claimed_call_label
 from leanc.backends.inductive.loops import parse_loops
 from leanc.backends.inductive.program import TRUSTED_HARNESS_STEM, TRUSTED_MODELS_STEM
-from leanc.backends.inductive.symbols import capture_problems, parse_symbol_table, trusted_definitions
+from leanc.backends.inductive.symbols import capture_problems, trusted_definitions
 from leanc.foundation.reasons import Reason
 from leanc.foundation.status import Outcome
 from leanc.toolchain.context import VerifyOptions

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from leanc.backends.cbmc.harness import find_probes
+from leanc.backends.cbmc.symbol_table import CPROVER_DECLARATION_RULE, cprover_declarations
+from leanc.backends.cbmc.vacuity_divergence import DIVERGENCE_RULE, ReachSite, reach_sites, vacuity_divergence
 from leanc.backends.inductive.annotation import (
     EditableUnit,
     claimed_entries,
@@ -88,6 +90,7 @@ class InductiveBuild:
     function_probes: tuple[str, ...] = ()
     loop_probes: tuple[str, ...] = ()
     return_probes: tuple[str, ...] = ()
+    reach_sites: tuple[ReachSite, ...] = ()
     verify: BuiltProgram | None = None
     vacuity: BuiltProgram | None = None
     bodiless: tuple[str, ...] = ()
@@ -200,6 +203,9 @@ class _Builder:
         has_probes, _ = find_probes(_snapshot_text(self.ctx, harness))
         if not has_probes:
             return tool_error(f"the inductive harness {harness} has no LEANC_REACH probe")
+        divergence = vacuity_divergence(self.harness[BuildMode.VERIFY].text, self.harness[BuildMode.VACUITY].text)
+        if divergence is not None:
+            return tool_error(f"the inductive harness {harness} {DIVERGENCE_RULE}", [divergence.describe()])
         for mode, unit in self.harness.items():
             included = editable_includes(unit.text, self.ctx.spec.sources.editable)
             if included:
@@ -208,9 +214,8 @@ class _Builder:
             if layout.problems:
                 return tool_error(f"the inductive harness {harness} ({mode.value} build) breaks the harness rules", layout.problems)
             self.layouts[mode] = layout
-        if self.layouts[BuildMode.VERIFY].call_sequence() != self.layouts[BuildMode.VACUITY].call_sequence():
-            return tool_error(f"the inductive harness {harness} makes different claimed calls in its vacuity build")
         self.result.claimed_calls = self.layouts[BuildMode.VERIFY].calls
+        self.result.reach_sites = reach_sites(self.harness[BuildMode.VACUITY].text)
         self.result.harness_assumptions = assumption_texts(self.harness[BuildMode.VERIFY].text, self.layouts[BuildMode.VERIFY])
         return None
 
@@ -269,6 +274,9 @@ class _Builder:
         claimed = claimed_problems(program.table, self.claimed, self.ctx.spec.sources.editable, self.inductive.harness)
         if claimed:
             return tool_error("the linked program does not bind the claimed functions and main() as required", claimed)
+        declared = cprover_declarations(program.table)
+        if declared:
+            return tool_error(f"the linked {mode.value} program {CPROVER_DECLARATION_RULE}", declared)
         undeclared = undeclared_problem(program)
         return undeclared if undeclared is not None else program
 

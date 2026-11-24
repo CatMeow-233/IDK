@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from leanc.backends.cbmc.symbol_table import Symbol, SymbolTable
 from leanc.backends.inductive.editable_entry import (
     editable_before_claimed_label,
     editable_includes,
@@ -16,7 +17,6 @@ from leanc.backends.inductive.editable_objects import (
     keeps_initializer,
 )
 from leanc.backends.inductive.harness_calls import CLAIMED_CALLS_COUNTER, CLAIMED_ENTERED_FLAG, EDITABLE_ENTERED_FLAG
-from leanc.backends.inductive.symbols import Symbol, SymbolTable
 
 EDITABLE = "src/ring.c"
 HEADER = "include/ring.h"

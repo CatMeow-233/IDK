@@ -6,6 +6,7 @@ from cbmc_support import _fake_tools
 from clang_driver_support import cc1_args, minimal_source
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
+from leanc.backends.cbmc.preprocess import preprocess_argv
 from leanc.backends.cbmc.compile_flags import (
     platform_architecture,
     translate_compile_options,
@@ -154,11 +155,15 @@ def test_argv_carries_translated_flags_in_every_mode(tmp_path):
     )
     _fake_tools(ctx)
     for mode in ("verify", "vacuity", "coverage"):
-        argv = build_cbmc_argv(ctx, mode=mode)
-        assert argv.index("-Iextra") < argv.index("-Iinclude")
-        assert argv.index("-DFROM_FLAGS=2") < argv.index("-DFROM_DEFINES")
+        argv = build_cbmc_argv(ctx, mode=mode, inputs=["/build/cbmc/verify/src/impl.i"])
         assert "--unsigned-char" in argv and "--c99" in argv
         assert "-O2" not in argv and "-std=c99" not in argv
+    for vacuity in (False, True):
+        preprocess = preprocess_argv(ctx, "harness/h.c", vacuity=vacuity)
+        assert preprocess.index("-Iextra") < preprocess.index("-Iinclude")
+        assert preprocess.index("-DFROM_FLAGS=2") < preprocess.index("-DFROM_DEFINES")
+        assert "--unsigned-char" in preprocess and "--c99" in preprocess
+        assert "-O2" not in preprocess and "-std=c99" not in preprocess
 
 
 def test_mutation_macro_flag_reaches_cbmc(tmp_path, needs_cbmc):
@@ -200,7 +205,7 @@ def test_ndebug_in_flags_cannot_disable_harness_assertions(tmp_path, needs_cbmc)
                                function="arr_get")
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.PASS, res.summary
-    assert not any("NDEBUG" in arg for arg in res.details["argv"]["verify"])
+    assert not any("NDEBUG" in arg for invocation in res.invocations for arg in invocation.argv)
     assert any("would disable harness assertions: -DNDEBUG" in a for a in res.details["assumptions"])
 
 

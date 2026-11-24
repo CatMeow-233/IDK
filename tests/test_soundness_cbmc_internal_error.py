@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from cbmc_replay_support import fixture_messages, replaying_cbmc, write_executable
+from cbmc_replay_support import FRONTEND_PASSTHROUGH, VACUITY_RUN_TEST, fixture_messages, replaying_cbmc, write_executable
 from cbmc_support import _fake_tools, make_cbmc_project
 
 from leanc.backends.cbmc import run_cbmc
@@ -38,7 +38,7 @@ def _stderr_report_script(ending: str) -> str:
 
 def _run(tmp_path, script: str):
     ctx = make_cbmc_project(tmp_path, src="arr_get_ok", harness="arr_get_harness", function="arr_get")
-    _fake_tools(ctx, cbmc=write_executable(tmp_path / "fake" / "cbmc", script))
+    _fake_tools(ctx, cbmc=write_executable(tmp_path / "fake" / "cbmc", FRONTEND_PASSTHROUGH + script))
     return run_cbmc(ctx)
 
 
@@ -93,9 +93,8 @@ def test_marker_on_stderr_beside_a_complete_verdict_keeps_the_pass(tmp_path):
     (payload / "verify.json").write_text(json.dumps(fixture_messages(PASSING_PAYLOAD)))
     (payload / "vacuity.json").write_text(json.dumps(fixture_messages(VACUITY_PAYLOAD)))
     script = (
-        "VAC=\n"
-        'for a in "$@"; do [ "$a" = "-DLEANC_VACUITY_CHECK" ] && VAC=1; done\n'
-        f"echo '{MARKER} (quoted by a wrapper)' >&2\n"
+        VACUITY_RUN_TEST
+        + f"echo '{MARKER} (quoted by a wrapper)' >&2\n"
         f'if [ -n "$VAC" ]; then cat {payload / "vacuity.json"}; else cat {payload / "verify.json"}; fi'
     )
     res = _run(tmp_path, script)

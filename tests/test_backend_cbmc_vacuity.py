@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from cbmc_replay_support import VACUITY_FLAG, checking_runs
 from cbmc_support import make_cbmc_project
 
 from leanc.backends.cbmc import run_cbmc
@@ -39,7 +40,8 @@ def test_no_probes_is_inconclusive(tmp_path, needs_cbmc):
     assert res.outcome is Outcome.INCONCLUSIVE
     assert "no LEANC_REACH probes" in res.summary and "vacuity cannot be checked" in res.summary
     assert res.details["vacuity"]["status"] == "unchecked"
-    assert len(res.invocations) == 1
+    assert len(checking_runs(res)) == 1
+    assert not any(VACUITY_FLAG in invocation.argv for invocation in res.invocations)
     assert res.failures == []
 
 
@@ -51,7 +53,8 @@ def test_vacuity_check_disabled_is_inconclusive(tmp_path, needs_cbmc):
     assert res.outcome is Outcome.INCONCLUSIVE
     assert "vacuity check disabled in spec; cannot exclude vacuous verification" in res.summary
     assert res.details["vacuity"]["status"] == "disabled"
-    assert len(res.invocations) == 1
+    assert len(checking_runs(res)) == 1
+    assert not any(VACUITY_FLAG in invocation.argv for invocation in res.invocations)
 
 
 def _patch_harness(ctx: BackendContext, old: str, new: str, count: int = 1) -> None:
@@ -159,4 +162,4 @@ def test_overridden_assert_machinery_is_error(tmp_path, needs_cbmc):
     )
     assert res.details["harness_assertions"] == {"in_source": 4, "cbmc_properties": 0}
     assert res.diagnostics[-1].rule_id == "missing-assertions"
-    assert res.failures == [] and len(res.invocations) == 1
+    assert res.failures == [] and len(checking_runs(res)) == 1

@@ -82,12 +82,17 @@ leanc run spec.yaml --provider mock --regenerate    # => VERIFIED_INDUCTIVE（0 
   裡的 `goto`；`main()` 從最後一個 `LEANC_ASSUME`（沒有就從開頭）到第一個 claimed 函式呼叫結束之間的任何寫入
   （`=`、複合指定、`++`、`--`，例如 `r->fill = r->fill % 8;`），只有一般宣告 `T x = ...;` 的 `=` 例外；
   harness 翻譯單元（包括它引入的標頭）在函式本體裡使用，或在檔案範圍當作值使用（例如函式指標初始值 `= exit`，
-  原型宣告不算）`exit`、`abort`、`_Exit`、`quick_exit`、`longjmp` 等會讓 CBMC 默默剪掉路徑的名稱；
+  原型宣告不算）`exit`、`abort`、`_Exit`、`quick_exit`、`longjmp`、`err`、`errx`、`verr`、`verrx` 等會讓 CBMC
+  默默剪掉路徑的名稱；
   `__VERIFIER_assume` 和 `LEANC_ASSUME` 一樣算假設（第一個 claimed 呼叫之後出現就是 ERROR，之前出現就列入範圍
   敘述）；在 claimed 函式入口之前執行任何可編輯原始碼的函式（假設裡的可編輯 predicate、呼叫前的 setup 呼叫、
   claimed 呼叫的引數；verify build 在每個可編輯函式入口插入檢查，CBMC 在每條路徑上檢查）；harness 讀取可編輯
   原始碼定義、且歸納 run 保留其初始值的物件（const 或含 const 成分，例如 `const unsigned limit = 15;`）；
-  harness 翻譯單元引入可編輯原始碼檔案。verify run
+  harness 翻譯單元引入可編輯原始碼檔案；harness 在有無 `-DLEANC_VACUITY_CHECK` 時的兩份前處理結果，把程式碼位置上的
+  每個 `LEANC_REACH` 展開換成 `((void)0)` 之後不完全相同（例如 `#ifndef LEANC_VACUITY_CHECK` 包住的分支，或依據字串化
+  探針的分支：vacuity run 看到的會是另一個程式）；兩個 build 的連結後符號表中，有位於原始檔、名稱以 `__CPROVER_` 開頭
+  的符號（例如 helper 的參數 `void (*__CPROVER_assert)(int, const char *)`：插入的檢查會改呼叫 harness 程式碼）。vacuity
+  文字中每個 `LEANC_REACH` 位置都要在同一檔案、行與標籤上被 CBMC 回報，否則是 vacuous harness（`INCONCLUSIVE`）。verify run
   另外使用 `--no-self-loops-to-assumptions`，所以 `for (;;) {}` 這種自我迴圈不會被 CBMC 變成假設，而是展開斷言
   失敗（`INCONCLUSIVE`）。
 - 已知缺口（未偵測）：其他 `LEANC_ASSUME` 以外的 harness 程式碼仍會縮小涵蓋的狀態，而且不會列在範圍敘述裡：

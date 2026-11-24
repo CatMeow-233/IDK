@@ -223,6 +223,7 @@ def evaluate_probes(run: CbmcRun, harness_text: str, *, harness: str, unwind_ins
     judge.report_unattributed(missing_total - sum(missing_by_label.values()))
     verdict.failures = judge.failures
     details["unreported_occurrences"] = max(missing_total, sum(missing_by_label.values()))
+    details["unreported_labels"] = sorted(missing_by_label)
 
     if not probes and not verdict.failures:
         details["status"] = "unchecked"

@@ -36,14 +36,15 @@ from leanc.backends.cbmc.execution import (
     ran_out_of_memory,
     tool_problem,
 )
-from leanc.backends.cbmc.harness import count_harness_assertions, find_probes
+from leanc.backends.cbmc.harness import count_harness_assertions
 from leanc.backends.cbmc.output import program_version
+from leanc.backends.cbmc.program_inputs import ProgramInputs, cprover_declaration_problem, prepare_inputs
 from leanc.backends.cbmc.properties import (
     PropertyTally,
     count_listed_harness_assertions,
     tally_properties,
 )
-from leanc.backends.cbmc.vacuity import evaluate_probes
+from leanc.backends.cbmc.vacuity_stage import check_vacuity, vacuity_run_wanted
 from leanc.backends.counterexample.locations import location_from_cbmc
 from leanc.backends.counterexample.properties import property_class
 from leanc.backends.counterexample.reports import (
@@ -70,9 +71,7 @@ CBMC_NOT_FOUND = (
     "cbmc executable not found (install CBMC, e.g. `apt-get install cbmc`, or set LEANC_CBMC); "
     "formal verification was not performed"
 )
-VACUITY_DISABLED = "vacuity check disabled in spec; cannot exclude vacuous verification"
 NOTHING_CHECKED = "CBMC generated no property to check for this harness and code; nothing was verified"
-UNWIND_CUTOFF_SUFFIX = " (possibly only because executions beyond the unwind bound were cut off)"
 UNMODELLED_RULE = "unmodelled-callee"
 
 
@@ -118,6 +117,7 @@ class _Gate:
     diagnostics: list[Diagnostic] = field(default_factory=list)
     failures: list[FailureReport] = field(default_factory=list)
     platform: str | None = None
+    inputs: ProgramInputs | None = None
     bodiless_functions: list[str] = field(default_factory=list)
     undeclared_functions: list[str] = field(default_factory=list)
 
@@ -177,8 +177,14 @@ class _Gate:
     def fail_with(self, problem: ToolProblem, summary: str | None = None) -> StageResult:
         return self.finish(problem.outcome, problem.summary if summary is None else summary)
 
+    def stopped(self, problem: ToolProblem) -> StageResult:
+        self.diagnostics.extend(problem.diagnostics)
+        return self.fail_with(problem)
+
     def execute(self, mode: Mode) -> CbmcRun:
-        run = execute_cbmc(self.ctx, mode, self.limits)
+        if self.inputs is None:
+            raise ValueError("the CBMC translation units were not prepared")
+        run = execute_cbmc(self.ctx, mode, self.limits, self.inputs.for_mode(mode))
         self.invocations.append(run.invocation)
         self.details["argv"][mode] = run.argv
         self.details["raw"][mode] = run.raw_ref
@@ -443,42 +449,6 @@ def _undecided_verdict(gate: _Gate, tally: PropertyTally, verify_run: CbmcRun) -
     )
 
 
-def _check_vacuity(gate: _Gate, harness_text: str, unwind_insufficient: bool) -> tuple[ToolProblem | None, list[str]]:
-    verification = gate.ctx.spec.verification
-    if not verification.vacuity_check:
-        gate.details["vacuity"] = {"status": "disabled", "probes": {}}
-        return None, [VACUITY_DISABLED]
-    has_probes, _ = find_probes(harness_text)
-    if not has_probes:
-        gate.details["vacuity"] = {"status": "unchecked", "probes": {}}
-        return None, [
-            (
-                f"no LEANC_REACH probes in the harness {verification.harness}; vacuity cannot be checked "
-                '(add LEANC_REACH("label") after the call under verification)'
-            )
-        ]
-    vacuity_run, problem = gate.execute_checked("vacuity")
-    if problem is not None:
-        gate.details["vacuity"] = {"status": "skipped", "probes": {}, "note": f"vacuity run failed: {problem.summary}"}
-        gate.diagnostics.extend(problem.diagnostics)
-        return problem, []
-    verdict = evaluate_probes(
-        vacuity_run, harness_text, harness=verification.harness, unwind_insufficient=unwind_insufficient
-    )
-    gate.details["vacuity"] = verdict.details
-    gate.details["notes"].extend(verdict.notes)
-    gate.failures.extend(verdict.failures)
-    for failure in verdict.failures:
-        gate.diagnostics.append(
-            Diagnostic(tool=TOOL, rule_id="vacuity", severity="warning", message=failure.description, location=failure.location)
-        )
-    if verdict.problem is not None:
-        return verdict.problem, []
-    if verdict.inconclusive:
-        return None, [verdict.inconclusive + (UNWIND_CUTOFF_SUFFIX if unwind_insufficient else "")]
-    return None, []
-
-
 def _record_informational_coverage(gate: _Gate) -> None:
     coverage_run, problem = gate.execute_checked("coverage")
     if problem is not None:
@@ -522,11 +492,16 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
     if missing:
         return gate.finish(Outcome.ERROR, f"cannot run CBMC: missing input file(s) in the snapshot: {', '.join(missing)}")
     harness_text = (ctx.snapshot_dir / verification.harness).read_text(encoding="utf-8", errors="replace")
-
+    inputs = prepare_inputs(ctx, gate.limits, gate.invocations, with_vacuity=vacuity_run_wanted(verification, harness_text))
+    if isinstance(inputs, ToolProblem):
+        return gate.stopped(inputs)
+    gate.inputs = inputs
     verify_run, problem = gate.execute_checked("verify")
     if problem:
-        gate.diagnostics.extend(problem.diagnostics)
-        return gate.fail_with(problem)
+        return gate.stopped(problem)
+    declared = cprover_declaration_problem(ctx, gate.limits, inputs, gate.invocations)
+    if declared is not None:
+        return gate.stopped(declared)
     gate.record_warnings(verify_run)
     results = verify_run.output.results or []
     rejected = _reject_neutralised_harness_assertions(gate, results, harness_text)
@@ -547,7 +522,7 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
     if tally.undecided:
         return _undecided_verdict(gate, tally, verify_run)
 
-    vacuity_problem, vacuity_reasons = _check_vacuity(gate, harness_text, unwind_insufficient=bool(unwind_reports))
+    vacuity_problem, vacuity_reasons = check_vacuity(gate, harness_text, unwind_insufficient=bool(unwind_reports))
     inconclusive = _model_gap_reasons(gate, split) + ([unwind_text] if unwind_text else []) + vacuity_reasons
     if vacuity_problem is not None:
         also = ". Also: " + "; ".join(inconclusive) if inconclusive else ""

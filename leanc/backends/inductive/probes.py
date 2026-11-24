@@ -8,6 +8,8 @@ from typing import Any
 
 from leanc.backends.cbmc.execution import CbmcRun
 from leanc.backends.cbmc.vacuity import PROBE_DECIDED, PROBE_REACHED, evaluate_probes
+from leanc.backends.cbmc.vacuity_divergence import ReachSite
+from leanc.backends.cbmc.vacuity_sites import UNREPORTED_SITE, unreported_sites
 from leanc.backends.counterexample.locations import location_from_cbmc
 from leanc.backends.counterexample.properties import CBMC_TOOL, VACUITY_ID_PREFIX, is_reach_probe
 from leanc.backends.inductive.findings import FAILURE_ID_PREFIX, UNPROVED_KIND, Finding
@@ -155,8 +157,28 @@ def _rekeyed(failure: FailureReport) -> Finding:
     return Finding(Reason.VACUOUS_HARNESS, f"{label}: {failure.description}", failure.location, vacuous)
 
 
+def _site_findings(run: CbmcRun, sites: Sequence[ReachSite], details: dict[str, Any]) -> list[Finding]:
+    unreported = unreported_sites(run.output.results or [], sites, details.get("unreported_labels", []))
+    details["sites"] = len(sites)
+    details["unreported_sites"] = [site.describe() for site in unreported]
+    findings = []
+    seen: Counter[str] = Counter()
+    for site in unreported:
+        key = f"{site.label}@{site.where}"
+        seen[key] += 1
+        label = key if seen[key] == 1 else f"{key}#{seen[key]}"
+        location = Location(file=site.origin.file, line=site.origin.line) if site.origin else None
+        findings.append(_vacuous(label, f"{site.describe()} {UNREPORTED_SITE}", location, run.raw_ref))
+    return findings
+
+
 def judge_probes(
-    run: CbmcRun, harness_text: str, harness: str, expected: Sequence[ExpectedProbe], unwind_insufficient: bool
+    run: CbmcRun,
+    harness_text: str,
+    harness: str,
+    expected: Sequence[ExpectedProbe],
+    unwind_insufficient: bool,
+    sites: Sequence[ReachSite],
 ) -> ProbeJudgement:
     judgement = ProbeJudgement()
     verdict = evaluate_probes(run, harness_text, harness=harness, unwind_insufficient=unwind_insufficient)
@@ -174,6 +196,7 @@ def judge_probes(
         judgement.findings = [Finding(Reason.VACUITY_UNCHECKED, NO_PROBE_REPORTED)]
         return judgement
     judgement.findings = [_rekeyed(failure) for failure in verdict.failures] + judgement.findings
+    judgement.findings += _site_findings(run, sites, judgement.details)
     if verdict.details.get("status") == UNCHECKED_STATUS and not judgement.findings:
         judgement.details["status"] = UNCHECKED_STATUS
         judgement.findings = [Finding(Reason.VACUITY_UNCHECKED, verdict.inconclusive)]

@@ -25,6 +25,8 @@ sys.path.insert(0, str(REPO / "tests"))
 from cbmc_support import make_cbmc_project
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
+from leanc.backends.cbmc.execution import cbmc_limits
+from leanc.backends.cbmc.program_inputs import ProgramInputs, prepare_inputs
 from leanc.foundation.runner import Limits
 
 # (output name, src, harness, function, verification overrides, modes to keep)
@@ -77,7 +79,9 @@ def main() -> None:
     # address-space limit (below the spec minimum, hence run directly).
     with tempfile.TemporaryDirectory() as td:
         ctx = make_cbmc_project(Path(td), src="mul_div", harness="mul_div_harness", function="mul_div")
-        argv = build_cbmc_argv(ctx, mode="verify")
+        inputs = prepare_inputs(ctx, cbmc_limits(ctx), [], with_vacuity=False)
+        assert isinstance(inputs, ProgramInputs), inputs
+        argv = build_cbmc_argv(ctx, mode="verify", inputs=inputs.verify)
         proc = ctx.run(argv, limits=Limits(timeout_s=120, memory_mb=60, max_output_bytes=64 << 20))
         (out_dir / "mul_div_oom.verify.json").write_text(_sanitize(proc.stdout))
         print(f"mul_div_oom: exit {proc.exit_code}")

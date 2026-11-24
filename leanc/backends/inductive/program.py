@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from leanc.backends.cbmc.symbol_table import SymbolTable
 from leanc.backends.inductive.link import Undeclared, compile_units, read_symbol_table, undeclared_functions
 from leanc.backends.inductive.problems import BuildProblem, contract_rejected, inconclusive, tool_error
 from leanc.backends.inductive.steps import StepRun, ToolSteps, output_excerpt
-from leanc.backends.inductive.symbols import SymbolTable, capture_problems, trusted_definitions
+from leanc.backends.inductive.symbols import capture_problems, trusted_definitions
 from leanc.foundation.reasons import Reason
 
 TRUSTED_MODELS_STEM = "trusted_0_models"

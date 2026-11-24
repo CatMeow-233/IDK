@@ -4,8 +4,8 @@ import posixpath
 from collections.abc import Iterable
 from typing import Any
 
+from leanc.backends.cbmc.symbol_table import CODE_TYPE_ID, Symbol, SymbolTable
 from leanc.backends.inductive.harness_calls import body_references
-from leanc.backends.inductive.symbols import CODE_TYPE_ID, Symbol, SymbolTable
 
 __all__ = [
     "editable_constant_objects",
