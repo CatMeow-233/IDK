@@ -4,6 +4,7 @@ import json
 import stat
 from pathlib import Path
 
+from cbmc_replay_support import DIVERGENCE_PREPROCESS_RUNS, PREPROCESS_PASSTHROUGH
 from cbmc_support import FIX, _fake_tools, make_cbmc_project
 
 from leanc.backends.cbmc import (
@@ -99,7 +100,8 @@ def _fake_cbmc_by_mode(tmp_path: Path, verify_payload: str, vacuity_action: str,
     exe = d / "cbmc"
     exe.write_text(
         "#!/bin/sh\n"
-        "VAC=\n"
+        + PREPROCESS_PASSTHROUGH
+        + "VAC=\n"
         'for a in "$@"; do [ "$a" = "-DLEANC_VACUITY_CHECK" ] && VAC=1; done\n'
         f'if [ -n "$VAC" ]; then {vacuity_action.replace("@VACUITY@", str(d / "vacuity.json"))}; '
         f'else cat {d / "verify.json"}; fi\n'
@@ -134,7 +136,7 @@ def test_vacuity_run_timeout_is_timeout(tmp_path):
     res = run_cbmc(ctx)
     assert res.outcome is Outcome.TIMEOUT and res.status is Status.TIMEOUT
     assert "vacuity run" in res.summary and "timed out" in res.summary
-    assert [i.timed_out for i in res.invocations] == [False, True]
+    assert [i.timed_out for i in res.invocations] == [False] * (1 + DIVERGENCE_PREPROCESS_RUNS) + [True]
     assert res.details["vacuity"]["status"] == "skipped"
 
 

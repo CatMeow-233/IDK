@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 
+from cbmc_replay_support import DIVERGENCE_PREPROCESS_RUNS
 from cbmc_support import _fake_tools, make_cbmc_project
 
 from leanc.backends.cbmc import execution as cbmc_execution
@@ -45,12 +46,13 @@ def test_correct_code_passes_with_vacuity_ok(tmp_path, needs_cbmc):
         raw = ctx.raw_dir / f"cbmc-{mode}.json"
         assert raw.is_file()
         json.loads(raw.read_text())
-    assert [i.tool for i in res.invocations] == ["cbmc", "cbmc"]
+    assert [i.tool for i in res.invocations] == ["cbmc"] * (2 + DIVERGENCE_PREPROCESS_RUNS)
+    assert ["--preprocess" in i.argv for i in res.invocations] == [False, *[True] * DIVERGENCE_PREPROCESS_RUNS, False]
     assert all(i.exit_code is not None and i.stdout_path for i in res.invocations)
     assert res.invocations[0].sandbox == ctx.sandbox.kind
     text = " ".join(d["assumptions"])
     assert "unwound at most 5" in text and "unwinding assertions" in text
-    assert "inputs as constrained by the approved harness harness/h.c" in text
+    assert "inputs as constrained by the approved harness harness/h.c (its code and its LEANC_ASSUME" in text
     assert "bounds" in text and "signed-overflow" in text
     assert "malloc model" in text and "non-vacuity" in text
     assert d["cbmc_version"] in text
@@ -291,7 +293,7 @@ def test_coverage_details(tmp_path, needs_cbmc):
     assert set(res.details["argv"]) == {"verify", "vacuity", "coverage"}
     assert "--cover" in res.details["argv"]["coverage"]
     assert (ctx.raw_dir / "cbmc-coverage.json").is_file()
-    assert len(res.invocations) == 3
+    assert len(res.invocations) == 3 + DIVERGENCE_PREPROCESS_RUNS
 
 
 def test_coverage_reveals_branch_the_harness_never_takes(tmp_path, needs_cbmc):

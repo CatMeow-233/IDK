@@ -205,7 +205,10 @@ def test_probe_labels_in_string_literals_are_not_identifiers():
 TERMINATION_RULE = "ends the path or jumps out of it without a check"
 
 
-@pytest.mark.parametrize("call", ["exit(0)", "abort()", "_Exit(1)", "quick_exit(0)", "longjmp(env, 1)"])
+@pytest.mark.parametrize(
+    "call",
+    ["exit(0)", "abort()", "_Exit(1)", "quick_exit(0)", "longjmp(env, 1)", 'err(1, "x")', 'errx(1, "x")', 'verr(1, "x", ap)', 'verrx(1, "x", ap)'],
+)
 def test_a_path_ending_call_after_the_claimed_call_is_a_problem(call):
     pp = preprocessed(f"    int s = step(0);\n    if (s) {{\n        {call};\n    }}\n    reset(&s);\n")
     (problem,) = [problem for problem in problems_of(pp) if TERMINATION_RULE in problem]

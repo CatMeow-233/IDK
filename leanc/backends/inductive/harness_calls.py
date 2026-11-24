@@ -15,6 +15,7 @@ from leanc.rules.preprocessor import linemarker
 
 __all__ = [
     "ASSUME_AFTER_CLAIMED_CALL_LABEL",
+    "HARNESS_PATH_ENDING_NAMES",
     "ASSUME_BUILTIN",
     "ASSUME_BUILTINS",
     "CLAIMED_CALLS_COUNTER",
@@ -67,6 +68,8 @@ _RESERVED_IDENTIFIER_RE = re.compile(r"(?<![\w$])leanc_\w*", re.IGNORECASE)
 _TAG_KEYWORD_RE = re.compile(r"(?<![\w$])(?:struct|union|enum)\s*$")
 TAG_LOOKBEHIND_CHARS = 32
 BLOCK_OPEN = "{"
+ERROR_EXIT_NAMES = frozenset({"err", "errx", "verr", "verrx"})
+HARNESS_PATH_ENDING_NAMES = TERMINATION_NAMES | ERROR_EXIT_NAMES
 
 
 class ReturnKind(str, Enum):
@@ -124,9 +127,6 @@ class HarnessLayout:
     assumes: tuple[AssumeSite, ...] = ()
     main_body_open: int | None = None
     problems: tuple[str, ...] = ()
-
-    def call_sequence(self) -> tuple[tuple[str, Origin | None], ...]:
-        return tuple((call.function, call.origin) for call in self.calls)
 
 
 @dataclass(frozen=True)
@@ -355,7 +355,7 @@ def _termination_problems(view: _View) -> list[str]:
         f"{view.where(reference.start)}: {reference.name} ends the path or jumps out of it without a check; CBMC "
         "prunes such a path like an assumption, so the inductive harness and the code it includes must not use it "
         "(not even as a function pointer value)"
-        for reference in view.references(sorted(TERMINATION_NAMES))
+        for reference in view.references(sorted(HARNESS_PATH_ENDING_NAMES))
         if _may_end_paths(view, reference)
     ]
 

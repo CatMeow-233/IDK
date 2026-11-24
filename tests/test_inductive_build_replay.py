@@ -20,11 +20,12 @@ from inductive_build_support import (
 from inductive_replay_support import GOTO_CC, NO_OUTPUT_FILE, OUTPUT_FLAG, START_ERROR, load_recording, mutated, replay_build
 
 from leanc.backends.cbmc.compile_flags import cbmc_preprocessor_macro_args
+from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX
+from leanc.backends.cbmc.vacuity_divergence import DIVERGENCE_RULE
 from leanc.backends.inductive import BuildMode, build_inductive
 from leanc.backends.inductive.harness_calls import return_probe_label
 from leanc.backends.inductive.link import GOTO_CC_VERBOSITY
 from leanc.backends.inductive.loops import DFCC_ARGS
-from leanc.backends.inductive.preprocess import CBMC_BANNER_PREFIX
 from leanc.backends.inductive.program import TRUSTED_HARNESS_STEM, TRUSTED_MODELS_STEM
 from leanc.foundation.reasons import Reason
 from leanc.foundation.status import Outcome
@@ -34,6 +35,7 @@ from leanc.toolchain.context import BackendContext
 TOOL_RUNS = 20
 CONTRACTED_LINES = (6, 18, 29)
 HARNESS_PREPROCESS = "preprocess harness harness/inductive.c"
+HARNESS_VACUITY_PREPROCESS = "preprocess harness vacuity harness/inductive.c"
 EDITABLE_PREPROCESS = f"preprocess editable {TALLY_SOURCE}"
 UNDECLARED_WARNING = "harness/inductive.c:12:1: warning: function 'nondet_ulonglong' is not declared"
 EXTRA_LOOP = {"name": "tally_clear.0", "sourceLocation": {"file": TALLY_SOURCE, "function": "tally_clear", "line": "33"}}
@@ -229,7 +231,7 @@ def test_claimed_function_without_editable_definition_is_a_tool_error(tmp_path, 
         return text.replace("tally_clear(a, n);", "tally_clear(a, n); tally_extra(a, n);")
 
     entries = mutated(recording, HARNESS_PREPROCESS, edit_stdout(call_extra))
-    entries = mutated(entries, "preprocess harness vacuity harness/inductive.c", edit_stdout(call_extra))
+    entries = mutated(entries, HARNESS_VACUITY_PREPROCESS, edit_stdout(call_extra))
     build, replayer = replayed(context, entries)
     assert build.problem.outcome is Outcome.ERROR
     assert "tally_extra must have exactly one definition in the editable sources, found 0" in build.problem.describe()
@@ -378,8 +380,20 @@ def test_harness_rule_violation_is_a_tool_error_before_compiling(ctx, recording)
     def second_main(text: str) -> str:
         return text + "\nint main2(void) { return main(); }\n"
 
-    build, replayer = replayed(ctx, mutated(recording, HARNESS_PREPROCESS, edit_stdout(second_main)))
+    entries = mutated(recording, HARNESS_PREPROCESS, edit_stdout(second_main))
+    build, replayer = replayed(ctx, mutated(entries, HARNESS_VACUITY_PREPROCESS, edit_stdout(second_main)))
     assert build.problem.outcome is Outcome.ERROR and "main is referenced" in build.problem.describe()
+    assert len(replayer.calls) == 4
+
+
+@pytest.mark.parametrize("label", [HARNESS_PREPROCESS, HARNESS_VACUITY_PREPROCESS])
+def test_harness_text_that_differs_between_the_builds_is_a_tool_error_before_compiling(ctx, recording, label):
+    def extra_statement(text: str) -> str:
+        return text + "\nint leanc_free_extra;\n"
+
+    build, replayer = replayed(ctx, mutated(recording, label, edit_stdout(extra_statement)))
+    assert build.problem.outcome is Outcome.ERROR, build.problem
+    assert DIVERGENCE_RULE in build.problem.describe()
     assert len(replayer.calls) == 4
 
 
@@ -395,8 +409,9 @@ def test_vacuity_build_with_different_claimed_calls_is_a_tool_error(ctx, recordi
     def extra_call(text: str) -> str:
         return text.replace("tally_clear(a, n);", "tally_clear(a, n); tally_clear(a, n);")
 
-    build, _ = replayed(ctx, mutated(recording, "preprocess harness vacuity harness/inductive.c", edit_stdout(extra_call)))
-    assert build.problem.outcome is Outcome.ERROR and "different claimed calls" in build.problem.describe()
+    build, _ = replayed(ctx, mutated(recording, HARNESS_VACUITY_PREPROCESS, edit_stdout(extra_call)))
+    assert build.problem.outcome is Outcome.ERROR and DIVERGENCE_RULE in build.problem.describe()
+    assert "tally_clear(a, n); tally_clear(a, n);" in build.problem.describe()
 
 
 def test_editable_code_must_not_reference_main(ctx, recording):

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from leanc.backends.cbmc.harness import find_probes
+from leanc.backends.cbmc.vacuity_divergence import DIVERGENCE_RULE, vacuity_divergence
 from leanc.backends.inductive.annotation import (
     EditableUnit,
     claimed_entries,
@@ -200,6 +201,9 @@ class _Builder:
         has_probes, _ = find_probes(_snapshot_text(self.ctx, harness))
         if not has_probes:
             return tool_error(f"the inductive harness {harness} has no LEANC_REACH probe")
+        divergence = vacuity_divergence(self.harness[BuildMode.VERIFY].text, self.harness[BuildMode.VACUITY].text)
+        if divergence is not None:
+            return tool_error(f"the inductive harness {harness} {DIVERGENCE_RULE}", [divergence.describe()])
         for mode, unit in self.harness.items():
             included = editable_includes(unit.text, self.ctx.spec.sources.editable)
             if included:
@@ -208,8 +212,6 @@ class _Builder:
             if layout.problems:
                 return tool_error(f"the inductive harness {harness} ({mode.value} build) breaks the harness rules", layout.problems)
             self.layouts[mode] = layout
-        if self.layouts[BuildMode.VERIFY].call_sequence() != self.layouts[BuildMode.VACUITY].call_sequence():
-            return tool_error(f"the inductive harness {harness} makes different claimed calls in its vacuity build")
         self.result.claimed_calls = self.layouts[BuildMode.VERIFY].calls
         self.result.harness_assumptions = assumption_texts(self.harness[BuildMode.VERIFY].text, self.layouts[BuildMode.VERIFY])
         return None

@@ -76,13 +76,13 @@ def cbmc_limits(ctx: BackendContext) -> Limits:
     )
 
 
-def _absolute_dir_for_sandbox_chdir(ctx: BackendContext) -> Path:
+def snapshot_cwd(ctx: BackendContext) -> Path:
     return Path(os.path.abspath(ctx.snapshot_dir))
 
 
 def execute_cbmc(ctx: BackendContext, mode: Mode, limits: Limits) -> CbmcRun:
     argv = build_cbmc_argv(ctx, mode=mode)
-    proc = ctx.run(argv, limits=limits, cwd=_absolute_dir_for_sandbox_chdir(ctx))
+    proc = ctx.run(argv, limits=limits, cwd=snapshot_cwd(ctx))
     raw_path = ctx.raw_dir / f"cbmc-{mode}.json"
     raw_path.write_text(proc.stdout, encoding="utf-8")
     note = f"output truncated at {limits.max_output_bytes} bytes" if proc.output_truncated else None

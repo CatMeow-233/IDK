@@ -33,6 +33,8 @@ SPEC_UNAPPROVED > REPAIR_EXHAUSTED > COMPILE_ERROR > COUNTEREXAMPLE_FOUND > RUNT
 * **vacuous harness**：assume 互相矛盾或程式在呼叫後無法到達（`exit`、無窮迴圈、`abort`），
   所有 assert 都「成立」但沒有意義。Lean C 以 `-DLEANC_VACUITY_CHECK` 重跑，`LEANC_REACH` 探針
   變成 `__CPROVER_assert(0, ...)`；探針「成立」= 不可達 = vacuous。
+  每個可編輯原始檔與 harness 在有無 `-DLEANC_VACUITY_CHECK` 時的前處理結果，除探針展開外必須相同，
+  否則為 `TOOL_ERROR`（vacuity 執行看到的會是另一個程式）。
 * **沒有探針 / 停用 vacuity 檢查**：無法排除 vacuity，因此只能是 `UNKNOWN`。
 
 ## 證明修復（V2）

@@ -6,7 +6,7 @@ import pytest
 from cbmc_support import _fake_tools, make_cbmc_project
 
 from leanc.backends.cbmc.argv import CHECK_FLAGS, VACUITY_DEFINE, build_cbmc_argv, cbmc_source_args
-from leanc.backends.inductive.preprocess import PREPROCESS_FLAG, preprocess_argv
+from leanc.backends.cbmc.preprocess import PREPROCESS_FLAG, preprocess_argv
 from leanc.toolchain.context import BackendContext
 
 CBMC = "/opt/cbmc/bin/cbmc"

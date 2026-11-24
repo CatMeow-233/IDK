@@ -12,6 +12,12 @@ from leanc.toolchain.context import BackendContext, make_context
 VACUITY_FLAG = "-DLEANC_VACUITY_CHECK"
 EDITABLE_SOURCE = "src/impl.c"
 EXECUTABLE_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+DIVERGENCE_PREPROCESS_RUNS = 4
+PREPROCESS_PASSTHROUGH = (
+    'for a in "$@"; do last="$a"; done\n'
+    'for a in "$@"; do [ "$a" = "--preprocess" ] && { echo "CBMC version 5.95.1 (cbmc-5.95.1) 64-bit"; '
+    'cat "$last"; exit 0; }; done\n'
+)
 
 
 def fixture_messages(name: str) -> list[dict]:
@@ -32,7 +38,7 @@ def replaying_cbmc(directory: Path, verify: list[dict], vacuity: list[dict]) -> 
     vacuity_path.write_text(json.dumps(vacuity))
     return write_executable(
         directory / "cbmc",
-        "VAC=\n"
+        PREPROCESS_PASSTHROUGH + "VAC=\n"
         f'for a in "$@"; do [ "$a" = "{VACUITY_FLAG}" ] && VAC=1; done\n'
         f'if [ -n "$VAC" ]; then cat {vacuity_path}; else cat {verify_path}; fi',
     )
