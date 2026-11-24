@@ -13,6 +13,7 @@ from leanc.backends.sanitizer.ownership_log import (
     ProbeKey,
     leaked_objects_at_exit,
     leaked_objects_per_probe,
+    log_write_problem,
     parse_events,
 )
 from leanc.backends.sanitizer.plan import SanitizerPlan
@@ -146,6 +147,9 @@ def replay(session: ReplaySession, index: int, case: TestCase, probed: list[int]
     if log.problem:
         return Replay(problem=log.problem)
     (session.raw_root / f"{stem}.log.txt").write_text(redact(log.text), encoding="utf-8")
+    write_failure = log_write_problem(proc.stderr)
+    if write_failure:
+        return Replay(problem=write_failure)
     events = parse_events(log.text)
     if isinstance(events, str):
         return Replay(problem=events)

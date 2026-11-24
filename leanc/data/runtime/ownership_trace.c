@@ -16,6 +16,7 @@ enum trace_state { TRACE_UNINITIALISED, TRACE_ACTIVE, TRACE_DISABLED };
 static const char LOG_PATH_ENV[] = "LEANC_OWNERSHIP_LOG";
 static const char PROBED_EXITS_ENV[] = "LEANC_OWNERSHIP_CHECKS";
 static const char CHECK_MARKER[] = "LEANC-OWNERSHIP-CHECK";
+static const char LOG_WRITE_FAILED_MARKER[] = "LEANC-OWNERSHIP-LOG-WRITE-FAILED";
 static const char HEX_DIGITS[] = "0123456789abcdef";
 
 void *__real_malloc(size_t size);
@@ -32,6 +33,7 @@ struct trace_line {
 
 static enum trace_state state = TRACE_UNINITIALISED;
 static int log_fd = -1;
+static int log_write_failed;
 static int inside_runtime;
 static unsigned long next_exit_ordinal = 1;
 static unsigned long probed_exits[MAX_PROBED_EXITS];
@@ -92,16 +94,40 @@ static uintptr_t NOT_INSTRUMENTED image_offset(const void *address)
     return value - (uintptr_t)&__executable_start;
 }
 
-static void NOT_INSTRUMENTED emit(int fd, struct trace_line *line)
+static int NOT_INSTRUMENTED write_line(int fd, const struct trace_line *line)
 {
     size_t written = 0;
-    append_char(line, '\n');
-    while (fd >= 0 && written < line->length) {
+    while (written < line->length) {
         ssize_t step = write(fd, line->text + written, line->length - written);
         if (step <= 0) {
-            return;
+            return 0;
         }
         written += (size_t)step;
+    }
+    return 1;
+}
+
+static void NOT_INSTRUMENTED stop_after_log_write_failure(void)
+{
+    struct trace_line marker = {.length = 0};
+    log_write_failed = 1;
+    state = TRACE_DISABLED;
+    append_char(&marker, '\n');
+    append_text(&marker, LOG_WRITE_FAILED_MARKER);
+    append_char(&marker, '\n');
+    if (STDERR_FILENO != log_fd) {
+        write_line(STDERR_FILENO, &marker);
+    }
+}
+
+static void NOT_INSTRUMENTED emit(int fd, struct trace_line *line)
+{
+    append_char(line, '\n');
+    if (fd < 0 || (fd == log_fd && log_write_failed)) {
+        return;
+    }
+    if (!write_line(fd, line) && fd == log_fd) {
+        stop_after_log_write_failure();
     }
 }
 
@@ -151,6 +177,7 @@ static void NOT_INSTRUMENTED probe_reachability(unsigned long ordinal, const cha
 {
     struct trace_line marker = {.length = 0};
     struct trace_line record = {.length = 0};
+    append_char(&marker, '\n');
     append_text(&marker, CHECK_MARKER);
     append_decimal(&marker, ordinal);
     append_char(&marker, ' ');

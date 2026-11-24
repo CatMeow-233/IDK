@@ -7,8 +7,13 @@ MAX_EVENTS = 1_000_000
 MAX_CHECKS = 256
 MAX_LEAKED_OBJECTS = 4096
 HEX = r"0x[0-9a-f]{1,16}"
-DECIMAL = r"\d{1,19}"
+DECIMAL = r"[0-9]{1,20}"
+MAX_TRACE_VALUE = (1 << 64) - 1
+LOG_LINE_END = "\n"
 CHECK_MARKER = "LEANC-OWNERSHIP-CHECK"
+LOG_WRITE_FAILED_MARKER = "LEANC-OWNERSHIP-LOG-WRITE-FAILED"
+LOG_WRITE_FAILED = "the trace runtime could not write the ownership log (events after the failed write are missing)"
+TRUNCATED_LOG = "the ownership log ends inside a line (a write of the trace runtime was cut short)"
 PHASE_IN = "in"
 PHASE_AFTER = "after"
 
@@ -46,18 +51,32 @@ def _number(text: str) -> int:
     return int(text, 16) if text.startswith("0x") else int(text)
 
 
+def _fits_trace_word(values: tuple[int, ...]) -> bool:
+    return all(value <= MAX_TRACE_VALUE for value in values)
+
+
 def _event(line: str) -> Event | None:
     check = _CHECK_RE.match(line)
     if check:
-        return Event("C", (), ProbeKey(int(check.group(1)), check.group(2)), check.group(3) == "1")
+        probe = ProbeKey(int(check.group(1)), check.group(2))
+        return Event("C", (), probe, check.group(3) == "1") if _fits_trace_word((probe.exit_ordinal,)) else None
     pattern = _EVENT_RES.get(line[:1])
     found = pattern.match(line) if pattern else None
-    return Event(line[0], tuple(_number(g) for g in found.groups())) if found else None
+    if not found:
+        return None
+    values = tuple(_number(g) for g in found.groups())
+    return Event(line[0], values) if _fits_trace_word(values) else None
+
+
+def log_write_problem(stderr: str) -> str | None:
+    return LOG_WRITE_FAILED if LOG_WRITE_FAILED_MARKER in stderr.splitlines() else None
 
 
 def parse_events(text: str) -> list[Event] | str:
+    if text and not text.endswith(LOG_LINE_END):
+        return TRUNCATED_LOG
     events: list[Event] = []
-    for number, line in enumerate(text.splitlines(), 1):
+    for number, line in enumerate(text.split(LOG_LINE_END)[:-1], 1):
         event = _event(line)
         if event is None:
             return f"line {number} of the ownership log is not a trace event"

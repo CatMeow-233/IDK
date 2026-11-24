@@ -17,6 +17,7 @@ from leanc.backends.sanitizer.ownership_symbols import Symbolized
 from leanc.cli import main
 from leanc.foundation.models import Location, MemoryOwnershipTrace
 from leanc.reports.json_report import read_verification
+from leanc.specs.loader import load_spec
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLE = REPO / "examples" / "runtime_memory"
@@ -108,6 +109,9 @@ def test_verdict_is_identical_whatever_happens_to_the_trace(traced, tmp_path, mo
         assert all(f.ownership_trace == FORGED_TRACE for f in other[3].failures if f.tool == "lsan")
     else:
         assert all(f.ownership_trace is None for f in other[2].all_failures())
+    if mode == "replay-timeout":
+        recorded = other[3].details["ownership_trace"]["recording_problems"]
+        assert set(recorded) == {c.name for c in load_spec(EXAMPLE / "spec.yaml").tests.cases} > LEAKING_CASES
 
 
 def test_passing_project_runs_no_trace(tmp_path):

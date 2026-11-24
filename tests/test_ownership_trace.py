@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from leanc.backends.sanitizer import ownership
+from leanc.backends.sanitizer import ownership, ownership_replay
 from leanc.backends.sanitizer.ownership_analysis import (
     LOST_DURING_CALL,
     MAX_TRACED_ALLOCATIONS,
@@ -21,13 +21,18 @@ from leanc.backends.sanitizer.ownership_analysis import (
 )
 from leanc.backends.sanitizer.ownership_attach import TraceCandidate, attach_traces
 from leanc.backends.sanitizer.ownership_log import (
+    LOG_WRITE_FAILED,
+    LOG_WRITE_FAILED_MARKER,
+    TRUNCATED_LOG,
     ProbeKey,
     leaked_objects_at_exit,
     leaked_objects_per_probe,
+    log_write_problem,
     parse_events,
 )
 from leanc.backends.sanitizer.ownership_replay import (
     MAX_LOG_BYTES,
+    Replay,
     read_trace_log,
     replay_env,
 )
@@ -229,6 +234,48 @@ def test_failed_realloc_keeps_the_block_live_and_is_not_a_release():
     assert run.live == {int(P1, 16): 0} and release_summary([run]) == {}
 
 
+@pytest.mark.parametrize("size", [(1 << 64) - 1, 10**19])
+def test_failed_realloc_of_a_twenty_digit_size_keeps_the_block_live(size):
+    text = f"E {MAKE} {MAKE_SITE}\nA {P1} 16 {ALLOC_SITE}\nR {P1} 0x0 {size} {REALLOC_SITE}\nX 1 {MAKE} {MAKE_SITE}\n"
+    assert _events(text)[2].values == (int(P1, 16), 0, size, int(REALLOC_SITE, 16))
+    run = _trace(text)
+    assert run.live == {int(P1, 16): 0} and release_summary([run]) == {}
+
+
+@pytest.mark.parametrize("size", [str(1 << 64), "1" * 21, "\u0661\u0666"])
+def test_sizes_beyond_the_runtime_word_or_in_non_ascii_digits_are_rejected(size):
+    assert isinstance(parse_events(f"R {P1} 0x0 {size} {REALLOC_SITE}\n"), str)
+    assert isinstance(parse_events(f"A {P1} {size} {ALLOC_SITE}\n"), str)
+    assert isinstance(parse_events(f"C {size} in 0\n"), str)
+
+
+@pytest.mark.parametrize("text", [f"E {MAKE} {MAKE_SITE}\nF {P1} 0x10", "X 12 0x40 0x5", f"A {P1} 6 {ALLOC_SITE}\r"])
+def test_a_log_that_ends_inside_a_line_is_rejected_as_a_whole(text):
+    assert parse_events(text) == TRUNCATED_LOG
+
+
+def test_empty_log_and_lines_split_only_at_newlines():
+    assert parse_events("") == []
+    assert isinstance(parse_events(f"A {P1} 6 {ALLOC_SITE}\rF {P1} {FREE_SITE}\n"), str)
+
+
+def test_write_failure_marker_on_its_own_line_rejects_the_replay():
+    assert log_write_problem(f"partial \n{LOG_WRITE_FAILED_MARKER}\n") == LOG_WRITE_FAILED
+    assert log_write_problem(f"partial {LOG_WRITE_FAILED_MARKER}\n") is None
+    assert log_write_problem("") is None
+
+
+def test_replay_reports_a_runtime_log_write_failure_before_parsing(tmp_path, monkeypatch):
+    complete_log = f"E {MAKE} {MAKE_SITE}\nX 1 {MAKE} {MAKE_SITE}\n"
+    proc = SimpleNamespace(error=None, timed_out=False, output_truncated=False, stderr=f"\n{LOG_WRITE_FAILED_MARKER}\n")
+    monkeypatch.setattr(ownership_replay, "_run_program", lambda *args: (proc, tmp_path / "log", "stem"))
+    monkeypatch.setattr(ownership_replay, "read_trace_log", lambda path: ownership_replay._LogRead(text=complete_log))
+    session = SimpleNamespace(raw_root=tmp_path)
+    assert ownership_replay.replay(session, 0, SimpleNamespace(), None) == Replay(problem=LOG_WRITE_FAILED)
+    proc.stderr = ""
+    assert ownership_replay.replay(session, 0, SimpleNamespace(), None).run is not None
+
+
 def test_successful_realloc_moves_the_block_and_only_free_counts_as_release():
     moved = _trace(f"A {P1} 16 {ALLOC_SITE}\nR {P1} {P2} 32 {REALLOC_SITE}\nF {P2} {FREE_SITE}\n")
     assert release_summary([moved]) == {int(REALLOC_SITE, 16): [int(FREE_SITE, 16)]}
@@ -259,6 +306,15 @@ def test_only_direct_objects_of_the_first_report_after_a_marker_count():
 )
 def test_forged_or_inconsistent_probe_output_is_rejected(stderr):
     assert isinstance(leaked_objects_per_probe(stderr, _events("E 0x1 0x2\nX 1 0x1 0x2\nC 1 in 1\n")), str)
+
+
+def test_probe_markers_after_the_runtime_line_break_are_found_and_glued_markers_are_not():
+    events = _events("E 0x1 0x2\nX 1 0x1 0x2\nC 1 in 1\nC 1 after 0\n")
+    separated = f"progress \nLEANC-OWNERSHIP-CHECK 1 in\n{_report(P1)}\nnext \nLEANC-OWNERSHIP-CHECK 1 after\n"
+    expected = {ProbeKey(1, "in"): frozenset({int(P1, 16)}), ProbeKey(1, "after"): frozenset()}
+    assert leaked_objects_per_probe(separated, events) == expected
+    glued = f"progress LEANC-OWNERSHIP-CHECK 1 in\n{_report(P1)}\nLEANC-OWNERSHIP-CHECK 1 after\n"
+    assert isinstance(leaked_objects_per_probe(glued, events), str)
 
 
 def test_recording_run_separates_direct_and_indirect_objects():
@@ -361,6 +417,19 @@ def test_budget_exhaustion_leaves_a_reason_for_every_target_case():
     per_case: dict = {}
     note = ownership._trace_cases(session, {"separator_in_field": [], "nul_in_field": []}, per_case)
     assert "budget" in note and set(per_case) == {"separator_in_field", "nul_in_field"}
+
+
+def test_a_failed_recording_of_any_case_is_recorded_not_dropped(monkeypatch):
+    cases = [SimpleNamespace(name=n) for n in ("normal", "separator_in_field")]
+    spec = SimpleNamespace(tests=SimpleNamespace(cases=cases))
+    replays = SimpleNamespace(inputs=SimpleNamespace(ctx=SimpleNamespace(spec=spec)))
+    session = ownership._Session(replays, "symbolizer", time.monotonic() + 60)
+    problem = "line 5 of the ownership log is not a trace event"
+    monkeypatch.setattr(ownership, "replay", lambda *args: Replay(problem=problem))
+    per_case: dict = {}
+    assert ownership._trace_cases(session, {"separator_in_field": []}, per_case) is None
+    assert session.recording_problems == {"normal": problem, "separator_in_field": problem}
+    assert per_case == {"separator_in_field": [problem]}
 
 
 def test_prompt_shows_the_labelled_trace_without_addresses():

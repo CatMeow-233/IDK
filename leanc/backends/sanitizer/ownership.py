@@ -54,6 +54,7 @@ MAX_RELEASE_SITES = 5
 DETAILS_KEY = "ownership_trace"
 TRACED_STATUS = "traced (evidence for the repair model, never part of the verdict)"
 BUDGET_EXHAUSTED = "time budget exhausted"
+RECORDING_PROBLEMS_KEY = "recording_problems"
 
 @dataclass
 class _Session:
@@ -61,6 +62,7 @@ class _Session:
     symbolizer: str
     deadline: float
     releases: dict[int, list[int]] = field(default_factory=dict)
+    recording_problems: dict[str, str] = field(default_factory=dict)
 
     def out_of_time(self) -> bool:
         return time.monotonic() > self.deadline
@@ -209,6 +211,8 @@ def _record_all(session: _Session, cases: list[TestCase], targets: set[str]) -> 
         record = replay(session.replays, index, case, None)
         if record.run is not None:
             session.add_releases(record.run)
+        elif record.problem:
+            session.recording_problems[case.name] = record.problem
         if case.name in targets:
             kept[case.name] = record
     return kept, None
@@ -264,3 +268,5 @@ def attach_ownership_traces(
     report["status"] = f"{TRACED_STATUS}; evidence attached to {attached} of {sum(map(len, targets.values()))} leak failure(s)"
     if budget_note:
         report["budget"] = budget_note
+    if session.recording_problems:
+        report[RECORDING_PROBLEMS_KEY] = dict(session.recording_problems)
