@@ -22,6 +22,7 @@ __all__ = [
     "CallSite",
     "HarnessLayout",
     "ReturnKind",
+    "assumption_texts",
     "claimed_call_label",
     "harness_layout",
     "instrumented_harness",
@@ -331,6 +332,16 @@ def harness_layout(pp: str, claimed: Sequence[str], harness: str) -> HarnessLayo
     problems += _calls_inside_assumes(view, calls, assumes) + _assume_order_problems(view, calls, assumes)
     problems += _uncalled_problems(calls, claimed)
     return HarnessLayout(tuple(calls), tuple(assumes), main_body_open, tuple(problems))
+
+
+def assumption_texts(pp: str, layout: HarnessLayout) -> tuple[str, ...]:
+    texts = []
+    for assume in layout.assumes:
+        where = f"{assume.origin.file}:{assume.origin.line}" if assume.origin else "?"
+        lines = pp[assume.open + 1 : assume.close].split("\n")
+        code = " ".join(line for line in lines if linemarker(line.strip()) is None)
+        texts.append(f"{where}: {' '.join(code.split())}")
+    return tuple(texts)
 
 
 def claimed_call_label(function: str) -> str:

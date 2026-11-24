@@ -1,4 +1,5 @@
 from leanc.backends.inductive.build import BuiltProgram, InductiveBuild, build_inductive
+from leanc.backends.inductive.gate import run_inductive
 from leanc.backends.inductive.harness_calls import (
     ASSUME_AFTER_CLAIMED_CALL_LABEL,
     CLAIMED_CALL_LABEL_PREFIX,
@@ -23,4 +24,5 @@ __all__ = [
     "InductiveBuild",
     "ReturnKind",
     "build_inductive",
+    "run_inductive",
 ]

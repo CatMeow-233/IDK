@@ -1,0 +1,3 @@
+{"loops": [
+  {"file": "src/iset.c", "line": 11, "invariant": ["0 <= lo", "lo <= hi", "hi <= len"], "assigns": ["lo", "hi"], "decreases": "hi - lo"}
+]}
