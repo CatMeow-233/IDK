@@ -1,0 +1,23 @@
+leanc_spec: 1
+spec_id: iset-inductive-insert
+version: 1
+title: Sorted integer set insertion
+requirement: Sorted set of distinct ints whose insertion keeps the representation invariant for every set size.
+language: {name: c, standard: c11}
+target:
+  function: iset_insert
+  signature: "int iset_insert(struct iset *s, int x)"
+  returns: {type: int}
+sources:
+  editable: [src/iset.c]
+  headers: [include/iset.h]
+  include_dirs: [include]
+verification:
+  harness: harness/iset_harness.c
+  unwind: 5
+  timeout_s: 600
+inductive:
+  harness: harness/inductive.c
+  contracts: inductive/loops.json
+  functions: [iset_insert]
+gates: [compile, static_analysis, cbmc, inductive]

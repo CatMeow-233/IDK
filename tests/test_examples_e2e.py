@@ -25,6 +25,7 @@ EXPECTED_VERIFY_REASON_CODES: dict[str, set[tuple[str, str]]] = {
     "cpp_bounds_bug": {("gate_failed", "sanitizer")},
     "cpp_ring_buffer": {("no_formal_gate", "spec")},
     "div_by_zero": GATE_FAILED_IN_SANITIZER_AND_CBMC,
+    "inductive_sponge": set(),
     "int_overflow": GATE_FAILED_IN_SANITIZER_AND_CBMC,
     "lean_clamp": {("property_unproved", "lean")},
     "loop_unwind": {("unwind_insufficient", "cbmc"), ("vacuous_harness", "cbmc")},

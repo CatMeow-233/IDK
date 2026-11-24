@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from leanc.foundation.models import StageResult
 from leanc.foundation.status import Outcome, outcome_to_status
-from leanc.pipeline.controller import INDUCTIVE_GATE
+from leanc.specs.model import INDUCTIVE_GATE
 
 GATES_BEFORE_CBMC = ("compile", "integrity", "static_analysis", "sanitizer")
 

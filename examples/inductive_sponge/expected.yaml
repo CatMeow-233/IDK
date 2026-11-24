@@ -1,0 +1,16 @@
+# Expected results (checked by tests/test_examples_e2e.py and scripts/run_experiments.py)
+verify: VERIFIED_INDUCTIVE   # correct code: bounded CBMC passes and the inductive gate proves sponge_absorb for every len <= 2^48
+run: VERIFIED_INDUCTIVE      # mock generation reproduces the shipped src/sponge.c; the shipped inductive/loops.json is kept; no repair round
+detected_by: []
+rejected_rounds: []
+notes: >
+  Opt-in inductive profile. The spec claims sponge_absorb (the target) in its inductive section; the
+  protected harness harness/sponge_inductive.c calls it once from every sponge state with fill < 144 and
+  arbitrary rounds, block and acc, with any len <= 2^48 and arbitrary data. The editable
+  inductive/loops.json contracts the loops at src/sponge.c:9 (sponge_mix) and src/sponge.c:35
+  (sponge_absorb) with invariant, assigns and decreases. CBMC 5.95.1 with DFCC loop contracts proves the
+  invariants at entry and after one step, the assigns clauses, the decreases clauses, the harness
+  assertions (rc == SPONGE_OK, s->fill < SPONGE_RATE) and the mandatory check classes; all 7 probes are
+  reached => VERIFIED_INDUCTIVE (never PROVED). The extra unsigned-overflow class and the functions that are
+  not claimed have only the bounded CBMC result. The buggy absorb of tests/fixtures/inductive/acceptance/sponge
+  passes the bounded gate and is UNKNOWN here (tests/test_inductive_acceptance.py).

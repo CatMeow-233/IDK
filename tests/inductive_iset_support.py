@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from leanc.cli import main
@@ -19,21 +20,38 @@ CONTRACTS = "inductive/loops.json"
 CONTRACTS_FIXTURE = ISET_PIPELINE / "loops.json"
 CONTRACTED_LINE = 11
 VARIANT_FILES = (SOURCE, HEADER, BOUNDED_HARNESS)
-HARNESS_FIXTURES = {INDUCTIVE_HARNESS: ISET_PIPELINE / "harness" / "inductive.c"}
 
 
-def iset_project(tmp_path: Path, variant: str, *, with_contracts: bool = True) -> Path:
+@dataclass(frozen=True)
+class IsetClaim:
+    spec: Path
+    harness: Path
+    contracts: Path
+
+
+RANK_CONTAINS_CLAIM = IsetClaim(SPEC_TEMPLATE, ISET_PIPELINE / "harness" / "inductive.c", CONTRACTS_FIXTURE)
+INSERT_CLAIM = IsetClaim(
+    spec=FIXTURES / "e2e" / "iset_insert_spec.yaml",
+    harness=ISET_PIPELINE / "harness" / "insert.c",
+    contracts=ISET_PIPELINE / "insert_loops.json",
+)
+
+
+def _copy(source: Path, root: Path, rel: str) -> None:
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, root / rel)
+
+
+def iset_project(
+    tmp_path: Path, variant: str, *, with_contracts: bool = True, claim: IsetClaim = RANK_CONTAINS_CLAIM
+) -> Path:
     root = tmp_path / variant
     for rel in VARIANT_FILES:
-        (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ISET_ACCEPTANCE / variant / rel, root / rel)
-    for rel, source in HARNESS_FIXTURES.items():
-        (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, root / rel)
+        _copy(ISET_ACCEPTANCE / variant / rel, root, rel)
+    _copy(claim.harness, root, INDUCTIVE_HARNESS)
     if with_contracts:
-        (root / CONTRACTS).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(CONTRACTS_FIXTURE, root / CONTRACTS)
-    shutil.copyfile(SPEC_TEMPLATE, root / SPEC_FILE)
+        _copy(claim.contracts, root, CONTRACTS)
+    shutil.copyfile(claim.spec, root / SPEC_FILE)
     return root
 
 

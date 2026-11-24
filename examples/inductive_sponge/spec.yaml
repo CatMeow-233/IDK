@@ -1,0 +1,72 @@
+# Lean C specification: sponge absorb, verified inductively for every input length (inductive profile).
+leanc_spec: 1
+spec_id: inductive-sponge
+version: 1
+title: Byte sponge absorb (inductive profile)
+requirement: |
+  實作一個位元組 sponge：sponge_absorb 把任意長度的資料吸收進 144 位元組的區塊緩衝區，每填滿一個區塊就呼叫
+  混合函式並清空緩衝區；sponge_finalize 補齊最後一個區塊並輸出 28 位元組摘要。對任何長度（不只是小長度）
+  都不得越界存取、不得發生未定義行為，而且吸收必須結束。
+  (Implement a byte sponge: sponge_absorb absorbs data of any length into a 144-byte block buffer, mixes every
+  full block and empties the buffer; sponge_finalize pads the last block and outputs a 28-byte digest. For every
+  length, not only small ones, there must be no out-of-bounds access, no undefined behaviour, and absorbing
+  must terminate.)
+language: {name: c, standard: c17}
+target:
+  function: sponge_absorb
+  signature: "int sponge_absorb(struct sponge *s, const uint8_t *data, size_t len)"
+  params:
+    - {name: s, type: "struct sponge *", description: "sponge with fill < SPONGE_RATE, or NULL"}
+    - {name: data, type: "const uint8_t *", description: "len readable bytes, or NULL when len == 0"}
+    - {name: len, type: size_t, description: "number of bytes to absorb (any value)"}
+  returns:
+    type: int
+    description: "status code (the other operations: sponge_new, sponge_finalize, sponge_free; see include/sponge.h)"
+    values:
+      - {value: "SPONGE_OK (0)", meaning: "all len bytes absorbed; s->fill < SPONGE_RATE"}
+      - {value: "SPONGE_ERR_NULL (-1)", meaning: "s is NULL, or data is NULL and len != 0; nothing changed"}
+contract:
+  preconditions:
+    - {id: PRE1, text: "s is NULL or a sponge from sponge_new that is only modified through this API (so s->fill < SPONGE_RATE)", c_expr: "s == NULL || s->fill < SPONGE_RATE"}
+    - {id: PRE2, text: "data is NULL or points to at least len readable bytes"}
+  postconditions:
+    - {id: POST1, text: "s == NULL, or data == NULL with len != 0 => SPONGE_ERR_NULL"}
+    - {id: POST2, text: "otherwise SPONGE_OK, and s->fill < SPONGE_RATE afterwards"}
+    - {id: POST3, text: "absorbing a message in pieces leaves the same buffered bytes as absorbing it at once"}
+    - {id: POST4, text: "sponge_absorb terminates for every len"}
+  safety:
+    - {id: SAFE1, text: "no out-of-bounds access of s->block, s->acc or data", checks: [bounds, pointer]}
+    - {id: SAFE2, text: "no NULL dereference", checks: [pointer]}
+    - {id: SAFE3, text: "no undefined behaviour", checks: [signed-overflow, pointer-overflow, undefined-shift]}
+  frame:
+    - "sponge_absorb writes only *s; data is never modified"
+sources:
+  editable: [src/sponge.c]
+  headers: [include/sponge.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra, -Wpedantic]
+  warnings_policy: report
+static_analysis:
+  policy: block
+tests:
+  driver: tests/test_sponge.c
+  cases:
+    - {name: full_blocks, args: [full_blocks]}
+    - {name: chunked, args: [chunked]}
+    - {name: finalize, args: [finalize]}
+    - {name: null_args, args: [null_args]}
+verification:
+  harness: harness/sponge_harness.c
+  checks: [unsigned-overflow]
+  unwind: 8
+  input_bounds:
+    - {name: len, min: "0", max: "6", note: "NULL-argument calls with len 0 and 1, and a 6-byte message absorbed at once and in pieces 1+2+3"}
+  timeout_s: 600
+inductive:
+  harness: harness/sponge_inductive.c
+  contracts: inductive/loops.json
+  functions: [sponge_absorb]
+gates: [compile, static_analysis, sanitizer, cbmc, inductive]
+repair:
+  max_rounds: 5

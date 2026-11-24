@@ -8,8 +8,9 @@ from status_support import GATES_BEFORE_CBMC, gate_stages, stage_result
 from leanc.foundation.models import FailureReport, StageResult
 from leanc.foundation.reasons import Reason
 from leanc.foundation.status import SUCCESS_STATUSES, Outcome, Status, is_success
-from leanc.pipeline.controller import INDUCTIVE_GATE, aggregate
+from leanc.pipeline.controller import aggregate
 from leanc.pipeline.reason_codes import NO_FORMAL_GATE_DETAIL, REASON_OF_OUTCOME, derive_reason_codes
+from leanc.specs.model import INDUCTIVE_GATE
 
 SPEC = "spec"
 CBMC = "cbmc"

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
+from inductive_e2e_support import (
+    claims_anything,
+    flat,
+    inductive_record,
+    mentions_claim,
+    no_claim_statement,
+    reason_pairs,
+    report_texts,
+    stages_by_name,
+)
 from inductive_iset_support import SOURCE, approved, cli, iset_project
 
 from leanc.foundation.models import StageResult
@@ -16,8 +25,6 @@ from leanc.specs.model import INDUCTIVE_GATE
 pytestmark = pytest.mark.usefixtures("needs_toolchain")
 
 GATES_IN_ORDER = ["spec", "compile", "integrity", "static_analysis", "cbmc", INDUCTIVE_GATE]
-VERIFICATION_REPORT = Path("verify") / "verification.md"
-VERIFICATION_RECORD = Path("verify") / "verification.json"
 SANDBOX = "bwrap"
 SCOPE_STATEMENTS = (
     "claimed functions: iset_rank(), iset_contains(); functions that are not claimed have only the bounded CBMC result",
@@ -32,8 +39,7 @@ SCOPE_STATEMENTS = (
     "known gap (not detected): a memcpy, memmove or memset that overflows into a neighbouring field of the same object",
     "VERIFIED_INDUCTIVE is not PROVED",
 )
-CLAIM_MARKERS = ("claimed functions:", "contracted loops proved by induction")
-NO_CLAIM_STATEMENT = "the inductive gate ended INCONCLUSIVE: it establishes no inductive claim"
+NO_CLAIM_STATEMENT = no_claim_statement("INCONCLUSIVE")
 BUGGY_CODES = {
     (Reason.INDUCTIVE_STEP_FAILED.value, INDUCTIVE_GATE),
     (Reason.SUSPECTED_NON_TERMINATION.value, INDUCTIVE_GATE),
@@ -49,33 +55,12 @@ def _verified(capsys, root: Path) -> tuple[int, dict]:
     return cli(capsys, "verify", str(approved(capsys, root)))
 
 
-def _stages(verification: dict) -> dict[str, dict]:
-    return {stage["stage"]: stage for stage in verification["stages"]}
-
-
-def _reports(payload: dict) -> dict[str, str]:
-    run_report = Path(payload["report"])
-    return {
-        "run report": run_report.read_text(encoding="utf-8"),
-        "verification report": (Path(payload["run_dir"]) / VERIFICATION_REPORT).read_text(encoding="utf-8"),
-    }
-
-
-def _inductive_record(payload: dict) -> dict:
-    record = json.loads((Path(payload["run_dir"]) / VERIFICATION_RECORD).read_text(encoding="utf-8"))
-    return next(stage for stage in record["stages"] if stage["stage"] == INDUCTIVE_GATE)
-
-
-def _flat(text: str) -> str:
-    return " ".join(text.replace("\\*", "*").split())
-
-
 def test_fixed_iset_is_verified_inductive_through_leanc_verify(tmp_path, capsys):
     rc, payload = _verified(capsys, iset_project(tmp_path, "fixed"))
     verification = payload["verification"]
     assert verification["status"] == Status.VERIFIED_INDUCTIVE.value, verification["reasons"]
     assert rc == exit_code(Status.VERIFIED_INDUCTIVE) == 0 and verification["success"]
-    stages = _stages(verification)
+    stages = stages_by_name(verification)
     assert list(stages) == GATES_IN_ORDER
     assert {stage["outcome"] for stage in stages.values()} == {Outcome.PASS.value}
     assert verification["reason_codes"] == [] and verification["failures"] == []
@@ -83,15 +68,15 @@ def test_fixed_iset_is_verified_inductive_through_leanc_verify(tmp_path, capsys)
     for statement in SCOPE_STATEMENTS:
         assert any(statement in assumption for assumption in assumptions), statement
     assert INDUCTIVE_LIMITATION in verification["limitations"]
-    record = _inductive_record(payload)
+    record = inductive_record(payload)
     assert record["details"]["sandbox"] == SANDBOX
     assert {invocation["sandbox"] for invocation in record["invocations"]} == {SANDBOX}
     assert record["details"]["scope"]["functions"] == ["iset_rank", "iset_contains"]
-    for name, report in _reports(payload).items():
-        flat = _flat(report)
-        assert f"`{Status.VERIFIED_INDUCTIVE.value}`** (exit code 0)" in flat, name
+    for name, report in report_texts(payload).items():
+        flat_report = flat(report)
+        assert f"`{Status.VERIFIED_INDUCTIVE.value}`** (exit code 0)" in flat_report, name
         for statement in SCOPE_STATEMENTS:
-            assert _flat(statement) in flat, (name, statement)
+            assert flat(statement) in flat_report, (name, statement)
 
 
 def test_buggy_iset_passes_the_bounded_gate_and_is_unknown_with_the_inductive_codes(tmp_path, capsys):
@@ -99,24 +84,24 @@ def test_buggy_iset_passes_the_bounded_gate_and_is_unknown_with_the_inductive_co
     verification = payload["verification"]
     assert verification["status"] == Status.UNKNOWN.value
     assert rc == exit_code(Status.UNKNOWN) and not verification["success"]
-    stages = _stages(verification)
+    stages = stages_by_name(verification)
     assert stages["cbmc"]["outcome"] == Outcome.PASS.value
     assert stages[INDUCTIVE_GATE]["outcome"] == Outcome.INCONCLUSIVE.value
     assert stages[INDUCTIVE_GATE]["status"] == Status.UNKNOWN.value
     codes = verification["reason_codes"]
-    assert {(code["code"], code["stage"]) for code in codes} == BUGGY_CODES
+    assert reason_pairs(verification) == BUGGY_CODES
     termination = [code for code in codes if code["code"] == Reason.SUSPECTED_NON_TERMINATION.value]
     assert [(code["location"]["file"], code["location"]["line"]) for code in termination] == [(SOURCE, 11)]
     assert any(OVERFLOW_DETAIL in code["detail"] for code in codes)
     assert {failure["kind"] for failure in verification["failures"]} == {"unproved"}
     assert all(failure["inputs"] == [] for failure in verification["failures"])
     assert NO_CLAIM_STATEMENT in "\n".join(verification["assumptions"])
-    assert not any(marker in assumption for marker in CLAIM_MARKERS for assumption in verification["assumptions"])
-    for name, report in _reports(payload).items():
-        assert f"`{Status.UNKNOWN.value}`** (exit code {exit_code(Status.UNKNOWN)})" in _flat(report), name
+    assert not claims_anything(verification)
+    for name, report in report_texts(payload).items():
+        assert f"`{Status.UNKNOWN.value}`** (exit code {exit_code(Status.UNKNOWN)})" in flat(report), name
         assert TERMINATION_CODE_LINE in report, name
-        assert NO_CLAIM_STATEMENT in _flat(report), name
-        assert not any(marker in report for marker in CLAIM_MARKERS), name
+        assert NO_CLAIM_STATEMENT in flat(report), name
+        assert not mentions_claim(report), name
 
 
 def test_integrity_failure_skips_the_inductive_gate_with_gate_skipped(tmp_path, capsys, monkeypatch):

@@ -12,7 +12,6 @@ from leanc.pipeline import controller
 from leanc.pipeline.controller import (
     FORMAL_GATES,
     GATES_ANALYSING_OR_EXECUTING_CANDIDATE_CODE,
-    INDUCTIVE_GATE,
     INDUCTIVE_LIMITATION,
     INTEGRITY_FAILED,
     INTEGRITY_NOT_RUN,
@@ -23,6 +22,7 @@ from leanc.pipeline.controller import (
     _limitations,
 )
 from leanc.specs.loader import load_spec
+from leanc.specs.model import INDUCTIVE_GATE
 from leanc.toolchain.context import VerifyOptions
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"

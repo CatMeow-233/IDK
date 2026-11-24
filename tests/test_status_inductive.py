@@ -24,7 +24,6 @@ from leanc.llm.mock import INDUCTIVE_SUMMARY_SCOPE
 from leanc.llm.prompts import EXPLAIN_SYSTEM
 from leanc.pipeline.controller import (
     FORMAL_GATE_DID_NOT_PASS_REASON,
-    INDUCTIVE_GATE,
     INDUCTIVE_LIMITATION,
     NO_FORMAL_GATE_REASONS,
     PROVED_REASON,
@@ -33,7 +32,7 @@ from leanc.pipeline.controller import (
     aggregate,
 )
 from leanc.reports.markdown import STATUS_MEANING
-from leanc.specs.model import MANDATORY_CHECKS
+from leanc.specs.model import INDUCTIVE_GATE, MANDATORY_CHECKS
 
 PASS = Outcome.PASS
 FAIL = Outcome.FAIL

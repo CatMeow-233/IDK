@@ -1,0 +1,4 @@
+{"loops": [
+  {"file": "src/sponge.c", "line": 9, "invariant": ["k <= 144"], "assigns": ["k", "__CPROVER_object_upto(s->acc, 28)"], "decreases": "144 - k"},
+  {"file": "src/sponge.c", "line": 35, "invariant": ["i <= len", "s->fill < 144"], "assigns": ["i", "__CPROVER_object_whole(s)"], "decreases": "len - i"}
+]}

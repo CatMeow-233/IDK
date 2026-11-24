@@ -1,0 +1,4 @@
+{"loops": [
+  {"file": "src/iset.c", "line": 11, "invariant": ["0 <= lo", "lo <= hi", "hi <= len"], "assigns": ["lo", "hi"], "decreases": "hi - lo"},
+  {"file": "src/iset.c", "line": 92, "invariant": ["pos <= k", "k <= s->len"], "assigns": ["k", "__CPROVER_object_whole(s->items)"], "decreases": "k - pos"}
+]}
