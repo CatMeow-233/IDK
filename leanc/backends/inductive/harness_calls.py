@@ -16,7 +16,11 @@ from leanc.rules.preprocessor import linemarker
 __all__ = [
     "ASSUME_AFTER_CLAIMED_CALL_LABEL",
     "ASSUME_BUILTIN",
+    "ASSUME_BUILTINS",
     "CLAIMED_CALLS_COUNTER",
+    "CLAIMED_ENTERED_FLAG",
+    "EDITABLE_ENTERED_FLAG",
+    "HARNESS_FLAGS",
     "CLAIMED_CALL_LABEL_PREFIX",
     "ENTRY_POINT",
     "FREE_ANCHOR_CALL",
@@ -30,17 +34,24 @@ __all__ = [
     "claimed_call_label",
     "harness_layout",
     "instrumented_harness",
+    "reserved_identifier_problems",
     "return_probe_label",
     "body_references",
 ]
 
 CLAIMED_CALLS_COUNTER = "leanc_claimed_calls"
+CLAIMED_ENTERED_FLAG = "leanc_claimed_entered"
+EDITABLE_ENTERED_FLAG = "leanc_editable_entered"
+HARNESS_FLAGS = (CLAIMED_CALLS_COUNTER, CLAIMED_ENTERED_FLAG, EDITABLE_ENTERED_FLAG)
 CLAIMED_CALL_LABEL_PREFIX = "leanc_claimed_call:"
 ASSUME_AFTER_CLAIMED_CALL_LABEL = "leanc_assume_after_claimed_call"
 RETURN_PROBE_PREFIX = "leanc_return:"
 RETURNED_VALUE = "leanc_returned"
 ASSUMED_VALUE = "leanc_assumed"
 ASSUME_BUILTIN = "__CPROVER_assume"
+VERIFIER_ASSUME_BUILTIN = "__VERIFIER_assume"
+ASSUME_BUILTINS = (ASSUME_BUILTIN, VERIFIER_ASSUME_BUILTIN)
+ASSUME_SPELLINGS = {ASSUME_BUILTIN: "LEANC_ASSUME", VERIFIER_ASSUME_BUILTIN: VERIFIER_ASSUME_BUILTIN}
 FREE_FUNCTION = "free"
 FREE_DECLARATION = f"void {FREE_FUNCTION}(void *);"
 FREE_ANCHOR_CALL = f"{FREE_FUNCTION}((void *)0);"
@@ -88,6 +99,11 @@ class AssumeSite:
     open: int
     close: int
     origin: Origin | None
+    builtin: str = ASSUME_BUILTIN
+
+    @property
+    def spelling(self) -> str:
+        return ASSUME_SPELLINGS[self.builtin]
 
 
 @dataclass(frozen=True)
@@ -267,7 +283,7 @@ def _call_sites(view: _View, claimed: Sequence[str]) -> tuple[list[CallSite], li
 def _assume_sites(view: _View) -> tuple[list[AssumeSite], list[str]]:
     assumes: list[AssumeSite] = []
     problems: list[str] = []
-    for reference in view.references([ASSUME_BUILTIN]):
+    for reference in view.references(ASSUME_BUILTINS):
         scope = view.context_of(reference.start)
         if scope is Scope.UNKNOWN_BLOCK:
             problems.append(_unclassified(view, reference))
@@ -277,18 +293,18 @@ def _assume_sites(view: _View) -> tuple[list[AssumeSite], list[str]]:
         opening = view.call_open(reference.end)
         close = None if opening is None else view.pairs.get(opening)
         if opening is None or close is None:
-            problems.append(f"{view.where(reference.start)}: {ASSUME_BUILTIN} is used other than in a direct call")
+            problems.append(f"{view.where(reference.start)}: {reference.name} is used other than in a direct call")
             continue
         if view.has_top_level_comma(opening, close):
-            problems.append(f"{view.where(reference.start)}: {ASSUME_BUILTIN} must have exactly one argument")
+            problems.append(f"{view.where(reference.start)}: {reference.name} must have exactly one argument")
             continue
-        assumes.append(AssumeSite(reference.start, opening, close, view.origin(reference.start)))
+        assumes.append(AssumeSite(reference.start, opening, close, view.origin(reference.start), reference.name))
     return assumes, problems
 
 
 def _calls_inside_assumes(view: _View, calls: list[CallSite], assumes: list[AssumeSite]) -> list[str]:
     return [
-        f"{view.where(call.start)}: claimed function {call.function} is called inside LEANC_ASSUME at "
+        f"{view.where(call.start)}: claimed function {call.function} is called inside {assume.spelling} at "
         f"{view.where(assume.start)}; an assumption must not depend on a claimed call"
         for assume in assumes
         for call in calls
@@ -305,7 +321,7 @@ def _assume_order_problems(view: _View, calls: list[CallSite], assumes: list[Ass
         first = first_call.get(view.body_of(assume.start))
         if first is not None and assume.start > first.start:
             problems.append(
-                f"{view.where(assume.start)}: LEANC_ASSUME after the call of the claimed function {first.function} "
+                f"{view.where(assume.start)}: {assume.spelling} after the call of the claimed function {first.function} "
                 f"at {first.where} in the same function; every harness assumption must come before the first "
                 "claimed call"
             )
@@ -317,6 +333,10 @@ def _reserved_identifier_problems(view: _View) -> list[str]:
         f"{view.where(match.start())}: {match.group()} uses the leanc_ prefix reserved for the inserted checks"
         for match in _RESERVED_IDENTIFIER_RE.finditer(view.code)
     ]
+
+
+def reserved_identifier_problems(pp: str) -> list[str]:
+    return _reserved_identifier_problems(_View(pp))
 
 
 def _is_tag(view: _View, offset: int) -> bool:
@@ -436,7 +456,8 @@ def _assume_wrap(assume: AssumeSite) -> _Wrap:
 
 
 def _reset_wrap(main_body_open: int, end: int) -> _Wrap:
-    return _Wrap(main_body_open + 1, f" {CLAIMED_CALLS_COUNTER} = 0; {FREE_ANCHOR_CALL} ", end, "")
+    resets = "".join(f" {flag} = 0;" for flag in HARNESS_FLAGS)
+    return _Wrap(main_body_open + 1, f"{resets} {FREE_ANCHOR_CALL} ", end, "")
 
 
 def _insertions(pp: str, layout: HarnessLayout, returns: Mapping[str, ReturnKind] | None) -> dict[int, list[str]]:
@@ -473,4 +494,4 @@ def instrumented_harness(
         end = offset
     out.append(pp[:end])
     body = "".join(reversed(out))
-    return f"{_linemarker(harness)}\nstatic int {CLAIMED_CALLS_COUNTER};\n{FREE_DECLARATION}\n{body}"
+    return f"{_linemarker(harness)}\nint {', '.join(HARNESS_FLAGS)};\n{FREE_DECLARATION}\n{body}"

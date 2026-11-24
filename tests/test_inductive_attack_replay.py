@@ -18,7 +18,7 @@ HOOKED_LOOP_LINE = 8
 STACK_HARNESS = "stack_only.c"
 TERMINATION_RULE = "ends the path or jumps out of it without a check"
 HARNESS_RULES = "breaks the harness rules"
-TRUSTED_SYMBOL_RULES = "breaks the trusted-symbol rules"
+RESERVED_IN_EDITABLE = "editable code uses names reserved for the inserted checks"
 DFCC_FREE_CRASH = "no body for function 'free'"
 STRLEN_ASSIGNS = "strlen.assigns."
 LIBRARY_UNWIND = "__CPROVER_contracts_write_set_check_assignment.unwind."
@@ -87,11 +87,9 @@ def test_an_unreached_free_next_to_a_strlen_call_fails_closed_as_the_library_gap
     assert never_counterexamples(result)
 
 
-@pytest.mark.parametrize(
-    "source, outcome", [("hooked.c", Outcome.ERROR), ("hooked_unreferenced.c", Outcome.PASS)], ids=["referenced", "unreferenced"]
-)
-def test_the_reserved_name_rule_checks_the_linked_program_where_unreferenced_statics_are_gone(tmp_path, source, outcome):
+@pytest.mark.parametrize("source", ["hooked.c", "hooked_unreferenced.c"], ids=["referenced", "unreferenced"])
+def test_the_reserved_name_rule_checks_the_preprocessed_editable_code_referenced_or_not(tmp_path, source):
     result = below_gate(tmp_path, below_contract(HOOKED_LOOP_LINE), source=source)
-    assert result.outcome is outcome, result.summary
-    if outcome is Outcome.ERROR:
-        assert TRUSTED_SYMBOL_RULES in result.summary and f"leanc_hook ({TALLY_SOURCE}:3)" in result.summary
+    assert result.outcome is Outcome.ERROR, result.summary
+    assert RESERVED_IN_EDITABLE in result.summary
+    assert f"{TALLY_SOURCE}:3: leanc_hook uses the leanc_ prefix reserved" in result.summary

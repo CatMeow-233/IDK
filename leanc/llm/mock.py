@@ -12,7 +12,7 @@ from leanc.foundation.errors import (
     ProviderError,
     WorkspaceError,
 )
-from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, UNREACHED_STATES
+from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, SUBOBJECT_GAP, UNREACHED_STATES
 from leanc.foundation.models import FailureReport, ProviderInfo, VerificationResult
 from leanc.foundation.workspace import normalize_relpath
 from leanc.llm.base import (
@@ -42,9 +42,7 @@ INDUCTIVE_SUMMARY_SCOPE = (
     f"({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by induction; static objects start "
     f"arbitrary and allocations are assumed to succeed; {HARNESS_NARROWING}; functions that are not claimed, "
     f"{UNREACHED_STATES} and the extra verification.checks classes have only the bounded CBMC result; known gaps: "
-    "a memcpy, memmove or memset that overflows into a neighbouring field of the same object, or that writes into "
-    "a string literal, is not reported, and library models such as strlen make the gate fail closed; it is not "
-    "PROVED."
+    f"{SUBOBJECT_GAP}, and library models such as strlen make the gate fail closed; it is not PROVED."
 )
 
 

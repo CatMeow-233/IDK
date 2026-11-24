@@ -54,6 +54,7 @@ def test_bounded_verify_argv_is_byte_identical(ctx):
         "--unwind",
         "5",
         "--unwinding-assertions",
+        "--no-self-loops-to-assumptions",
         "--json-ui",
     ]
 
@@ -78,6 +79,7 @@ def test_bounded_verify_argv_with_memory_model_and_unwindset_is_byte_identical(t
         "--unwindset",
         "add.0:3",
         "--unwinding-assertions",
+        "--no-self-loops-to-assumptions",
         "--object-bits",
         "12",
         "--json-ui",

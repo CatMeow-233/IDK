@@ -1,0 +1,22 @@
+leanc_spec: 1
+spec_id: divergence-fill
+version: 1
+title: Fill a bounded buffer
+requirement: Copy bytes into a bounded buffer.
+language: {name: c, standard: c17}
+target:
+  function: t_fill
+  signature: "int t_fill(struct buf *b, const unsigned char *src, size_t len)"
+  returns: {type: int}
+sources:
+  editable: [src/t.c]
+  headers: [include/t.h]
+  include_dirs: [include]
+compile:
+  flags: [-Wall, -Wextra]
+  warnings_policy: report
+verification:
+  harness: harness/bounded.c
+  unwind: 6
+  timeout_s: 120
+gates: [compile, cbmc]

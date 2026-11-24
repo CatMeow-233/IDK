@@ -16,6 +16,8 @@ from leanc.backends.inductive.annotation import (
     vacuity_text,
     verify_text,
 )
+from leanc.backends.inductive.editable_entry import editable_includes, entry_flags, uninstrumented_functions
+from leanc.backends.inductive.editable_objects import editable_constant_objects, harness_constant_problems
 from leanc.backends.inductive.harness_calls import (
     ENTRY_POINT,
     CallSite,
@@ -24,6 +26,7 @@ from leanc.backends.inductive.harness_calls import (
     assumption_texts,
     harness_layout,
     instrumented_harness,
+    reserved_identifier_problems,
     return_probe_label,
     body_references,
 )
@@ -142,6 +145,7 @@ class _Builder:
     layouts: dict[BuildMode, HarnessLayout] = field(default_factory=dict)
     models_text: str = ""
     models_unit: TrustedUnit | None = None
+    harness_units: dict[BuildMode, TrustedUnit] = field(default_factory=dict)
     entries: tuple[FunctionEntry, ...] = ()
 
     @property
@@ -186,6 +190,9 @@ class _Builder:
         found = [where for unit in self.editable for where in body_references(unit.pp, ENTRY_POINT)]
         if found:
             return tool_error(f"editable code references {ENTRY_POINT}", found)
+        reserved = [problem for unit in self.editable for problem in reserved_identifier_problems(unit.pp)]
+        if reserved:
+            return tool_error("editable code uses names reserved for the inserted checks", reserved)
         return None
 
     def check_harness(self) -> BuildProblem | None:
@@ -194,6 +201,9 @@ class _Builder:
         if not has_probes:
             return tool_error(f"the inductive harness {harness} has no LEANC_REACH probe")
         for mode, unit in self.harness.items():
+            included = editable_includes(unit.text, self.ctx.spec.sources.editable)
+            if included:
+                return tool_error(f"the inductive harness {harness} ({mode.value} build) includes editable code", included)
             layout = harness_layout(unit.text, self.claimed, harness)
             if layout.problems:
                 return tool_error(f"the inductive harness {harness} ({mode.value} build) breaks the harness rules", layout.problems)
@@ -235,6 +245,7 @@ class _Builder:
         harness = compile_trusted(self.steps, mode, path, compiles)
         if isinstance(harness, BuildProblem):
             return harness
+        self.harness_units[mode] = harness
         return [models, harness]
 
     def link(self, mode: BuildMode, harness_text: str, editable_texts: list[str]) -> LinkedProgram | BuildProblem:
@@ -265,8 +276,27 @@ class _Builder:
         harness_text = instrumented_harness(
             self.harness[BuildMode.VERIFY].text, self.layouts[BuildMode.VERIFY], self.inductive.harness
         )
-        texts = [verify_text(unit, self.result.contracts) for unit in self.editable]
-        return self.checked_link(BuildMode.VERIFY, harness_text, texts)
+        flags = [entry_flags(unit.rel, unit.pp, self.claimed, self.ctx.spec.sources.editable) for unit in self.editable]
+        problems = [problem for unit_flags in flags for problem in unit_flags.problems]
+        if problems:
+            return tool_error("the entry checks of the editable functions cannot be inserted", problems)
+        texts = [verify_text(unit, self.result.contracts, found.insertions) for unit, found in zip(self.editable, flags)]
+        program = self.checked_link(BuildMode.VERIFY, harness_text, texts)
+        if isinstance(program, BuildProblem):
+            return program
+        problem = self.editable_reach_problem(program, frozenset().union(*(found.functions for found in flags)))
+        return problem if problem is not None else program
+
+    def editable_reach_problem(self, program: LinkedProgram, instrumented: frozenset[tuple[str, str]]) -> BuildProblem | None:
+        missing = uninstrumented_functions(program.table, instrumented, self.ctx.spec.sources.editable)
+        if missing:
+            return tool_error("some functions of the editable sources have no inserted entry check", missing)
+        objects = editable_constant_objects(program.table, self.ctx.spec.sources.editable)
+        harness = self.harness_units[BuildMode.VERIFY].definitions
+        read = harness_constant_problems(self.harness[BuildMode.VERIFY].text, harness, objects)
+        if read:
+            return tool_error(f"the inductive harness {self.inductive.harness} reads objects the editable code fixes", read)
+        return None
 
     def build_vacuity(self, verify: LinkedProgram) -> LinkedProgram | BuildProblem:
         returns = return_kinds(verify.table, self.claimed)

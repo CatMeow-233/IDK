@@ -39,9 +39,10 @@ leanc run spec.yaml --provider mock --regenerate    # => VERIFIED_INDUCTIVE（0 
 
 - `claimed functions: sponge_absorb(); functions that are not claimed have only the bounded CBMC result`
 - `contracted loops proved by induction (invariant at entry and after one step, assigns, decreases): src/sponge.c:9 in sponge_mix(), src/sponge.c:35 in sponge_absorb()`
-- `harness assumptions of harness/sponge_inductive.c (the LEANC_ASSUMEs only, an upper bound of the covered states; executions outside them are not covered): harness/sponge_inductive.c:11: s != ((void *)0); harness/sponge_inductive.c:12: s->fill < 144; harness/sponge_inductive.c:14: len <= ((size_t)1 << 48); harness/sponge_inductive.c:16: data != ((void *)0)`
+- `harness assumptions of harness/sponge_inductive.c (the LEANC_ASSUMEs and __VERIFIER_assumes only, an upper bound of the covered states; executions outside them are not covered): harness/sponge_inductive.c:11: s != ((void *)0); harness/sponge_inductive.c:12: s->fill < 144; harness/sponge_inductive.c:14: len <= ((size_t)1 << 48); harness/sponge_inductive.c:16: data != ((void *)0)`
+- `checked on every path for each claimed call the harness makes directly: no function of the editable sources runs before the claimed function is entered (an editable predicate in an assumption, an editable setup call or an argument of the claimed call is an error), and the harness reads no editable object whose initialiser the inductive run keeps (const or with const parts)`
 - `known gap (not detected): harness code other than LEANC_ASSUME also narrows the covered states and is not listed (declaration initialisers; writes before the last LEANC_ASSUME; writes after the first claimed call of main(), before a later claimed call included; any write in main() when it calls no claimed function directly; branches around the assertions; helper functions): the listed LEANC_ASSUMEs are an upper bound of the covered states, not the covered set, so the approver must review the whole harness`
-- `checked property classes: the mandatory CBMC check classes only (bounds, pointer, div-by-zero, signed-overflow, pointer-overflow, undefined-shift), plus every assertion of the inductive harness and the loop invariant, assigns and decreases clauses of every contracted loop; not checked by this gate (bounded CBMC result only): unsigned-overflow`
+- `checked property classes: the mandatory CBMC check classes only (bounds, pointer, div-by-zero, signed-overflow, pointer-overflow, undefined-shift), plus every assertion of the inductive harness on the paths that reach it and the loop invariant, assigns and decreases clauses of every contracted loop; not checked by this gate (bounded CBMC result only): unsigned-overflow`
 
 **已證明**（CBMC 5.95.1，DFCC 迴圈契約，`MANDATORY_CHECKS`）：
 
@@ -67,9 +68,12 @@ leanc run spec.yaml --provider mock --regenerate    # => VERIFIED_INDUCTIVE（0 
 - 摘要的功能正確性、分段吸收的等價性（POST3）：歸納 harness 不斷言這些，只有 bounded harness（6 位元組）與測試涵蓋。
 - 模型假設：配置永遠成功；static 物件從任意值開始（本例沒有）；`memcpy` / `memmove` / `memset` 由模型取代：
   檢查來源與目的範圍，並讓目的內容變成任意值。
-- 已知缺口 D8（未偵測）：兩個 `memcpy` 都寫入 `struct sponge` 內的 `s->block`；複製模型只檢查整個物件，所以從
-  `block` 溢出到同一物件的相鄰欄位 `acc`、`fill`、`rounds` 的複製不會被報告為越界（assigns 是整個 `*s`，所以也不會被 assigns 抓到；
-  只可能間接被抓到，例如覆寫 `fill` 而違反 invariant `s->fill < 144`）。複製進字串常值也不會被報告。
+- 已知缺口 D8（未偵測）：CBMC 只以整個物件檢查經由指標的存取，所以經由指標從成員陣列溢出到同一物件的相鄰欄位
+  或填充位元組的存取不會被報告為越界：`p->a[i]` 這種索引、指標運算、從成員取得的指標（`q = p->a; q[i]`），以及
+  `memcpy` / `memmove` / `memset` 模型（bounded `cbmc` 關卡也一樣；對具名物件的存取如 `s.a[i]` 仍以成員檢查）。
+  本例兩個 `memcpy` 都寫入 `struct sponge` 內的 `s->block`，從 `block` 溢出到 `acc`、`fill`、`rounds` 的複製
+  不會被報告（assigns 是整個 `*s`，所以也不會被 assigns 抓到；只可能間接被抓到，例如覆寫 `fill` 而違反
+  invariant `s->fill < 144`）。複製進字串常值也不會被報告。
 - 已知缺口 D20（fail closed）：呼叫含迴圈的 CBMC 函式庫模型（`strlen`、`strcpy`、`strncpy`、`strncat`）會使
   迴圈契約的寫入集檢查失敗，這種程式碼永遠不會通過本關卡（本例沒有使用）。`free` 只有在 `main()` 走得到時，
   `goto-instrument --dfcc` 才能連結它的模型；所以 Lean C 在插裝後的 `main()` 開頭呼叫 `free((void *)0)`，
@@ -78,7 +82,12 @@ leanc run spec.yaml --provider mock --regenerate    # => VERIFIED_INDUCTIVE（0 
   裡的 `goto`；`main()` 從最後一個 `LEANC_ASSUME`（沒有就從開頭）到第一個 claimed 函式呼叫結束之間的任何寫入
   （`=`、複合指定、`++`、`--`，例如 `r->fill = r->fill % 8;`），只有一般宣告 `T x = ...;` 的 `=` 例外；
   harness 翻譯單元（包括它引入的標頭）在函式本體裡使用，或在檔案範圍當作值使用（例如函式指標初始值 `= exit`，
-  原型宣告不算）`exit`、`abort`、`_Exit`、`quick_exit`、`longjmp` 等會讓 CBMC 默默剪掉路徑的名稱。verify run
+  原型宣告不算）`exit`、`abort`、`_Exit`、`quick_exit`、`longjmp` 等會讓 CBMC 默默剪掉路徑的名稱；
+  `__VERIFIER_assume` 和 `LEANC_ASSUME` 一樣算假設（第一個 claimed 呼叫之後出現就是 ERROR，之前出現就列入範圍
+  敘述）；在 claimed 函式入口之前執行任何可編輯原始碼的函式（假設裡的可編輯 predicate、呼叫前的 setup 呼叫、
+  claimed 呼叫的引數；verify build 在每個可編輯函式入口插入檢查，CBMC 在每條路徑上檢查）；harness 讀取可編輯
+  原始碼定義、且歸納 run 保留其初始值的物件（const 或含 const 成分，例如 `const unsigned limit = 15;`）；
+  harness 翻譯單元引入可編輯原始碼檔案。verify run
   另外使用 `--no-self-loops-to-assumptions`，所以 `for (;;) {}` 這種自我迴圈不會被 CBMC 變成假設，而是展開斷言
   失敗（`INCONCLUSIVE`）。
 - 已知缺口（未偵測）：其他 `LEANC_ASSUME` 以外的 harness 程式碼仍會縮小涵蓋的狀態，而且不會列在範圍敘述裡：

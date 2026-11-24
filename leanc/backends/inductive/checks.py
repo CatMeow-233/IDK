@@ -9,6 +9,7 @@ from leanc.backends.cbmc.output import PROPERTY_HOLDS, CbmcOutput
 from leanc.backends.cbmc.properties import PropertyTally, count_listed_harness_assertions
 from leanc.backends.counterexample.locations import location_from_cbmc
 from leanc.backends.counterexample.properties import property_class
+from leanc.backends.inductive.editable_entry import EDITABLE_BEFORE_CLAIMED_PREFIX
 from leanc.backends.inductive.harness_calls import ASSUME_AFTER_CLAIMED_CALL_LABEL, CLAIMED_CALL_LABEL_PREFIX
 from leanc.backends.inductive.problems import BuildProblem, inconclusive, tool_error
 from leanc.foundation.reasons import Reason
@@ -20,7 +21,10 @@ MAX_LISTED = 5
 
 def is_harness_rule_check(result: dict) -> bool:
     description = str(result.get("description") or "")
-    return description.startswith(CLAIMED_CALL_LABEL_PREFIX) or description == ASSUME_AFTER_CLAIMED_CALL_LABEL
+    return (
+        description.startswith((CLAIMED_CALL_LABEL_PREFIX, EDITABLE_BEFORE_CLAIMED_PREFIX))
+        or description == ASSUME_AFTER_CLAIMED_CALL_LABEL
+    )
 
 
 def _where(result: dict) -> str:
@@ -38,7 +42,9 @@ def harness_rule_problem(results: Sequence[dict]) -> BuildProblem | None:
         return None
     return tool_error(
         "the inductive harness breaks its structural rules on some path (a second claimed call after an earlier "
-        "one, or an assumption after a claimed call); each path may make one claimed call, after every assumption",
+        "one, an assumption after a claimed call, or code of the editable sources run before the first claimed "
+        "call, e.g. a predicate in an assumption); each path may make one claimed call, after every assumption, "
+        "and no editable function may run before it",
         broken,
     )
 

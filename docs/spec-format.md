@@ -134,7 +134,7 @@ Lean 結果是關於**模型**的，不會把 C 的判決提升為 `PROVED`。
 | `enum-range` | `--enum-range-check` | |
 
 強制檢查（`MANDATORY_CHECKS`）無法被規格關閉；實際啟用的檢查 = 強制檢查 + `verification.checks` + `contract.safety[].checks`。
-`--unwinding-assertions` 在 verify 與 vacuity 執行中永遠開啟（`coverage: true` 的額外執行不帶，該執行不影響判決）。
+`--unwinding-assertions` 在 verify 與 vacuity 執行中永遠開啟（`coverage: true` 的額外執行不帶，該執行不影響判決），後面緊接 `--no-self-loops-to-assumptions`：跳回自己的迴圈（`for (;;) {}`、`while (1);`）不會被 CBMC 變成假設，在允許的輸入上永不結束時展開斷言失敗（`INCONCLUSIVE`）。
 規格中沒有「任意額外 CBMC 參數」欄位，避免以旗標削弱驗證。
 
 ## Harness 撰寫規範

@@ -4,12 +4,13 @@ import json
 import posixpath
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from leanc.backends.inductive.harness_calls import ENTRY_POINT, ReturnKind
 
 __all__ = [
+    "RENAME_REMEDY",
     "RESERVED_PREFIX",
     "Symbol",
     "SymbolTable",
@@ -31,6 +32,13 @@ VOID_TYPE_ID = "empty"
 CODE_TYPE_ID = "code"
 RESERVED_PREFIX = "leanc_"
 LINK_RENAME_RE = re.compile(r"^(?P<base>.+)\$link\d+$")
+SYMBOL_EXPRESSION_ID = "symbol"
+IDENTIFIER_KEY = "identifier"
+SOURCE_LOCATION_KEY = "#source_location"
+RENAME_REMEDY = (
+    "a name the harness translation unit defines, its headers included, must not be defined again by the editable "
+    "sources, not even as a static: rename the editable one"
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +55,8 @@ class Symbol:
     is_type: bool
     type_id: str
     return_type_id: str | None
+    type_node: Any = field(default=None, compare=False, hash=False, repr=False)
+    value_symbols: frozenset[str] = frozenset()
 
     @property
     def is_global_name(self) -> bool:
@@ -77,6 +87,27 @@ def _id(node: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _referenced_symbols(value: Any) -> frozenset[str]:
+    found: set[str] = set()
+    pending = [value]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, list):
+            pending.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        named = node.get("namedSub")
+        if node.get("id") == SYMBOL_EXPRESSION_ID:
+            identifier = _id(named.get(IDENTIFIER_KEY)) if isinstance(named, dict) else None
+            if identifier:
+                found.add(identifier)
+        if isinstance(named, dict):
+            pending.extend(child for key, child in named.items() if key != SOURCE_LOCATION_KEY)
+        pending.append(node.get("sub"))
+    return frozenset(found)
+
+
 def _symbol(name: str, entry: Any) -> Symbol | None:
     if not isinstance(entry, dict):
         return None
@@ -96,6 +127,8 @@ def _symbol(name: str, entry: Any) -> Symbol | None:
         is_type=entry.get("isType") is True,
         type_id=_id(symbol_type) or "",
         return_type_id=_id(return_type) if return_type is not None else None,
+        type_node=symbol_type,
+        value_symbols=_referenced_symbols(entry.get("value")),
     )
 
 
@@ -153,7 +186,7 @@ def _renamed_trusted(linked: SymbolTable, trusted_names: frozenset[str]) -> list
         if match and match.group("base") in trusted_names:
             problems.append(
                 f"{name} ({symbol.where()}) is a link-time rename of the trusted symbol {match.group('base')}; "
-                "a second definition of that name exists"
+                f"a second definition of that name exists ({RENAME_REMEDY})"
             )
     return problems
 

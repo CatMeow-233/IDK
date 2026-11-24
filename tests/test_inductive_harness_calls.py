@@ -6,6 +6,8 @@ from leanc.backends.inductive.harness_narrowing import EARLY_EXIT_RULE, PRE_CALL
 from leanc.backends.inductive.harness_calls import (
     ASSUME_AFTER_CLAIMED_CALL_LABEL,
     CLAIMED_CALLS_COUNTER,
+    CLAIMED_ENTERED_FLAG,
+    EDITABLE_ENTERED_FLAG,
     FREE_ANCHOR_CALL,
     FREE_DECLARATION,
     ReturnKind,
@@ -24,7 +26,9 @@ MARKER = f'# 1 "{HARNESS}"\n'
 HEADER_MARKER = f'# 1 "{HEADER}" 1\n'
 BACK_MARKER = f'# 3 "{HARNESS}" 2\n'
 PROTOTYPES = "int step(int *s);\nvoid reset(int *s);\n"
-RESET_STATEMENT = f" {CLAIMED_CALLS_COUNTER} = 0; {FREE_ANCHOR_CALL} "
+RESET_STATEMENT = (
+    f" {CLAIMED_CALLS_COUNTER} = 0; {CLAIMED_ENTERED_FLAG} = 0; {EDITABLE_ENTERED_FLAG} = 0; {FREE_ANCHOR_CALL} "
+)
 
 
 def preprocessed(body: str, *, before: str = "", header: str = PROTOTYPES) -> str:
@@ -327,7 +331,7 @@ def test_verify_instrumentation_resets_counts_and_checks_assumes():
     text = instrumented_harness(BRANCHES, layout, HARNESS)
     first_line, declaration, free_declaration, rest = text.split("\n", 3)
     assert first_line == f'# 1 "{HARNESS}"'
-    assert declaration == f"static int {CLAIMED_CALLS_COUNTER};"
+    assert declaration == f"int {CLAIMED_CALLS_COUNTER}, {CLAIMED_ENTERED_FLAG}, {EDITABLE_ENTERED_FLAG};"
     assert free_declaration == FREE_DECLARATION == "void free(void *);"
     assert rest.count("\n") == BRANCHES.count("\n")
     assert "{" + RESET_STATEMENT + "\n    int s;" in rest

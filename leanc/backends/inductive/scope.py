@@ -11,18 +11,15 @@ from leanc.backends.cbmc.compile_flags import platform_architecture
 from leanc.backends.inductive.build import InductiveBuild
 from leanc.backends.inductive.evidence import EvidencedLoop
 from leanc.backends.inductive.runs import INDUCTIVE_CHECKS
-from leanc.foundation.inductive_scope import HARNESS_NARROWING
+from leanc.foundation.inductive_scope import HARNESS_NARROWING, SUBOBJECT_GAP
 from leanc.foundation.status import Outcome
 from leanc.toolchain.context import BackendContext
 
 MEMORY_MODELS: tuple[str, ...] = ("memcpy", "memmove", "memset")
 LIBRARY_LOOP_MODELS: tuple[str, ...] = ("strlen", "strcpy", "strncpy", "strncat")
-HARNESS_ASSERTIONS_CLASS = "every assertion of the inductive harness"
+HARNESS_ASSERTIONS_CLASS = "every assertion of the inductive harness on the paths that reach it"
 LOOP_CONTRACT_CLASSES = "the loop invariant, assigns and decreases clauses of every contracted loop"
-COPY_GAP = (
-    "known gap (not detected): a memcpy, memmove or memset that overflows into a neighbouring field of the same "
-    "object, or that copies into a string literal, is not reported (the copy models check whole objects only)"
-)
+COPY_GAP = f"known gap (not detected): {SUBOBJECT_GAP}"
 LIBRARY_GAP = (
     "known gap (fail closed): calls of CBMC library models that contain loops ("
     + ", ".join(LIBRARY_LOOP_MODELS)
@@ -30,10 +27,17 @@ LIBRARY_GAP = (
 )
 NOT_PROVED = "VERIFIED_INDUCTIVE is not PROVED: PROVED is reached only through a passing required wp gate"
 ASSUMPTIONS_BOUND = (
-    "the LEANC_ASSUMEs only, an upper bound of the covered states; executions outside them are not covered"
+    "the LEANC_ASSUMEs and __VERIFIER_assumes only, an upper bound of the covered states; executions outside them "
+    "are not covered"
 )
 NARROWED_BY_HARNESS_CODE = "the other harness code can still narrow the covered states"
 HARNESS_GAP = f"known gap (not detected): {HARNESS_NARROWING}"
+EDITABLE_FIRST_RULE = (
+    "checked on every path for each claimed call the harness makes directly: no function of the editable sources "
+    "runs before the claimed function is entered (an "
+    "editable predicate in an assumption, an editable setup call or an argument of the claimed call is an error), "
+    "and the harness reads no editable object whose initialiser the inductive run keeps (const or with const parts)"
+)
 NO_CLAIM = (
     "the inductive gate ended {outcome}: it establishes no inductive claim, and VERIFIED_INDUCTIVE needs a "
     "passing required inductive gate"
@@ -68,7 +72,7 @@ def _loops_statement(build: InductiveBuild, loops: Mapping[str, EvidencedLoop]) 
 
 def _assumptions_statement(build: InductiveBuild, harness: str) -> str:
     if not build.harness_assumptions:
-        return f"harness assumptions of {harness}: none (no LEANC_ASSUME; {NARROWED_BY_HARNESS_CODE})"
+        return f"harness assumptions of {harness}: none (no LEANC_ASSUME or __VERIFIER_assume; {NARROWED_BY_HARNESS_CODE})"
     return f"harness assumptions of {harness} ({ASSUMPTIONS_BOUND}): " + "; ".join(build.harness_assumptions)
 
 
@@ -107,6 +111,7 @@ def scope_statements(ctx: BackendContext, build: InductiveBuild, inputs: ScopeIn
         f"claimed functions: {functions}; functions that are not claimed have only the bounded CBMC result",
         _loops_statement(build, inputs.loops),
         _assumptions_statement(build, harness),
+        EDITABLE_FIRST_RULE,
         HARNESS_GAP,
         _checks_statement(ctx),
         (

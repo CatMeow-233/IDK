@@ -25,7 +25,7 @@ TALLY_LOOP_LINE = 6
 MACRO_TALLY_LOOP_LINE = 8
 CAPTURE_MEMCPY_LOOP_LINE = 17
 REJECTED_CONTRACTS = "the loop contracts in inductive/loops.json are rejected"
-TRUSTED_SYMBOL_RULES = "breaks the trusted-symbol rules"
+RESERVED_IN_EDITABLE = "editable code uses names reserved for the inserted checks"
 LINK_RENAME = "is a link-time rename of the trusted symbol"
 SLOPPY_RULE = f"LEANC_ASSUME after the call of the claimed function {RING_FUNCTION}"
 RING_INVARIANT_ASSERTION = "assertion r->fill < 16"
@@ -101,7 +101,7 @@ def test_capture_by_an_editable_leanc_function_is_an_error(tmp_path, source, shi
     result = run_inductive(ctx)
     assert result.outcome is Outcome.ERROR and result.status is Status.TOOL_ERROR
     assert only_codes(result) == {Reason.TOOL_ERROR}
-    assert TRUSTED_SYMBOL_RULES in result.summary and f"{name} (src/tally.c:" in result.summary
+    assert RESERVED_IN_EDITABLE in result.summary and f"{name} uses the leanc_ prefix reserved" in result.summary
 
 
 def test_capture_of_a_trusted_harness_function_by_an_editable_static_is_an_error(tmp_path):

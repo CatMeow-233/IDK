@@ -256,15 +256,15 @@ def test_the_pass_scope_names_everything_that_was_and_was_not_proved(tmp_path, r
         "mandatory CBMC check classes only (" + ", ".join(MANDATORY_CHECKS) + ")",
         "at most one call of a claimed function per path",
         "functions that are not claimed have only the bounded CBMC result",
-        "overflows into a neighbouring field of the same object",
-        "copies into a string literal",
+        "overflows a member array into a neighbouring field or the padding of the same object",
+        "a copy into a string literal",
         "strlen, strcpy, strncpy, strncat",
         "is not PROVED",
         "static objects start arbitrary",
         "allocations never fail",
         "harness/inductive.c (sha256 ",
         ") as written, with at most one call of a claimed function per path, satisfies the harness assertions",
-        "the LEANC_ASSUMEs only, an upper bound of the covered states",
+        "the LEANC_ASSUMEs and __VERIFIER_assumes only, an upper bound of the covered states",
         f"known gap (not detected): {HARNESS_NARROWING}",
     ):
         assert needed in text, needed

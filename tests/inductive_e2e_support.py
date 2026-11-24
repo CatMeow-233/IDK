@@ -29,7 +29,7 @@ def inductive_record(payload: dict) -> dict:
 
 
 def flat(text: str) -> str:
-    return " ".join(text.replace("\\*", "*").split())
+    return " ".join(text.replace("\\*", "*").replace("\\_", "_").split())
 
 
 def reason_pairs(verification: dict) -> set[tuple[str, str]]:

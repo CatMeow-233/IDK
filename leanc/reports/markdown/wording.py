@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, UNREACHED_STATES
+from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, SUBOBJECT_GAP, UNREACHED_STATES
 from leanc.foundation.status import Status
 
 STATUS_MEANING: dict[Status, str] = {
@@ -23,9 +23,8 @@ STATUS_MEANING: dict[Status, str] = {
         "at entry and is preserved, its writes stay within its assigns clause and its decreases clause shows "
         "termination. Static objects start arbitrary and allocations are assumed to succeed. Note: "
         f"{HARNESS_NARROWING}. Not proved: functions that are not claimed, {UNREACHED_STATES} and the extra "
-        "verification.checks classes; for those only the bounded CBMC result holds. Known gaps: a memcpy, memmove "
-        "or memset that overflows into a neighbouring field of the same object, or that writes into a string "
-        "literal, is not reported; calls of CBMC library models such as strlen, strcpy, strncpy and strncat make "
+        f"verification.checks classes; for those only the bounded CBMC result holds. Known gaps: {SUBOBJECT_GAP}; "
+        "calls of CBMC library models such as strlen, strcpy, strncpy and strncat make "
         "the gate fail closed (it cannot pass: an incompleteness, not a false pass). The result is only as strong "
         "as the whole harness (its assumptions, its other code and its assertions), and it is NOT a proof against "
         "a contract (it is never equal to PROVED)."

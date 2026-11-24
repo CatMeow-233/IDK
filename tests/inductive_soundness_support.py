@@ -30,6 +30,7 @@ BELOW_ASSIGNS = ("i", "c")
 BELOW_DECREASES = "n - i"
 TALLY_LOOPS = TALLY / "loops.json"
 RING = PIPELINE_FIXTURES / "ring"
+RING_PREDICATES = PIPELINE_FIXTURES / "ring_pred"
 RING_SOURCE = "src/ring.c"
 RING_HEADER = "include/ring.h"
 RING_FUNCTION = "ring_add"
@@ -88,9 +89,13 @@ def ring_spec_data() -> dict[str, Any]:
     }
 
 
-def ring_gate(tmp_path: Path, harness: str) -> StageResult:
+def ring_gate(tmp_path: Path, harness: str, *, fixture: Path = RING, source: str = RING_SOURCE) -> StageResult:
     root = tmp_path / "proj"
-    files = {RING_SOURCE: RING / RING_SOURCE, RING_HEADER: RING / RING_HEADER, INDUCTIVE_HARNESS: RING / "harness" / harness}
+    files = {
+        RING_SOURCE: fixture / source,
+        RING_HEADER: fixture / RING_HEADER,
+        INDUCTIVE_HARNESS: fixture / "harness" / harness,
+    }
     for rel, source in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, root / rel)

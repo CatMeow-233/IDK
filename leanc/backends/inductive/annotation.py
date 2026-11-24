@@ -76,8 +76,8 @@ def _in_unit(unit: EditableUnit, matched: Sequence[MatchedLoop]) -> list[Matched
     return [item for item in matched if item.site.file == unit.rel]
 
 
-def verify_text(unit: EditableUnit, matched: Sequence[MatchedLoop]) -> str:
-    return annotate(unit.pp, [contract_insertion(item) for item in _in_unit(unit, matched)])
+def verify_text(unit: EditableUnit, matched: Sequence[MatchedLoop], entries: Sequence[Insertion] = ()) -> str:
+    return annotate(unit.pp, [*(contract_insertion(item) for item in _in_unit(unit, matched)), *entries])
 
 
 def vacuity_text(unit: EditableUnit, matched: Sequence[MatchedLoop], entries: Sequence[FunctionEntry]) -> str:

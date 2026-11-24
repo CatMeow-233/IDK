@@ -7,6 +7,7 @@ import pytest
 
 from leanc.backends.inductive.harness_calls import ReturnKind
 from leanc.backends.inductive.symbols import (
+    RENAME_REMEDY,
     SymbolTable,
     capture_problems,
     claimed_problems,
@@ -111,6 +112,15 @@ def test_link_rename_of_a_trusted_name_is_a_problem():
     problems = capture_problems(parsed(linked), [trusted], [EDITABLE])
     assert len(problems) == 1
     assert "helper$link1" in problems[0] and "link-time rename" in problems[0]
+
+
+def test_a_static_editable_twin_of_a_static_harness_function_stays_a_problem():
+    harness = {**HARNESS_ALONE, "helper": symbol(HARNESS_MODULE, HARNESS, "3", local=True)}
+    trusted = trusted_definitions(parsed(harness), HARNESS_MODULE)
+    linked = {**harness, "tally_below": LINKED["tally_below"], "helper$link1": symbol(EDITABLE_MODULE, EDITABLE, "3", base="helper", local=True)}
+    problems = capture_problems(parsed(linked), [trusted], [EDITABLE])
+    assert len(problems) == 1 and "helper$link1" in problems[0]
+    assert RENAME_REMEDY in problems[0]
 
 
 def test_trusted_name_bound_to_an_editable_definition_is_a_problem():

@@ -3,6 +3,8 @@ from __future__ import annotations
 __all__ = [
     "COVERED_EXECUTIONS",
     "HARNESS_NARROWING",
+    "SUBOBJECT_GAP",
+    "SUBOBJECT_GAP_SHORT",
     "UNREACHED_STATES",
 ]
 
@@ -18,3 +20,14 @@ HARNESS_NARROWING = (
     "covered set, so the approver must review the whole harness"
 )
 UNREACHED_STATES = "states the harness as written does not reach"
+SUBOBJECT_GAP = (
+    "an access through a pointer that overflows a member array into a neighbouring field or the padding of the "
+    "same object (indexing such as p->a[i], pointer arithmetic, a pointer taken from the member such as q = p->a; "
+    "q[i], and the memcpy, memmove and memset models), or a copy into a string literal, is not reported: CBMC "
+    "checks pointer-based accesses against the whole object only (accesses on a named object such as s.a[i] are "
+    "checked against the member)"
+)
+SUBOBJECT_GAP_SHORT = (
+    "pointer accesses and copies that overflow a member array inside its object, or copies into a string literal, "
+    "are not reported"
+)

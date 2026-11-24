@@ -31,6 +31,7 @@ from leanc.backends.inductive.program import BuildMode
 from leanc.backends.inductive.runs import INDUCTIVE_CHECKS, CheckedRun, checked_run, inductive_unwind
 from leanc.backends.inductive.scope import ScopeInputs, no_claim_statements, scope_details, scope_statements
 from leanc.backends.inductive.steps import ToolSteps
+from leanc.foundation.inductive_scope import SUBOBJECT_GAP_SHORT
 from leanc.foundation.models import Diagnostic, StageResult, ToolInvocation
 from leanc.foundation.reasons import STAGE_REASON_CODES_DETAIL, Reason
 from leanc.foundation.status import Outcome, outcome_to_status
@@ -43,8 +44,7 @@ INCONCLUSIVE_HEAD = "inductive verdict inconclusive (no VERIFIED_INDUCTIVE): "
 ALSO = ". Also found before the gate stopped: "
 PASS_GAPS = (
     "known gaps: harness code other than LEANC_ASSUME narrows the covered states without being listed (review the "
-    "whole harness), copies overflowing into a neighbouring field or into a string literal are not reported, and "
-    "library string functions with loops fail closed"
+    f"whole harness), {SUBOBJECT_GAP_SHORT}, and library string functions with loops fail closed"
 )
 
 

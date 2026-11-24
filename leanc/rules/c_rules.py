@@ -79,7 +79,8 @@ __all__ = [
 
 RULES: dict[str, str] = {
     "TOOL_DIVERGENCE": "code that can differ between the tools (conditionals/macros on compiler-, optimiser- or "
-    "verifier-specific identifiers, non-standard directives, optimisation-dependent built-ins)",
+    "verifier-specific identifiers, non-standard directives, optimisation-dependent built-ins, type-selecting "
+    "built-ins _Generic/__builtin_types_compatible_p/__builtin_classify_type, the mode attribute)",
     "PRAGMA": "a #pragma / _Pragma other than '#pragma once' (they can disable CBMC checks or diagnostics)",
     "LINE_DIRECTIVE": "#line or GNU linemarkers (they re-attribute code, e.g. mark it as a system header)",
     "TRIGRAPH": "trigraph sequences (??= ??/ ??' ??( ??) ??! ??< ??> ??-), comments and string literals included: "
@@ -96,8 +97,9 @@ RULES: dict[str, str] = {
     "ASSUMPTION_INJECTION": "compiler/verifier assumptions (__builtin_unreachable/assume, _Noreturn, "
     "assume/nonnull/noreturn/const/pure attributes)",
     "INLINE_ASM": "inline assembly",
-    "CONSTRUCTOR": "code that runs outside the function under test (constructor/destructor attributes, "
-    "section/used attributes, .init_array/.fini_array/.ctors/.dtors sections)",
+    "CONSTRUCTOR": "code that runs outside the function under test or outside the calls the verifiers see "
+    "(constructor/destructor/cleanup attributes, section/used attributes, .init_array/.fini_array/.ctors/.dtors "
+    "sections)",
     "SANITIZER_SUPPRESSION": "no_sanitize-style attributes",
     "WARNING_SUPPRESSION": "static-analyzer suppression attributes",
     "TERMINATION": "process termination or non-local control flow (exit, _exit, abort, atexit, longjmp, raise, "
@@ -146,6 +148,10 @@ _TOKEN_RULES: list[TokenRule] = [
     TokenRule("TERMINATION", re.compile(r"\b__builtin_(?:trap|debugtrap|abort)(?=\s*\()"), "trapping built-in"),
     TokenRule("TOOL_DIVERGENCE", re.compile(r"\b__builtin_(?:constant_p|object_size|dynamic_object_size)(?=\s*\()"),
                "optimisation-dependent built-in"),
+    TokenRule("TOOL_DIVERGENCE", re.compile(r"\b_Generic\b"), "type-selecting _Generic (CBMC and clang can select "
+               "different associations)"),
+    TokenRule("TOOL_DIVERGENCE", re.compile(r"\b__builtin_(?:types_compatible_p|classify_type)\b"),
+               "type-judging built-in (CBMC and clang can judge types differently)"),
     TokenRule("DANGEROUS_IMPORT", re.compile(r"\b__(?:asan|lsan|ubsan|msan|tsan|hwasan|dfsan|sanitizer)_\w+"),
                "sanitizer runtime interface"),
     TokenRule("PRAGMA", re.compile(r"\b__pragma(?=\s*\()"), "MS-style __pragma"),
@@ -173,11 +179,12 @@ _GNU_ATTRIBUTE_LIST_DEPTH = 2
 _STANDARD_ATTRIBUTE_LIST_DEPTH = 0
 _SANITIZER_SUPPRESSION_PREFIX = "no_sanitize"
 _ATTRIBUTE_RULES: dict[str, str] = {
-    **dict.fromkeys(("constructor", "destructor", "section", "used", "retain", "init_priority"), "CONSTRUCTOR"),
+    **dict.fromkeys(("constructor", "destructor", "section", "used", "retain", "init_priority", "cleanup"),
+                    "CONSTRUCTOR"),
     **dict.fromkeys(("weak", "weakref", "alias", "ifunc", "visibility", "selectany", "externally_visible"),
                     "SYMBOL_OVERRIDE"),
     **dict.fromkeys(("disable_sanitizer_instrumentation", "no_address_safety_analysis"), "SANITIZER_SUPPRESSION"),
-    **dict.fromkeys(("optimize", "target", "target_clones"), "TOOL_DIVERGENCE"),
+    **dict.fromkeys(("optimize", "target", "target_clones", "mode"), "TOOL_DIVERGENCE"),
     "naked": "INLINE_ASM",
     **dict.fromkeys(("assume", "assume_aligned", "nonnull", "returns_nonnull", "noreturn", "const", "pure"),
                     "ASSUMPTION_INJECTION"),

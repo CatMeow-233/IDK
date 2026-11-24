@@ -77,7 +77,7 @@ def test_recorded_gate_passes_with_no_reason_code(tmp_path, recording):
     assert [loop["cbmc_loop"] for loop in result.details["scope"]["loops"]] == [BELOW_LOOP, "tally_max.0", CLEAR_LOOP]
     assert result.details["cbmc_version"] == "5.95.1 (cbmc-5.95.1)"
     for needed in ("tally_below(), tally_max(), tally_clear()", "src/tally.c:6, src/tally.c:18, src/tally.c:29",
-                   "2 harness assumption(s)", ", ".join(MANDATORY_CHECKS) + " only", "neighbouring field",
+                   "2 harness assumption(s)", ", ".join(MANDATORY_CHECKS) + " only", "member array",
                    "string literal", "library string functions", "not PROVED", "every execution of main() of",
                    "as written", "narrowed further by its other code", "review the whole harness"):
         assert needed in result.summary, needed

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, UNREACHED_STATES
+from leanc.foundation.inductive_scope import COVERED_EXECUTIONS, HARNESS_NARROWING, SUBOBJECT_GAP, UNREACHED_STATES
 from leanc.foundation.models import FailureReport, VerificationResult
 from leanc.llm.cpp_prompts import cpp_system
 from leanc.llm.prompts.rendering import (
@@ -51,12 +51,11 @@ only that no violation of the checked properties exists within the approved harn
 bound - it is not a proof; VERIFIED_INDUCTIVE adds only that {covered} and the mandatory check classes only, \
 with every contracted loop proved by induction, static objects starting arbitrary and allocations assumed to \
 succeed - it is not PROVED; {narrowing}; functions that are not claimed, {unreached} and the extra \
-verification.checks classes have only the bounded CBMC result; known gaps: a memcpy, memmove or memset that \
-overflows into a neighbouring field of the same object, or that writes into a string literal, is not reported, \
-and library models such as strlen make it fail closed; UNKNOWN, TIMEOUT and TOOL_ERROR mean no verdict. Never \
+verification.checks classes have only the bounded CBMC result; known gaps: {subobject}, and library models \
+such as strlen make it fail closed; UNKNOWN, TIMEOUT and TOOL_ERROR mean no verdict. Never \
 claim a property holds that the tools did not check, and never contradict the reported status. Plain prose, at \
 most about 200 words: what the status means, what failed and where, and what a developer should look at next.
-""".format(covered=COVERED_EXECUTIONS, narrowing=HARNESS_NARROWING, unreached=UNREACHED_STATES)
+""".format(covered=COVERED_EXECUTIONS, narrowing=HARNESS_NARROWING, unreached=UNREACHED_STATES, subobject=SUBOBJECT_GAP)
 
 
 def build_explain_prompt(result: VerificationResult, limits: PromptLimits = DEFAULT_LIMITS) -> Prompt:

@@ -27,6 +27,8 @@ CHECK_FLAGS: dict[str, str] = {
 }
 
 VACUITY_DEFINE = "-DLEANC_VACUITY_CHECK"
+UNWINDING_ASSERTIONS = "--unwinding-assertions"
+NO_SELF_LOOPS_TO_ASSUMPTIONS = "--no-self-loops-to-assumptions"
 COVERAGE_CRITERION = ("--cover", "location")
 MALLOC_MAY_FAIL_FLAGS = ("--malloc-may-fail", "--malloc-fail-null")
 
@@ -105,7 +107,7 @@ def build_cbmc_argv(ctx: BackendContext, *, mode: Mode = "verify") -> list[str]:
         *_unwind_args(verification),
     ]
     if _cbmc_accepts_unwinding_assertions(mode):
-        argv.append("--unwinding-assertions")
+        argv += [UNWINDING_ASSERTIONS, NO_SELF_LOOPS_TO_ASSUMPTIONS]
     argv += _memory_model_args(verification)
     argv.append("--json-ui")
     return argv

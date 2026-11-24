@@ -63,12 +63,14 @@ _PROOF_ROUND_RULES: dict[str, str] = {
 }
 _SOURCE_INTEGRITY_GATE_RULES: dict[str, str] = {
     "TOOL_DIVERGENCE": "code that can differ between clang, the sanitizer build and CBMC (conditionals on "
-    "compiler/optimiser/verifier macros, non-standard directives, optimisation-dependent built-ins)",
+    "compiler/optimiser/verifier macros, non-standard directives, optimisation-dependent built-ins, _Generic, "
+    "__builtin_types_compatible_p, __builtin_classify_type, the mode attribute)",
     "PRAGMA": "a #pragma / _Pragma other than '#pragma once'",
     "LINE_DIRECTIVE": "#line or GNU linemarkers",
     "SYMBOL_OVERRIDE": "defines/redefines libc or verifier hooks (__assert_fail, nondet_*, main, reserved names), "
     "weak/alias symbols, or macros named after libc functions, keywords or interface macros",
-    "CONSTRUCTOR": "constructor/destructor/section attributes (code running outside the function under test)",
+    "CONSTRUCTOR": "constructor/destructor/cleanup/section attributes (code running outside the function under "
+    "test or outside the calls the verifiers see)",
     "TERMINATION": "process termination or non-local control flow (exit, _exit, abort, atexit, longjmp, raise, ...)",
     "DANGEROUS_IMPORT": "process/network/loader/thread/sanitizer-control APIs",
 }

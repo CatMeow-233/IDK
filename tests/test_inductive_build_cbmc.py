@@ -179,7 +179,7 @@ def test_measured_a15_capture_is_caught_in_both_link_orders(tmp_path, trusted_fi
 def test_editable_leanc_definitions_are_caught_on_the_expanded_view(tmp_path, source, name):
     build = tally_build(tmp_path, source=TALLY / "src" / source, contracts=no_contracts())
     assert build.problem.outcome is Outcome.ERROR
-    assert f"{name} (src/tally.c:" in build.problem.describe()
+    assert f"{name} uses the leanc_ prefix reserved" in build.problem.describe()
 
 
 def test_uncontracted_loops_stop_the_build_before_cbmc(tmp_path):

@@ -134,8 +134,9 @@ SCOPE_PATTERNS = tuple(
         r"only the bounded cbmc result",
         r"static objects start(?:ing)? arbitrary",
         r"allocations (?:are )?assumed to succeed",
-        r"overflows into a neighbouring field of the same object",
-        r"or that writes into a string literal",
+        r"overflows a member array into a neighbouring field or the padding of the same object",
+        r"pointer arithmetic",
+        r"or a copy into a string literal",
         r"strlen",
         r"fail closed",
     )
