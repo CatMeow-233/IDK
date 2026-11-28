@@ -8,6 +8,20 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from leanc.backends.cbmc.compile_flags import (
+    cbmc_host_profile,
+    cbmc_preprocessor_macro_args,
+    normalize_host_architecture,
+    normalize_host_system,
+)
+from leanc.backends.object_tools import (
+    NM_CANDIDATES,
+    ObjectFormat,
+    find_section_tools,
+    first_tool,
+    missing_section_tool_message,
+    object_format,
+)
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, minimal_env, run_command
 from leanc.foundation.sandbox import (
@@ -17,7 +31,9 @@ from leanc.foundation.sandbox import (
     detect_sandbox,
     network_probe_blocked,
 )
+from leanc.rules.predefined_macros import PREDEFINED_MACRO_DUMP_ARGS, parse_predefined_macros
 from leanc.specs.approval import leanc_home
+from leanc.specs.model import CompileConfig
 from leanc.toolchain.cxx import find_clangxx
 from leanc.toolchain.framac import INSTALL_HINT as WP_HINT
 from leanc.toolchain.framac import find_framac
@@ -26,6 +42,8 @@ from leanc.toolchain.lean import find_lean
 from leanc.toolchain.tools import find_cbmc, find_clang, find_tool, tool_version
 
 APT_HINT = "sudo apt-get install -y clang-18 libclang-rt-18-dev cbmc gcc bubblewrap   (Ubuntu 24.04 / Debian)"
+BREW_HINT = "brew install llvm cbmc   (macOS; Xcode Command Line Tools provide clang/nm/otool)"
+WINDOWS_HINT = "winget install LLVM.LLVM   (plus CBMC and MinGW-w64 gcc for the CBMC preprocessor)"
 GCC = "gcc"
 GCC_PURPOSE = "CBMC, Frama-C and the integrity gate's predefined-macro check preprocess with gcc"
 MIN_PYTHON = (3, 11)
@@ -39,6 +57,8 @@ CBMC_PROBE_C = (
     "#include <assert.h>\nint nondet_int(void);\nint main(void){int x=nondet_int(); if(x>0 && x<10) assert(x*2<20); "
     "return 0;}\n"
 )
+INTEGRITY_PROBE_C = "int leanc_doctor_probe(void) { return 0; }\n"
+INTEGRITY_PROBE_TIMEOUT_S = 60
 ANALYZER_TIMEOUT_S = 60
 SANITIZER_BUILD_TIMEOUT_S = 120
 SANITIZER_RUN_TIMEOUT_S = 30
@@ -46,6 +66,30 @@ CBMC_TIMEOUT_S = 120
 SHOWN_STDERR_CHARS = 300
 SHOWN_RUN_STDERR_CHARS = 200
 CBMC_SUCCESS_MARKERS = ('"cProverStatus": "success"', '"cProverStatus":"success"')
+
+
+def _install_hint() -> str:
+    if sys.platform == "darwin":
+        return BREW_HINT
+    if sys.platform == "win32":
+        return WINDOWS_HINT
+    return APT_HINT
+
+
+def _sanitizer_fix_hint() -> str:
+    if sys.platform == "darwin":
+        return "install Xcode Command Line Tools or Homebrew llvm for sanitizer runtimes"
+    if sys.platform == "win32":
+        return "install LLVM for Windows with compiler-rt sanitizer runtimes"
+    return "install the sanitizer runtime, e.g. libclang-rt-18-dev"
+
+
+def _default_object_format() -> ObjectFormat:
+    if sys.platform == "darwin":
+        return "macho"
+    if sys.platform == "win32":
+        return "coff"
+    return "elf"
 
 
 @dataclass
@@ -83,7 +127,7 @@ def _missing_clang_checks() -> list[Check]:
     hint = (
         f"LEANC_CLANG={os.environ['LEANC_CLANG']!r} is not an executable"
         if os.environ.get("LEANC_CLANG")
-        else f"install clang ({APT_HINT}) or set LEANC_CLANG"
+        else f"install clang ({_install_hint()}) or set LEANC_CLANG"
     )
     return [
         Check("clang", False, True, "not found", hint),
@@ -134,38 +178,42 @@ def _sandboxed_sanitizer_run(exe: Path, workdir: Path, sandbox: Sandbox) -> tupl
 
 def _sanitizer_check(clang: str, workdir: Path, sandbox: Sandbox) -> Check:
     src = _tiny_c(workdir, "san.c", SANITIZER_PROBE_C)
-    exe = workdir / "san"
+    exe = workdir / ("san.exe" if sys.platform == "win32" else "san")
     build = run_command(
         [clang, "-g", "-fsanitize=address,undefined", str(src), "-o", str(exe)],
         cwd=workdir,
         limits=Limits(timeout_s=SANITIZER_BUILD_TIMEOUT_S),
         env=minimal_env(),
     )
+    fix_hint = _sanitizer_fix_hint()
     if not (build.ok and exe.exists()):
         return Check(
             "sanitizers",
             False,
             True,
             (build.error or build.stderr.strip())[-SHOWN_STDERR_CHARS:],
-            "install the sanitizer runtime, e.g. libclang-rt-18-dev",
+            fix_hint,
         )
     if sandbox.active:
         ok, run_detail = _sandboxed_sanitizer_run(exe, workdir, sandbox)
     else:
         ok, run_detail = True, "; run skipped (no sandbox)"
-    return Check("sanitizers", ok, True, "ASan+UBSan build ok" + run_detail, "" if ok else "install libclang-rt-18-dev")
+    return Check("sanitizers", ok, True, "ASan+UBSan build ok" + run_detail, "" if ok else fix_hint)
 
 
 def _gcc_check() -> Check:
+    profile = cbmc_host_profile()
+    required = profile is None or profile.preprocessor == GCC
     gcc = find_tool(GCC)
     if not gcc:
-        return Check(GCC, False, True, "not found", f"install gcc ({APT_HINT}); {GCC_PURPOSE}")
-    return Check(GCC, True, True, f"{gcc}: {tool_version(gcc)}")
+        detail = "not found" if required else "not found (optional on macOS: CBMC preprocesses with clang; needed for wp)"
+        return Check(GCC, False, required, detail, f"install gcc ({_install_hint()}); {GCC_PURPOSE}")
+    return Check(GCC, True, required, f"{gcc}: {tool_version(gcc)}")
 
 
 def _cbmc_check(cbmc: str | None, workdir: Path) -> Check:
     if not cbmc:
-        return Check("cbmc", False, True, "not found", f"install CBMC ({APT_HINT}) or set LEANC_CBMC")
+        return Check("cbmc", False, True, "not found", f"install CBMC ({_install_hint()}) or set LEANC_CBMC")
     src = _tiny_c(workdir, "cb.c", CBMC_PROBE_C)
     result = run_command(
         [cbmc, str(src), "--signed-overflow-check", "--json-ui"],
@@ -180,8 +228,59 @@ def _cbmc_check(cbmc: str | None, workdir: Path) -> Check:
         True,
         f"{cbmc}: {tool_version(cbmc)}"
         + ("" if ok else f"; probe failed: {(result.error or result.stderr)[-SHOWN_RUN_STDERR_CHARS:]}"),
-        "" if ok else "CBMC needs a working C preprocessor (gcc or cc on PATH)",
+        "" if ok else "CBMC needs a working C preprocessor (gcc or clang on PATH)",
     )
+
+
+def _probe_object_format(clang: str | None, workdir: Path) -> ObjectFormat:
+    if not clang:
+        return _default_object_format()
+    src = _tiny_c(workdir, "integrity_probe.c", INTEGRITY_PROBE_C)
+    obj = workdir / "integrity_probe.o"
+    compiled = run_command(
+        [clang, "-c", str(src), "-o", str(obj)],
+        cwd=workdir,
+        limits=Limits(timeout_s=INTEGRITY_PROBE_TIMEOUT_S),
+        env=minimal_env(),
+    )
+    if compiled.ok and obj.is_file():
+        return object_format(str(obj))
+    return _default_object_format()
+
+
+def _integrity_check(clang: str | None, workdir: Path) -> Check:
+    problems: list[str] = []
+    nm = first_tool(NM_CANDIDATES, find_tool)
+    if not nm:
+        problems.append("nm / llvm-nm not found")
+    fmt = _probe_object_format(clang, workdir)
+    section_tool = find_section_tools(find_tool).select(fmt)
+    if section_tool is None:
+        problems.append(missing_section_tool_message(fmt))
+    profile = cbmc_host_profile()
+    mirror_detail = ""
+    if profile is None:
+        problems.append(
+            f"unsupported CBMC host platform/architecture: {normalize_host_system()}/{normalize_host_architecture()}"
+        )
+    else:
+        preproc = clang if profile.preprocessor == "clang" else find_tool(GCC)
+        if not preproc:
+            problems.append(f"{profile.preprocessor} not found for CBMC predefined-macro mirror")
+        else:
+            argv = [preproc, *cbmc_preprocessor_macro_args(CompileConfig(), "c17"), *PREDEFINED_MACRO_DUMP_ARGS]
+            probe = run_command(
+                argv, cwd=workdir, limits=Limits(timeout_s=INTEGRITY_PROBE_TIMEOUT_S), env=minimal_env()
+            )
+            parsed = parse_predefined_macros(probe.stdout) if probe.ok else None
+            if not probe.ok or parsed is None or parsed.unparsed or not parsed.definitions:
+                reason = probe.error or probe.stderr.strip()[-SHOWN_RUN_STDERR_CHARS:] or f"exit {probe.exit_code}"
+                problems.append(f"CBMC macro mirror failed ({profile.system}/{profile.architecture}): {reason}")
+            else:
+                mirror_detail = f"; CBMC macro mirror ok ({profile.system}/{profile.architecture} via {profile.preprocessor})"
+    if problems:
+        return Check("integrity", False, True, "; ".join(problems), f"install binutils/LLVM tools and compiler ({_install_hint()})")
+    return Check("integrity", True, True, f"nm + {section_tool.name} ({fmt}){mirror_detail}")
 
 
 def _network_note(network: NetworkIsolation) -> str:
@@ -201,14 +300,14 @@ def _sandbox_check(sandbox_preference: str, sandbox: Sandbox, workdir: Path) -> 
             sandbox.note + _network_note(network),
             "" if blocked else "bwrap must isolate the network",
         )
-    return Check(
-        "sandbox",
-        False,
-        True,
-        sandbox.note,
+    fix = (
         "install bubblewrap and enable unprivileged user namespaces; without it Lean C refuses to execute "
-        "untrusted test programs (static analysis and CBMC still run)",
+        "untrusted test programs (static analysis and CBMC still run)"
+        if sys.platform.startswith("linux")
+        else "Linux bubblewrap sandboxing is unavailable on this OS; use a Linux container/VM for sandboxed dynamic "
+        "tests, or pass --no-sandbox (sanitizer tests stay SKIPPED and verdict stays UNKNOWN)"
     )
+    return Check("sandbox", False, True, sandbox.note, fix)
 
 
 def _toolchain_checks(clang: str | None, cbmc: str | None, sandbox: Sandbox, sandbox_preference: str) -> list[Check]:
@@ -223,6 +322,7 @@ def _toolchain_checks(clang: str | None, cbmc: str | None, sandbox: Sandbox, san
             checks.extend(_missing_clang_checks())
         checks.append(_gcc_check())
         checks.append(_cbmc_check(cbmc, workdir))
+        checks.append(_integrity_check(clang, workdir))
         checks.append(_sandbox_check(sandbox_preference, sandbox, workdir))
     return checks
 

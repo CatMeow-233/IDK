@@ -32,7 +32,9 @@ _DEFAULT_RULE_BY_LEVEL = {
 _LOCATED_DIAGNOSTIC_RE = re.compile(
     rf"^(?P<file>.+?):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?P<sev>{_CLANG_LEVELS}):\s?(?P<msg>.*)$"
 )
-_LINELESS_DIAGNOSTIC_RE = re.compile(rf"^(?P<file>[^\s:][^:]*?):\s*(?P<sev>{_CLANG_LEVELS}):\s?(?P<msg>.*)$")
+_LINELESS_DIAGNOSTIC_RE = re.compile(
+    rf"^(?P<file>(?:[A-Za-z]:)?[^\s:][^:]*?):\s*(?P<sev>{_CLANG_LEVELS}):\s?(?P<msg>.*)$"
+)
 _UNPREFIXED_DIAGNOSTIC_RE = re.compile(rf"^(?P<sev>{_CLANG_LEVELS}):\s?(?P<msg>.*)$")
 _TRAILING_OPTION_GROUP_RE = re.compile(r"^(?P<msg>.*?)\s*\[(?P<opt>[^\[\]]+)\]\s*$")
 _ANALYZER_CHECKER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$")
@@ -40,7 +42,7 @@ _DIAGNOSTIC_COUNT_SUMMARY_RE = re.compile(r"^\d+ (?:warning|error)s?(?: and \d+ 
 _INCLUDE_STACK_HEAD_RE = re.compile(r"^In file included from .+:\d+:")
 _INCLUDE_STACK_CONTINUATION_RE = re.compile(r"^\s+from .+:\d+[:,]\s*$")
 
-_LINKER_PROGRAM = r"(?:\S*/)?(?:ld|ld\.[A-Za-z0-9_]+|lld|collect2)"
+_LINKER_PROGRAM = r"(?:(?:[A-Za-z]:[^\r\n:]*[/\\]|\S*[/\\]))?(?:ld|ld\.[A-Za-z0-9_]+|ld64\.[A-Za-z0-9_]+|lld|lld-link|collect2)(?:\.exe)?"
 _LINKER_FUNCTION_CONTEXT_RE = re.compile(
     rf"^(?:{_LINKER_PROGRAM}: )?(?P<obj>.+?): in function [`'‘](?P<func>[^'`’]+)['’]:\s*$"
 )
@@ -52,9 +54,11 @@ _LINKER_MESSAGE_RE = re.compile(rf"^(?P<prog>{_LINKER_PROGRAM}): (?:(?P<sev>fata
 _LLD_REFERENCE_DETAIL_RE = re.compile(r"^>>>\s*(?P<msg>.*)$")
 
 _TOOL_PROGRAM_NAME_RE = re.compile(
-    r"^(?:.*/)?(?:clang|clang\+\+|clang-cl|clang-\d+(?:\.\d+)*|cc|c\+\+|cc1|gcc|g\+\+|gcc-\d+|"
-    r"collect2|ld|ld\.[A-Za-z0-9_]+|lld|lld-link|ar|llvm-[A-Za-z0-9_-]+)$"
+    r"^(?:.*[/\\])?(?:clang|clang\+\+|clang-cl|clang-\d+(?:\.\d+)*|cc|c\+\+|cc1|gcc|g\+\+|gcc-\d+|"
+    r"collect2|ld|ld\.[A-Za-z0-9_]+|ld64\.[A-Za-z0-9_]+|lld|lld-link|ar|llvm-[A-Za-z0-9_-]+)(?:\.exe)?$",
+    re.IGNORECASE,
 )
+_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:/")
 _SOURCE_FILE_SUFFIX_RE = re.compile(r"\.(?:c|h|i|cc|cpp|cxx|hpp|hh|inc|s|S)$")
 
 COMPILER_CRASH_MARKERS = (
@@ -68,21 +72,24 @@ COMPILER_CRASH_MARKERS = (
 
 def _base_dir_spellings(base_dir: Path) -> list[str]:
     spellings = dict.fromkeys([os.path.abspath(base_dir), os.path.realpath(base_dir)])
-    return [posixpath.normpath(spelling) for spelling in spellings]
+    return [posixpath.normpath(spelling.replace("\\", "/")) for spelling in spellings]
 
 
 def relative_to_base(path: str, base_dir: Path | None) -> str:
     candidate = path.strip()
     if not candidate:
         return candidate
-    normalised = posixpath.normpath(candidate)
-    if not os.path.isabs(candidate) or base_dir is None:
+    normalised = posixpath.normpath(candidate.replace("\\", "/"))
+    is_windows_abs = bool(_WINDOWS_ABS_RE.match(normalised))
+    if (not os.path.isabs(candidate) and not is_windows_abs) or base_dir is None:
         return normalised
     for base in _base_dir_spellings(base_dir):
-        if normalised == base:
+        if normalised == base or (is_windows_abs and normalised.lower() == base.lower()):
             return "."
         prefix = base.rstrip("/") + "/"
         if normalised.startswith(prefix):
+            return normalised[len(prefix) :]
+        if is_windows_abs and normalised.lower().startswith(prefix.lower()):
             return normalised[len(prefix) :]
     return normalised
 

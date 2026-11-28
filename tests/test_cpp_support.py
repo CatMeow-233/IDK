@@ -215,7 +215,7 @@ def test_analyzer_finds_cpp_null_deref_and_new_leak(tmp_path, needs_clang):
     assert by_rule["core.NullDereference"].trace
 
 
-def test_sanitizer_catches_out_of_bounds_in_cpp_class(example_copy, tmp_path, needs_clang, needs_bwrap):
+def test_sanitizer_catches_out_of_bounds_in_cpp_class(example_copy, tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     ctx = _ctx(example_copy, tmp_path, "cpp_bounds_bug")
     assert run_compile(ctx).outcome is Outcome.PASS
     assert run_integrity(ctx).outcome is Outcome.PASS

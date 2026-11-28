@@ -139,7 +139,10 @@ def strip_run_specific_details(text: str, base_dir: str | None) -> str:
     cleaned = _ADDRESS_GROUP_RE.sub("", text)
     cleaned = _ADDRESS_RE.sub("<addr>", cleaned)
     if base_dir:
-        cleaned = cleaned.replace(base_dir.rstrip("/") + "/", "")
+        posix_base = base_dir.replace("\\", "/").rstrip("/") + "/"
+        cleaned = cleaned.replace(posix_base, "")
+        native_base = base_dir.rstrip("/\\") + os.sep
+        cleaned = cleaned.replace(native_base, "")
     return cleaned.strip()
 
 

@@ -13,7 +13,9 @@ from leanc.backends.cbmc.bodiless import (
     bodiless_function,
     call_list,
     is_modelled_bodiless,
+    no_body_property_function,
     split_violations,
+    undecided_explained_by_unmodelled,
     undeclared_function,
     undeclared_reason,
     unmodelled_reason,
@@ -190,6 +192,20 @@ class _Gate:
     def execute_checked(self, mode: Mode) -> tuple[CbmcRun, ToolProblem | None]:
         run = self.execute(mode)
         return run, tool_problem(run, self.limits, self.ctx, expect="goals" if mode == "coverage" else "result")
+
+    def record_no_body_properties(self, results: list[dict]) -> set[str]:
+        callers: set[str] = set()
+        for result in results:
+            function = no_body_property_function(result)
+            if function is None:
+                continue
+            if function not in self.bodiless_functions:
+                self.bodiless_functions.append(function)
+                self.diagnostics.append(_no_body_diagnostic(function, result))
+            location = result.get("sourceLocation")
+            if isinstance(location, dict) and isinstance(location.get("function"), str):
+                callers.add(location["function"])
+        return callers
 
     def record_warnings(self, run: CbmcRun) -> None:
         for warning in run.output.warnings:
@@ -529,6 +545,7 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
         return gate.fail_with(problem)
     gate.record_warnings(verify_run)
     results = verify_run.output.results or []
+    no_body_callers = gate.record_no_body_properties(results)
     rejected = _reject_neutralised_harness_assertions(gate, results, harness_text)
     if rejected is not None:
         return rejected
@@ -537,7 +554,8 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
     if ctx.spec.target.function in gate.bodiless_functions:
         return _target_without_body(gate, tally)
 
-    split = split_violations(tally.violated, frozenset(gate.unmodelled_functions()))
+    unmodelled_set = frozenset(gate.unmodelled_functions())
+    split = split_violations(tally.violated, unmodelled_set)
     _record_dependent_violations(gate, split.dependent)
     counterexamples = _report_counterexamples(gate, split.real, verify_run)
     unwind_reports = _report_unwind_failures(gate, tally, verify_run)
@@ -545,7 +563,11 @@ def run_cbmc(ctx: BackendContext) -> StageResult:
     if counterexamples:
         return _counterexample_verdict(gate, _ViolationFindings(counterexamples, split, unwind_text), tally, verify_run)
     if tally.undecided:
-        return _undecided_verdict(gate, tally, verify_run)
+        unexplained = ran_out_of_memory(verify_run) or any(
+            not undecided_explained_by_unmodelled(item, unmodelled_set, no_body_callers) for item in tally.undecided
+        )
+        if unexplained:
+            return _undecided_verdict(gate, tally, verify_run)
 
     vacuity_problem, vacuity_reasons = _check_vacuity(gate, harness_text, unwind_insufficient=bool(unwind_reports))
     inconclusive = _model_gap_reasons(gate, split) + ([unwind_text] if unwind_text else []) + vacuity_reasons

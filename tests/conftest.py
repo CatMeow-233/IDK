@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from leanc.backends.sanitizer.plan import find_llvm_symbolizer
 from leanc.foundation.sandbox import detect_sandbox
 from leanc.toolchain.framac import MIN_FRAMAC_MAJOR, find_framac, framac_version_key
-from leanc.toolchain.tools import tool_version
+from leanc.toolchain.tools import find_cbmc, find_clang, tool_version
 
 CPUINFO = Path("/proc/cpuinfo")
 AVX2_CPU_FLAG = " avx2"
@@ -31,12 +32,27 @@ def _skip_unless(cond: bool, why: str):
 
 @pytest.fixture
 def needs_clang():
-    _skip_unless(shutil.which("clang") is not None, "clang not installed")
+    _skip_unless(find_clang() is not None, "clang not installed")
 
 
 @pytest.fixture
 def needs_cbmc():
-    _skip_unless(shutil.which("cbmc") is not None, "cbmc not installed")
+    _skip_unless(find_cbmc() is not None, "cbmc not installed")
+
+
+@pytest.fixture
+def needs_git():
+    _skip_unless(shutil.which("git") is not None, "git not installed")
+
+
+@pytest.fixture
+def needs_symbolizer(needs_clang):
+    clang = find_clang()
+    version = tool_version(clang) if clang else None
+    _skip_unless(
+        find_llvm_symbolizer(clang, version, sandbox_active=detect_sandbox("auto").active) is not None,
+        "llvm-symbolizer not installed",
+    )
 
 
 @pytest.fixture

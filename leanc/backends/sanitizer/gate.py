@@ -4,7 +4,7 @@ import math
 import os
 import shlex
 import shutil
-import signal
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,7 +36,11 @@ from leanc.backends.sanitizer.plan import (
     sanitizer_plan,
 )
 from leanc.backends.sanitizer.runtime_reports import parse_sanitizer_findings
-from leanc.backends.termination import signal_name, untrusted_program_terminating_signal
+from leanc.backends.termination import (
+    is_cpu_limit_signal,
+    signal_name,
+    untrusted_program_terminating_signal,
+)
 from leanc.foundation.models import (
     CounterexampleInput,
     Diagnostic,
@@ -57,7 +61,7 @@ from leanc.toolchain.cxx import compiler, compiler_missing, compiler_version
 
 STAGE = "sanitizer"
 LIMITATION = "sanitizers only observe the executed test paths; absence of findings is not a proof"
-TEST_BINARY_NAME = "test_bin"
+TEST_BINARY_NAME = "test_bin.exe" if sys.platform == "win32" else "test_bin"
 CASE_NAME_MAX_LENGTH = 60
 DEFAULT_CASE_STEM = "case"
 UNTRUSTED_MAX_FILE_MB = 64
@@ -78,7 +82,7 @@ def _real_path(path: Path) -> Path:
 
 
 def _run_relative(ctx: BackendContext, path: Path) -> str:
-    return os.path.relpath(os.path.realpath(path), os.path.realpath(ctx.run_dir))
+    return os.path.relpath(os.path.realpath(path), os.path.realpath(ctx.run_dir)).replace("\\", "/")
 
 
 def _case_stem(index: int, case: TestCase) -> str:
@@ -296,7 +300,7 @@ def _execution_refused(run: _SanitizerRun) -> StageResult | None:
 
 def _runtime_environment(run: _SanitizerRun) -> dict[str, str]:
     ctx = run.ctx
-    symbolizer = find_llvm_symbolizer(compiler(ctx), compiler_version(ctx))
+    symbolizer = find_llvm_symbolizer(compiler(ctx), compiler_version(ctx), sandbox_active=ctx.sandbox.active)
     run.details["symbolizer"] = symbolizer
     if not symbolizer:
         run.details["symbolizer_warning"] = MISSING_SYMBOLIZER_WARNING
@@ -373,7 +377,7 @@ def _run_case(run: _SanitizerRun, layout: _Layout, env: dict[str, str], index: i
     err_raw.write_text(redact(proc.stderr), encoding="utf-8")
     out_raw.write_text(redact(proc.stdout), encoding="utf-8")
     terminating_signal = untrusted_program_terminating_signal(proc)
-    cpu_limited = terminating_signal == signal.SIGXCPU
+    cpu_limited = is_cpu_limit_signal(terminating_signal)
     executed = ExecutedCase(
         case=case,
         proc=proc,

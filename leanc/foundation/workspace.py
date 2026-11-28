@@ -58,7 +58,8 @@ class Workspace:
 
     def read_bytes(self, rel: str, max_bytes: int = DEFAULT_MAX_READ_BYTES) -> bytes:
         p = self.resolve(rel, must_exist=True)
-        fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        fd = os.open(p, flags)
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
@@ -92,7 +93,8 @@ class Workspace:
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
-            os.chmod(tmp, mode)
+            if os.name != "nt":
+                os.chmod(tmp, mode)
             os.replace(tmp, target)
         finally:
             _remove_if_present(tmp)

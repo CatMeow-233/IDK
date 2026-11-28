@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,8 @@ from leanc.rules.definitions import defined_functions
 from leanc.rules.source import source_violations
 from leanc.specs.loader import load_spec
 from leanc.toolchain.context import VerifyOptions, make_context
+from leanc.toolchain.framac import MIN_FRAMAC_MAJOR, find_framac, framac_version_key
+from leanc.toolchain.tools import tool_version
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -156,8 +159,15 @@ def test_legit_corpus_is_not_empty():
     assert len(LEGIT) >= 30 and {"safe_array_get", "ring_buffer", "cheating_repair", "div_by_zero"} <= names
 
 
+def _has_usable_framac() -> bool:
+    fc = find_framac()
+    return fc is not None and framac_version_key(tool_version(fc.real, "-version"))[0] >= MIN_FRAMAC_MAJOR
+
+
 @pytest.mark.parametrize("name, example, files", LEGIT, ids=[n for n, _, _ in LEGIT])
 def test_shipped_and_accepted_code_passes_gate_and_policy(example_copy, needs_clang, tmp_path, name, example, files):
+    if "wp" in load_spec(EXAMPLES / example / "spec.yaml").gates and not _has_usable_framac():
+        pytest.skip(f"Frama-C >= {MIN_FRAMAC_MAJOR} not installed")
     res, spec, _ = _gate(example_copy, tmp_path, example, files)
     assert res.outcome is Outcome.PASS, (res.summary, [d.message for d in res.diagnostics])
     for rel, text in files.items():
@@ -176,13 +186,17 @@ def test_pass_details_record_what_was_checked(example_copy, needs_clang, tmp_pat
     assert res.outcome is Outcome.PASS
     files = {f["source"]: f for f in res.details["files"]}
     assert set(files) == {"src/ring.c", "src/ring_stats.c"}
+    section_tools = {"readelf", "otool", "llvm-readobj", "objdump"}
     for f in files.values():
         assert f["checks"] == ["source", "preprocessed", "stack", "symbols", "sections"]
-        assert {"preprocess", "nm", "readelf"} <= set(f["argv"])
+        assert {"preprocess", "nm"} <= set(f["argv"])
+        assert section_tools & set(f["argv"])
         assert "-E" in f["argv"]["preprocess"]
     assert "ring_push" in files["src/ring.c"]["defined"]
-    assert res.details["tools"]["nm"] and res.details["tools"]["readelf"]
-    assert res.invocations and all(i.tool in ("clang", "gcc", "nm", "readelf") for i in res.invocations)
+    assert res.details["tools"]["nm"]
+    if sys.platform.startswith("linux"):
+        assert res.details["tools"]["readelf"]
+    assert res.invocations and all(i.tool in ({"clang", "gcc", "nm"} | section_tools) for i in res.invocations)
 
 
 def test_macro_built_termination_is_seen_after_expansion(example_copy, needs_clang, tmp_path):
@@ -224,7 +238,8 @@ def test_missing_tools_are_tool_errors_not_passes(example_copy, needs_clang, tmp
     monkeypatch.setattr(integrity, "find_tool", lambda name, env_var=None: None)
     res = run_integrity(ctx)
     assert res.outcome is Outcome.ERROR and res.status is Status.TOOL_ERROR
-    assert "nm" in res.summary and "readelf" in res.summary
+    assert "nm" in res.summary
+    assert any(tool in res.summary for tool in ("readelf", "otool", "llvm-readobj"))
     (ctx.snapshot_dir / SAFE[1]).write_text((FIX / "cand_exit.c").read_text())
     res = run_integrity(ctx)
     assert res.outcome is Outcome.FAIL and "TERMINATION" in _rules(res) and "could not run" in res.summary

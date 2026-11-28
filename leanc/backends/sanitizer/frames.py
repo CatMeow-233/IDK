@@ -9,9 +9,24 @@ from leanc.foundation.models import Location, PathStep
 CALL_STACK_MAX_FRAMES = 20
 SYMBOLISED_FRAME_PREFIX = "in "
 
-SYSTEM_PATH_PREFIXES = ("/usr/", "/lib/", "/lib32/", "/lib64/", "/libx32/", "/opt/", "/build/", "/proc/", "/nix/")
+SYSTEM_PATH_PREFIXES = (
+    "/usr/",
+    "/lib/",
+    "/lib32/",
+    "/lib64/",
+    "/libx32/",
+    "/opt/",
+    "/build/",
+    "/proc/",
+    "/nix/",
+    "/System/",
+    "/Library/",
+    "/Applications/Xcode.app/",
+)
+WINDOWS_SYSTEM_PATH_PREFIXES = ("c:/windows/", "c:/program files/", "c:/program files (x86)/")
 LIBC_BUILD_DIRS = ("csu/", "sysdeps/", "nptl/", "stdlib/", "string/", "libio/", "malloc/", "elf/", "posix/", "misc/")
 UNKNOWN_PATHS = frozenset({"??", "?"})
+_WINDOWS_DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:/")
 
 MAX_REPORT_NUMBER_DIGITS = 18
 REPORT_NUMBER = rf"\d{{1,{MAX_REPORT_NUMBER_DIGITS}}}(?!\d)"
@@ -19,7 +34,7 @@ _FRAME_RE = re.compile(rf"^\s*#(?P<n>{REPORT_NUMBER})\s+0x[0-9a-fA-F]+\s*(?P<res
 _BUILD_ID_SUFFIX_RE = re.compile(r"\s*\(BuildId: [0-9a-fA-F]+\)\s*$")
 _FILE_POSITION_RE = re.compile(rf"^(?P<file>[^\s]+?):(?P<line>{REPORT_NUMBER})(?::(?P<col>{REPORT_NUMBER}))?$")
 _MODULE_OFFSET_RE = re.compile(r"^(?P<func>.+?)\s+\((?P<module>[^()]*)\)$")
-_SOURCE_FILE_WITHOUT_LINE_RE = re.compile(r"^(?:/\S+|\S+\.(?:c|h|cc|cpp|cxx|hpp|inc|S|s))$")
+_SOURCE_FILE_WITHOUT_LINE_RE = re.compile(r"^(?:(?:/|[A-Za-z]:[/\\])\S+|\S+\.(?:c|h|cc|cpp|cxx|hpp|inc|S|s))$")
 _SUMMARY_TAIL_LOCATION_RE = re.compile(
     rf"^(?P<file>\S+?):(?P<line>{REPORT_NUMBER})(?::(?P<col>{REPORT_NUMBER}))?(?:\s+in\s+(?P<func>\S+))?"
 )
@@ -86,9 +101,12 @@ def parse_frame(line: str) -> StackFrame | None:
 def relative_to_snapshot(path: str, base_dir: str | None) -> str | None:
     if not base_dir:
         return None
-    prefix = base_dir.rstrip("/") + "/"
-    if path.startswith(prefix):
-        return posixpath.normpath(path[len(prefix) :])
+    normalised = path.replace("\\", "/")
+    prefix = base_dir.replace("\\", "/").rstrip("/") + "/"
+    if normalised.startswith(prefix):
+        return posixpath.normpath(normalised[len(prefix) :])
+    if _WINDOWS_DRIVE_ABS_RE.match(normalised) and normalised.lower().startswith(prefix.lower()):
+        return posixpath.normpath(normalised[len(prefix) :])
     return None
 
 
@@ -98,6 +116,9 @@ def is_system_path(path: str) -> bool:
         return True
     if normalised.startswith("/"):
         return normalised.startswith(SYSTEM_PATH_PREFIXES) or "/compiler-rt/" in normalised
+    if _WINDOWS_DRIVE_ABS_RE.match(normalised):
+        lower = normalised.lower()
+        return lower.startswith(WINDOWS_SYSTEM_PATH_PREFIXES) or "/compiler-rt/" in lower
     return (
         normalised.startswith("../")
         or "/../" in normalised
@@ -114,7 +135,7 @@ def _listed_below_snapshot(path: str, project_files: set[str] | None, base_dir: 
 
 
 def _listed_relative_path(path: str, project_files: set[str] | None) -> str | None:
-    if path.startswith("/") or project_files is None:
+    if path.startswith("/") or _WINDOWS_DRIVE_ABS_RE.match(path) or project_files is None:
         return None
     relative = posixpath.normpath(path)
     return relative if relative in project_files else None

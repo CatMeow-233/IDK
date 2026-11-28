@@ -7,6 +7,7 @@ from clang_driver_support import cc1_args, minimal_source
 
 from leanc.backends.cbmc import build_cbmc_argv, run_cbmc
 from leanc.backends.cbmc.compile_flags import (
+    cbmc_host_profile,
     platform_architecture,
     translate_compile_options,
 )
@@ -173,8 +174,14 @@ def test_mutation_unsigned_char_flag_reaches_cbmc(tmp_path, needs_cbmc):
     assert unsigned.outcome is Outcome.PASS, unsigned.summary
     assert "--unsigned-char" in unsigned.details["argv"]["verify"]
     signed = run_cbmc(_add_project(tmp_path / "signed", ["-funsigned-char", "-fsigned-char"], CHAR_DEPENDENT_ADD))
-    assert signed.outcome is Outcome.FAIL, signed.summary
-    assert _unapplied_lines(signed) == []
+    assert "--unsigned-char" not in signed.details["argv"]["verify"]
+    profile = cbmc_host_profile()
+    if profile is not None and profile.default_unsigned_char:
+        assert signed.outcome is Outcome.PASS, signed.summary
+        assert any("-fsigned-char" in line for line in _unapplied_lines(signed))
+    else:
+        assert signed.outcome is Outcome.FAIL, signed.summary
+        assert _unapplied_lines(signed) == []
 
 
 def test_unapplied_flags_are_disclosed_without_changing_the_verdict(tmp_path, needs_cbmc):
@@ -228,4 +235,10 @@ def test_gcc_long_aliases_mean_their_short_spellings_to_clang(needs_clang, tmp_p
 
 def test_mutation_signed_char_alias_reaches_cbmc(tmp_path, needs_cbmc):
     res = run_cbmc(_add_project(tmp_path, ["-funsigned-char", "--signed-char"], CHAR_DEPENDENT_ADD))
-    assert res.outcome is Outcome.FAIL and "--unsigned-char" not in res.details["argv"]["verify"]
+    assert "--unsigned-char" not in res.details["argv"]["verify"]
+    profile = cbmc_host_profile()
+    if profile is not None and profile.default_unsigned_char:
+        assert res.outcome is Outcome.PASS, res.summary
+        assert any("-fsigned-char" in line for line in _unapplied_lines(res))
+    else:
+        assert res.outcome is Outcome.FAIL, res.summary

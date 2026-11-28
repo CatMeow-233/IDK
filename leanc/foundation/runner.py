@@ -1,21 +1,41 @@
 from __future__ import annotations
 
 import os
-import resource
 import selectors
+import shutil
 import signal
 import subprocess
+import sys
+import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Mapping, Sequence
 
+try:
+    import resource
+except ImportError:
+    resource = None
+
 from leanc.foundation.models import ToolInvocation
 from leanc.foundation.redact import redact
 from leanc.foundation.sandbox import Sandbox, SandboxKind, SandboxMounts
 
-DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+POSIX_DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+DARWIN_EXTRA_PATH = "/opt/homebrew/bin:/opt/homebrew/sbin"
+WINDOWS_SYSTEM_SUBDIRS = ("System32", "")
+WINDOWS_TOOL_DIRS = (
+    r"C:\Program Files\LLVM\bin",
+    r"C:\Program Files\cbmc\bin",
+    r"C:\msys64\ucrt64\bin",
+    r"C:\msys64\mingw64\bin",
+    r"C:\mingw64\bin",
+)
+WINDOWS_DEFAULT_SYSTEM_ROOT = r"C:\Windows"
+WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+TASKKILL_TIMEOUT_S = 5
 MIB = 1024 * 1024
 PIPE_CHUNK_BYTES = 64 * 1024
 SELECT_POLL_INTERVAL_S = 0.25
@@ -26,6 +46,23 @@ STDOUT, STDERR, STDIN = "stdout", "stderr", "stdin"
 
 PREEXEC_HOOK_FAILED = subprocess.SubprocessError
 LAUNCH_FAILURES = (OSError, ValueError, PREEXEC_HOOK_FAILED)
+
+
+def _default_path_for(platform_name: str = sys.platform) -> str:
+    if platform_name == "win32":
+        system_root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR") or WINDOWS_DEFAULT_SYSTEM_ROOT
+        dirs = [f"{system_root}\\{sub}" if sub else system_root for sub in WINDOWS_SYSTEM_SUBDIRS]
+        python_dir = os.path.dirname(sys.executable)
+        if python_dir:
+            dirs.append(python_dir)
+        dirs.extend(d for d in WINDOWS_TOOL_DIRS if os.path.isdir(d))
+        return ";".join(dict.fromkeys(dirs))
+    if platform_name == "darwin":
+        return f"{DARWIN_EXTRA_PATH}:{POSIX_DEFAULT_PATH}"
+    return POSIX_DEFAULT_PATH
+
+
+DEFAULT_PATH = _default_path_for()
 
 
 @dataclass(frozen=True)
@@ -94,30 +131,54 @@ class ProcResult:
 
 
 def minimal_env(extra: Mapping[str, str] | None = None, home: str | None = None) -> dict[str, str]:
-    env = {
-        "PATH": DEFAULT_PATH,
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "HOME": home or "/tmp",
-        "TMPDIR": "/tmp",
-    }
+    if sys.platform == "win32":
+        system_root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR") or WINDOWS_DEFAULT_SYSTEM_ROOT
+        temp_dir = home or tempfile.gettempdir()
+        env = {
+            "PATH": _default_path_for("win32"),
+            "SYSTEMROOT": system_root,
+            "WINDIR": os.environ.get("WINDIR") or system_root,
+            "COMSPEC": os.environ.get("COMSPEC") or os.path.join(system_root, "System32", "cmd.exe"),
+            "PATHEXT": os.environ.get("PATHEXT") or WINDOWS_DEFAULT_PATHEXT,
+            "HOME": temp_dir,
+            "USERPROFILE": temp_dir,
+            "TEMP": temp_dir,
+            "TMP": temp_dir,
+            "TMPDIR": temp_dir,
+        }
+    else:
+        env = {
+            "PATH": _default_path_for(sys.platform),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "HOME": home or "/tmp",
+            "TMPDIR": "/tmp",
+        }
     if extra:
         env.update(extra)
     return env
 
 
 def _within_inherited_hard_limit(limit: int, wanted: int) -> bool:
+    assert resource is not None
     _, hard = resource.getrlimit(limit)
     return hard == resource.RLIM_INFINITY or wanted <= hard
 
 
+def _can_apply_address_space_limit() -> bool:
+    return sys.platform != "darwin"
+
+
 def _make_preexec(limits: Limits):
+    if resource is None or os.name == "nt":
+        return None
+
     def _apply_limits_in_child_before_exec() -> None:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         if limits.cpu_s is not None:
             cpu = int(limits.cpu_s)
             resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + CPU_HARD_LIMIT_GRACE_S))
-        if limits.memory_mb is not None:
+        if limits.memory_mb is not None and _can_apply_address_space_limit():
             address_space = int(limits.memory_mb) * MIB
             resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
         if limits.max_file_mb is not None:
@@ -137,9 +198,29 @@ class GroupKill(Enum):
     NOT_PERMITTED = "not-permitted"
 
 
-def _kill_process_group(pgid: int) -> GroupKill:
+def _kill_windows_tree(pid: int) -> GroupKill:
+    taskkill = shutil.which("taskkill")
+    if not taskkill:
+        return GroupKill.ALREADY_GONE
     try:
-        os.killpg(pgid, signal.SIGKILL)
+        completed = subprocess.run(
+            [taskkill, "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=TASKKILL_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return GroupKill.NOT_PERMITTED
+    return GroupKill.KILLED if completed.returncode == 0 else GroupKill.ALREADY_GONE
+
+
+def _kill_process_group(pgid: int) -> GroupKill:
+    killpg = getattr(os, "killpg", None)
+    sigkill = getattr(signal, "SIGKILL", None)
+    if killpg is None or sigkill is None:
+        return _kill_windows_tree(pgid)
+    try:
+        killpg(pgid, sigkill)
     except ProcessLookupError:
         return GroupKill.ALREADY_GONE
     except PermissionError:
@@ -153,6 +234,8 @@ def _kill_group(proc: subprocess.Popen) -> GroupKill:
         proc.kill()
     except ProcessLookupError:
         pass
+    except OSError:
+        return GroupKill.NOT_PERMITTED
     return group_kill
 
 
@@ -245,6 +328,105 @@ class _StreamPump:
         self._selector.close()
 
 
+class _ThreadedStreamPump:
+    def __init__(self, proc: subprocess.Popen, stdin_data: bytes | None, max_output_bytes: int):
+        assert proc.stdout is not None and proc.stderr is not None
+        self._proc = proc
+        self._max_output_bytes = max_output_bytes
+        self.output: dict[str, bytearray] = {STDOUT: bytearray(), STDERR: bytearray()}
+        self.truncated = False
+        self._lock = threading.Lock()
+        self._done = threading.Event()
+        self._open_outputs = 2
+        self._readers = [
+            threading.Thread(target=self._read_stream, args=(proc.stdout, STDOUT), daemon=True),
+            threading.Thread(target=self._read_stream, args=(proc.stderr, STDERR), daemon=True),
+        ]
+        for reader in self._readers:
+            reader.start()
+        self._writer: threading.Thread | None = None
+        if proc.stdin is not None:
+            if stdin_data:
+                self._writer = threading.Thread(target=self._write_stdin, args=(proc.stdin, stdin_data), daemon=True)
+                self._writer.start()
+            else:
+                proc.stdin.close()
+
+    def _read_stream(self, stream, name: str) -> None:
+        try:
+            while True:
+                chunk = stream.read1(PIPE_CHUNK_BYTES) if hasattr(stream, "read1") else stream.read(PIPE_CHUNK_BYTES)
+                if not chunk:
+                    return
+                with self._lock:
+                    captured = self.output[name]
+                    room = self._max_output_bytes - len(captured)
+                    if room > 0:
+                        captured.extend(chunk[:room])
+                    if len(chunk) > room:
+                        self.truncated = True
+                        self._done.set()
+                        return
+        except (OSError, ValueError):
+            self._done.set()
+        finally:
+            with self._lock:
+                self._open_outputs -= 1
+                if self._open_outputs <= 0:
+                    self._done.set()
+
+    def _write_stdin(self, stdin, data: bytes) -> None:
+        pos = 0
+        view = memoryview(data)
+        try:
+            while pos < len(view) and not self._done.is_set():
+                written = stdin.write(view[pos : pos + PIPE_CHUNK_BYTES])
+                if not written:
+                    break
+                stdin.flush()
+                pos += written
+        except (BrokenPipeError, OSError, ValueError):
+            pos = len(view)
+        finally:
+            try:
+                stdin.close()
+            except (BrokenPipeError, OSError):
+                self._stdin_closed = True
+
+    def run_until(self, deadline: float) -> _PumpEnd:
+        while True:
+            with self._lock:
+                if self.truncated:
+                    return _PumpEnd.OUTPUT_CAP_EXCEEDED
+                if self._open_outputs <= 0:
+                    return _PumpEnd.OUTPUTS_CLOSED
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return _PumpEnd.DEADLINE_PASSED
+            self._done.wait(timeout=min(remaining, SELECT_POLL_INTERVAL_S))
+
+    def close(self) -> None:
+        self._done.set()
+        stdin = self._proc.stdin
+        if stdin is not None and not stdin.closed:
+            try:
+                stdin.close()
+            except (BrokenPipeError, OSError):
+                self._stdin_closed = True
+
+
+def _stream_pump(proc: subprocess.Popen, stdin_data: bytes | None, max_output_bytes: int):
+    if os.name == "nt":
+        return _ThreadedStreamPump(proc, stdin_data, max_output_bytes)
+    return _StreamPump(proc, stdin_data, max_output_bytes)
+
+
+def _popen_platform_kwargs(limits: Limits) -> dict:
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True, "preexec_fn": _make_preexec(limits)}
+
+
 def _validated_argv(argv: Sequence[str]) -> list[str]:
     if isinstance(argv, (str, bytes)):
         raise TypeError("argv must be a sequence of arguments, not a string (no shell execution)")
@@ -312,9 +494,8 @@ def run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             shell=False,
-            start_new_session=True,
-            preexec_fn=_make_preexec(limits),
             close_fds=True,
+            **_popen_platform_kwargs(limits),
         )
     except LAUNCH_FAILURES as exc:
         return ProcResult(
@@ -333,7 +514,7 @@ def run_command(
         )
 
     deadline = start + float(limits.timeout_s)
-    pump = _StreamPump(proc, stdin_data, limits.max_output_bytes)
+    pump = _stream_pump(proc, stdin_data, limits.max_output_bytes)
     pump_end = pump.run_until(deadline)
     if pump_end is not _PumpEnd.OUTPUTS_CLOSED:
         _kill_group(proc)

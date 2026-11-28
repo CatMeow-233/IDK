@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import NamedTuple
 
 from leanc.foundation.models import PolicyViolation
@@ -71,9 +72,13 @@ __all__ = [
     "c_header_facts",
     "c_source_violations",
     "check_object_symbols",
+    "parse_macho_nm",
     "parse_nm",
+    "parse_section_names",
     "preprocessed_violations",
+    "section_name_violations",
     "section_violations",
+    "strip_leading_underscore",
     "token_findings",
 ]
 
@@ -185,11 +190,26 @@ _ATTRIBUTE_RULES: dict[str, str] = {
 }
 
 SECTION_RE = re.compile(r"^\s*\[\s*\d+\]\s+(\S+)", re.MULTILINE)
+_OTOOL_SECTION_RE = re.compile(r"^\s*sectname\s+(\S+)", re.MULTILINE)
+_READOBJ_SECTION_RE = re.compile(r"^\s*Name:\s+(\S+)", re.MULTILINE)
+_OBJDUMP_SECTION_RE = re.compile(r"^\s*\d+\s+(\S+)\s+[0-9a-fA-F]+\s+[0-9a-fA-F]+", re.MULTILINE)
+_SECTION_PATTERNS: dict[str, re.Pattern[str]] = {
+    "readelf": SECTION_RE,
+    "otool": _OTOOL_SECTION_RE,
+    "llvm-readobj": _READOBJ_SECTION_RE,
+    "objdump": _OBJDUMP_SECTION_RE,
+}
 _CODE_OUTSIDE_TEST_SECTION_RE = re.compile(
-    r"^\.(?:rela?\.)?(?:init_array|fini_array|preinit_array|ctors|dtors|init|fini)(?:\.|$)"
+    r"^(?:\.(?:rela?\.)?(?:init_array|fini_array|preinit_array|ctors|dtors|init|fini)(?:\.|$)"
+    r"|(?:__[A-Za-z_]+,)?(?:__mod_init_func|__mod_term_func|__init_offsets|__StaticInit|__constructor|__destructor)$"
+    r"|\.CRT\$(?:XC|XI|XP|XT)[A-Za-z0-9_]*$)"
 )
 _CONSTRUCTOR_MENTIONS = ("constructor", "destructor", "section", "init_array")
 _ARCHIVE_MEMBER_SUFFIX = ":"
+_MACHO_NM_LINE_RE = re.compile(
+    r"^\s*(?:[0-9a-fA-F-]+\s+)?\((?P<where>[^)]+)\)(?:\s+\([^)]*\))*\s+"
+    r"(?P<binding>(?:weak\s+)?(?:private\s+)?(?:non-)?external)(?:\s+\[[^\]]*\])*\s+(?P<name>\S+)"
+)
 
 
 class CHeaderFacts(NamedTuple):
@@ -428,6 +448,36 @@ def parse_nm(output: str) -> list[tuple[str, str]]:
     return out
 
 
+def _macho_symbol_kind(where: str, binding: str) -> str:
+    if where == "undefined":
+        return "w" if "weak" in binding else "U"
+    is_text = "__text" in where or "CODE" in where
+    if "non-external" in binding:
+        if is_text:
+            return "t"
+        return "b" if "__bss" in where else "d"
+    if "weak" in binding:
+        return "W"
+    if where == "common":
+        return "C"
+    if is_text:
+        return "T"
+    if "__bss" in where:
+        return "B"
+    if "__const" in where or "RODATA" in where:
+        return "R"
+    return "D"
+
+
+def parse_macho_nm(output: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for line in output.splitlines():
+        match = _MACHO_NM_LINE_RE.match(line)
+        if match:
+            out.append((match.group("name"), _macho_symbol_kind(match.group("where"), match.group("binding"))))
+    return out
+
+
 def _import_problem(
     name: str, nm_type: str, header_idents: set[str], defined_elsewhere: set[str]
 ) -> Problem | None:
@@ -486,11 +536,26 @@ def check_object_symbols(
     return out
 
 
-def section_violations(rel: str, readelf_output: str, src: CSource | None = None) -> list[PolicyViolation]:
+def strip_leading_underscore(symbols: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [(name[1:] if name.startswith("_") else name, kind) for name, kind in symbols]
+
+
+def parse_section_names(output: str, tool_format: str = "readelf") -> list[str]:
+    pattern = _SECTION_PATTERNS.get(tool_format)
+    if pattern is None:
+        raise ValueError(f"unknown section listing format {tool_format!r}")
+    return list(dict.fromkeys(pattern.findall(output)))
+
+
+def section_name_violations(rel: str, names: Iterable[str], src: CSource | None = None) -> list[PolicyViolation]:
     out: list[PolicyViolation] = []
-    for name in dict.fromkeys(SECTION_RE.findall(readelf_output)):
+    for name in dict.fromkeys(names):
         if _CODE_OUTSIDE_TEST_SECTION_RE.match(name):
             line = next((ln for word in _CONSTRUCTOR_MENTIONS if (ln := first_mention_line(src, word))), None)
             out.append(violation("CONSTRUCTOR", (f"object has section {name}: code would run before/after the "
                                  "function under test (constructors/destructors)"), rel, line))
     return out
+
+
+def section_violations(rel: str, readelf_output: str, src: CSource | None = None) -> list[PolicyViolation]:
+    return section_name_violations(rel, parse_section_names(readelf_output, "readelf"), src)

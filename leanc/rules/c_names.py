@@ -18,14 +18,14 @@ __all__ = [
 
 ALLOWED_IMPORTS: frozenset[str] = frozenset(
     {
-        "memcpy", "memmove", "memset", "memcmp", "memchr",
+        "memcpy", "memmove", "memset", "bzero", "memcmp", "memchr",
         "strlen", "strnlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
         "strchr", "strrchr", "strstr",
         "malloc", "calloc", "realloc", "free",
         "abs", "labs", "llabs",
-        "__assert_fail",
+        "__assert_fail", "__assert_rtn", "_wassert",
         "printf", "fprintf", "puts", "putchar", "fputs", "fputc", "putc", "stdout", "stderr",
-        "__errno_location", "__stack_chk_fail", "__stack_chk_guard",
+        "__errno_location", "__error", "_errno", "__stack_chk_fail", "__stack_chk_guard",
     }
 )
 

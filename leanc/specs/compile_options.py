@@ -28,7 +28,7 @@ TOOLCHAIN_REPLACEMENT_PREFIXES = (
     "-nostartfiles",
 )
 LINKER_SELECTION_PREFIX = "-fuse-ld="
-PATH_SEPARATOR = "/"
+PATH_SEPARATORS = ("/", "\\")
 TOOL_CONTROL_PREFIXES = (
     *TOOL_PASS_THROUGH_PREFIXES,
     *ANALYZER_MODE_PREFIXES,
@@ -132,7 +132,7 @@ def const_string_flags(flags: list[str]) -> list[str]:
 
 
 def selects_linker_by_path(flag: str) -> bool:
-    return flag.startswith(LINKER_SELECTION_PREFIX) and PATH_SEPARATOR in flag
+    return flag.startswith(LINKER_SELECTION_PREFIX) and any(sep in flag for sep in PATH_SEPARATORS)
 
 
 def tool_control_flags(flags: list[str]) -> list[str]:

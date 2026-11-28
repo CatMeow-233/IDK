@@ -12,8 +12,18 @@ CXX_NOT_FOUND = (
     "(C++ specs are compiled, analysed, tested and integrity-checked with clang++ only)"
 )
 
-_CXX_NAME_RE = re.compile(r"^clang\+\+(-\d+(?:\.\d+)*)?$")
-_C_NAME_RE = re.compile(r"^clang(-\d+(?:\.\d+)*)?$")
+_CXX_NAME_RE = re.compile(r"^clang\+\+(-\d+(?:\.\d+)*)?(\.exe)?$", re.IGNORECASE)
+_C_NAME_RE = re.compile(r"^clang(-\d+(?:\.\d+)*)?(\.exe)?$", re.IGNORECASE)
+CLANGXX_CANDIDATE_NAMES = (
+    "clang++",
+    "clang++-21",
+    "clang++-20",
+    "clang++-19",
+    "clang++-18",
+    "clang++-17",
+    "clang++-16",
+    "clang++-15",
+)
 
 
 def _usable(path: str) -> bool:
@@ -25,8 +35,11 @@ def _candidates_next_to(clang: str) -> list[str]:
     if _CXX_NAME_RE.match(base):
         return [clang]
     m = _C_NAME_RE.match(base)
-    names = [f"clang++{m.group(1) or ''}"] if m else []
-    names.append("clang++")
+    ext = (m.group(2) or "") if m else ""
+    names = [f"clang++{m.group(1) or ''}{ext}"] if m else []
+    names.append(f"clang++{ext}")
+    if ext:
+        names.append("clang++")
     out: list[str] = []
     for d in dict.fromkeys([os.path.dirname(clang), os.path.dirname(os.path.realpath(clang))]):
         for n in dict.fromkeys(names):
@@ -40,7 +53,7 @@ def find_clangxx(clang: str | None = None) -> str | None:
     cands: list[str] = []
     if clang:
         cands += [c for c in _candidates_next_to(clang) if _usable(c)]
-    for name in ("clang++", "clang++-19", "clang++-18", "clang++-17", "clang++-16", "clang++-15"):
+    for name in CLANGXX_CANDIDATE_NAMES:
         p = find_tool(name)
         if p:
             cands.append(p)

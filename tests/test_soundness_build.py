@@ -243,7 +243,7 @@ def test_one_constant_governs_every_instrumented_build(tmp_path, needs_clang, mo
         assert not set(EXPECTED_FIDELITY_FLAGS) & set(argv)
 
 
-def test_overwritten_unused_allocation_is_reported_as_leak(tmp_path, needs_clang, needs_bwrap):
+def test_overwritten_unused_allocation_is_reported_as_leak(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     res = _run_gate(tmp_path, OVERWRITTEN_ALLOCATION_SRC)
     assert res.outcome is Outcome.FAIL, res.summary
     leaks = [d for d in res.diagnostics if d.tool == "lsan"]
@@ -265,7 +265,7 @@ def test_overwritten_allocation_escapes_lsan_without_fidelity_flags(tmp_path, ne
     assert res.outcome is Outcome.PASS, res.summary
 
 
-def test_overwritten_library_allocations_are_reported_as_leaks(tmp_path, needs_clang, needs_bwrap):
+def test_overwritten_library_allocations_are_reported_as_leaks(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     res = _run_gate(tmp_path, OVERWRITTEN_LIBRARY_ALLOCATIONS_SRC)
     assert res.outcome is Outcome.FAIL, res.summary
     lines = sorted(d.location.line for d in res.diagnostics if d.tool == "lsan" and d.location)
@@ -273,7 +273,7 @@ def test_overwritten_library_allocations_are_reported_as_leaks(tmp_path, needs_c
     assert lines == expected, res.diagnostics
 
 
-def test_overwritten_cpp_new_is_reported_as_leak(tmp_path, needs_clang, needs_bwrap):
+def test_overwritten_cpp_new_is_reported_as_leak(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     res = run_sanitizer_tests(_cpp_context(tmp_path, OVERWRITTEN_NEW_SRC))
     assert res.outcome is Outcome.FAIL, res.summary
     leaks = [d for d in res.diagnostics if d.tool == "lsan"]
@@ -288,7 +288,7 @@ def test_released_allocations_still_pass(tmp_path, needs_clang, needs_bwrap):
     assert _fidelity_start(res.details["build"]["argv"]) > 0
 
 
-def test_wrapper_frame_locates_the_leak_inside_the_wrapper(tmp_path, needs_clang, needs_bwrap):
+def test_wrapper_frame_locates_the_leak_inside_the_wrapper(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     res = _run_gate(tmp_path, WRAPPER_LEAK_SRC)
     assert res.outcome is Outcome.FAIL, res.summary
     leak = next(d for d in res.diagnostics if d.tool == "lsan")
@@ -298,7 +298,9 @@ def test_wrapper_frame_locates_the_leak_inside_the_wrapper(tmp_path, needs_clang
     assert _allocation_site(failure) == (leak.location.file, leak.location.line)
 
 
-def test_sibling_calls_hide_the_wrapper_frame_without_the_flag(tmp_path, needs_clang, needs_bwrap, monkeypatch):
+def test_sibling_calls_hide_the_wrapper_frame_without_the_flag(
+    tmp_path, needs_clang, needs_bwrap, needs_symbolizer, monkeypatch
+):
     without_sibling_flag = tuple(flag for flag in EXPECTED_FIDELITY_FLAGS if flag != SIBLING_CALL_FLAG)
     monkeypatch.setattr(build, "BUILD_FIDELITY_FLAGS", without_sibling_flag)
     res = _run_gate(tmp_path, WRAPPER_LEAK_SRC)

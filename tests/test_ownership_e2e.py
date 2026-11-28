@@ -63,7 +63,7 @@ def traced(tmp_path_factory):
     return _verify(tmp_path_factory.mktemp("baseline"), "traced")
 
 
-def test_leak_failures_carry_the_ownership_trace(traced):
+def test_leak_failures_carry_the_ownership_trace(traced, needs_symbolizer):
     rc, payload, result, sanitizer = traced
     assert rc == 12 and result.status == "RUNTIME_TEST_FAILED"
     leaks = [f for f in sanitizer.failures if f.tool == "lsan"]
@@ -99,7 +99,9 @@ FAILURE_MODES = {
 
 
 @pytest.mark.parametrize("mode", sorted(FAILURE_MODES))
-def test_verdict_is_identical_whatever_happens_to_the_trace(traced, tmp_path, monkeypatch, mode):
+def test_verdict_is_identical_whatever_happens_to_the_trace(traced, tmp_path, monkeypatch, mode, request):
+    if mode == "forged-evidence-attached":
+        request.getfixturevalue("needs_symbolizer")
     target, name, replacement = FAILURE_MODES[mode]
     monkeypatch.setattr(target, name, replacement)
     other = _verify(tmp_path, mode)

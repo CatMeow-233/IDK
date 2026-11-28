@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import platform
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -28,15 +29,7 @@ C99_MODE = "--c99"
 C11_MODE = "--c11"
 CBMC_DEFAULT_MODE = C11_MODE
 CBMC_PREPROCESSOR_STANDARDS: dict[str, str] = {C89_MODE: "gnu89", C99_MODE: "gnu99", C11_MODE: "gnu11"}
-CBMC_PREPROCESSOR_BASE_ARGS: tuple[str, ...] = ("-D__CPROVER__", "-m64")
-CBMC_ARCHITECTURE_DEFINES: tuple[str, ...] = (
-    "-D__LP64__",
-    "-D__x86_64",
-    "-D__x86_64__",
-    "-D_LP64",
-    "-D__amd64__",
-    "-D__amd64",
-)
+CBMC_CPROVER_DEFINE = "-D__CPROVER__"
 GCC_UNSIGNED_CHAR_FLAG = "-funsigned-char"
 C11_REVISION_NOTE = (
     "CBMC has no C17 mode; C17 only resolves defects of C11, but __STDC_VERSION__ is 201112L instead of 201710L"
@@ -44,6 +37,120 @@ C11_REVISION_NOTE = (
 
 SIGNED_CHAR_REQUEST = "-fsigned-char"
 PLATFORM_ARCHITECTURE_FIELD = 1
+
+_X86_64_DEFINES: tuple[str, ...] = (
+    "-D__LP64__",
+    "-D__x86_64",
+    "-D__x86_64__",
+    "-D_LP64",
+    "-D__amd64__",
+    "-D__amd64",
+)
+_PPC64LE_DEFINES: tuple[str, ...] = (
+    "-D__powerpc",
+    "-D__powerpc__",
+    "-D__POWERPC__",
+    "-D__ppc__",
+    "-D__powerpc64",
+    "-D__powerpc64__",
+    "-D__PPC64__",
+    "-D__ppc64__",
+    "-D_CALL_ELF=2",
+    "-D__LITTLE_ENDIAN__",
+)
+
+_SYSTEM_ALIASES: dict[str, str] = {
+    "linux": "linux",
+    "darwin": "darwin",
+    "macos": "darwin",
+    "windows": "windows",
+    "win32": "windows",
+    "cygwin": "windows",
+    "msys": "windows",
+}
+_ARCHITECTURE_ALIASES: dict[str, str] = {
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "x64": "x86_64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+    "arm64e": "arm64",
+    "i386": "i386",
+    "i686": "i386",
+    "x86": "i386",
+    "riscv64": "riscv64",
+    "ppc64le": "ppc64le",
+    "powerpc64le": "ppc64le",
+    "s390x": "s390x",
+    "arm": "arm",
+    "armv7l": "arm",
+    "armhf": "arm",
+    "armel": "arm",
+}
+
+
+@dataclass(frozen=True)
+class CbmcHostProfile:
+    system: str
+    architecture: str
+    preprocessor: str
+    base_args: tuple[str, ...]
+    default_unsigned_char: bool
+    arch_defines: tuple[str, ...]
+
+
+CBMC_HOST_PROFILES: dict[tuple[str, str], CbmcHostProfile] = {
+    ("linux", "x86_64"): CbmcHostProfile(
+        "linux", "x86_64", "gcc", (CBMC_CPROVER_DEFINE, "-m64"), False, _X86_64_DEFINES
+    ),
+    ("linux", "arm64"): CbmcHostProfile(
+        "linux", "arm64", "gcc", (CBMC_CPROVER_DEFINE,), True, ("-D__aarch64__",)
+    ),
+    ("linux", "i386"): CbmcHostProfile(
+        "linux", "i386", "gcc", (CBMC_CPROVER_DEFINE, "-m32"), False, ("-Di386", "-D__i386", "-D__i386__")
+    ),
+    ("linux", "riscv64"): CbmcHostProfile(
+        "linux", "riscv64", "gcc", (CBMC_CPROVER_DEFINE,), True, ("-D__riscv",)
+    ),
+    ("linux", "ppc64le"): CbmcHostProfile(
+        "linux", "ppc64le", "gcc", (CBMC_CPROVER_DEFINE, "-m64"), True, _PPC64LE_DEFINES
+    ),
+    ("linux", "s390x"): CbmcHostProfile(
+        "linux", "s390x", "gcc", (CBMC_CPROVER_DEFINE, "-m64"), True, ("-D__s390x__",)
+    ),
+    ("linux", "arm"): CbmcHostProfile(
+        "linux", "arm", "gcc", (CBMC_CPROVER_DEFINE,), True, ("-D__arm__",)
+    ),
+    ("darwin", "arm64"): CbmcHostProfile(
+        "darwin", "arm64", "clang", (CBMC_CPROVER_DEFINE,), False, ("-D__aarch64__",)
+    ),
+    ("darwin", "x86_64"): CbmcHostProfile(
+        "darwin", "x86_64", "clang", (CBMC_CPROVER_DEFINE, "-m64"), False, (*_X86_64_DEFINES, "-D__LITTLE_ENDIAN__")
+    ),
+    ("windows", "x86_64"): CbmcHostProfile(
+        "windows", "x86_64", "gcc", (CBMC_CPROVER_DEFINE, "-m64", "-fshort-wchar"), False, ("-D_M_X64", "-D_M_AMD64")
+    ),
+    ("windows", "arm64"): CbmcHostProfile(
+        "windows", "arm64", "gcc", (CBMC_CPROVER_DEFINE, "-fshort-wchar"), True, ("-D_M_ARM64",)
+    ),
+}
+
+
+def normalize_host_system(system: str | None = None) -> str:
+    raw = (platform.system() if system is None else system).strip().lower()
+    if raw.startswith("linux"):
+        return "linux"
+    return _SYSTEM_ALIASES.get(raw, raw)
+
+
+def normalize_host_architecture(architecture: str | None = None) -> str:
+    raw = (platform.machine() if architecture is None else architecture).strip().lower()
+    return _ARCHITECTURE_ALIASES.get(raw, raw)
+
+
+def cbmc_host_profile(system: str | None = None, architecture: str | None = None) -> CbmcHostProfile | None:
+    key = (normalize_host_system(system), normalize_host_architecture(architecture))
+    return CBMC_HOST_PROFILES.get(key)
 
 
 @dataclass(frozen=True)
@@ -209,14 +316,25 @@ def translate_compile_options(compile_config: CompileConfig, standard: str) -> C
     )
 
 
-def cbmc_preprocessor_macro_args(compile_config: CompileConfig, standard: str) -> list[str]:
+def cbmc_preprocessor_macro_args(
+    compile_config: CompileConfig,
+    standard: str,
+    *,
+    system: str | None = None,
+    architecture: str | None = None,
+) -> list[str]:
+    profile = cbmc_host_profile(system, architecture)
+    if profile is None:
+        host_sys = normalize_host_system(system)
+        host_arch = normalize_host_architecture(architecture)
+        raise ValueError(f"unsupported CBMC host platform/architecture for macro mirror: {host_sys}/{host_arch}")
     translation = translate_compile_options(compile_config, standard)
     mode = translation.standard_mode.flag if translation.standard_mode else CBMC_DEFAULT_MODE
-    unsigned_char = translation.char_signedness is CharSignedness.UNSIGNED
+    unsigned_char = profile.default_unsigned_char or (translation.char_signedness is CharSignedness.UNSIGNED)
     return [
-        *CBMC_PREPROCESSOR_BASE_ARGS,
+        *profile.base_args,
         *([GCC_UNSIGNED_CHAR_FLAG] if unsigned_char else []),
         STANDARD_FLAG_PREFIX + CBMC_PREPROCESSOR_STANDARDS[mode],
         *translation.macro_args,
-        *CBMC_ARCHITECTURE_DEFINES,
+        *profile.arch_defines,
     ]

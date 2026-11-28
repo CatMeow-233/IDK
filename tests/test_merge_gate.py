@@ -194,7 +194,7 @@ def test_no_unchanged_example_fails_closed(tmp_path):
     assert not result.ok and "nothing to compare" in result.detail
 
 
-def test_approval_made_by_base_stays_valid_under_own_head(tmp_path):
+def test_approval_made_by_base_stays_valid_under_own_head(tmp_path, needs_git):
     git = Git(REPO)
     head = git.head()
     state = GateState(head=head, scratch=tmp_path, base=head)

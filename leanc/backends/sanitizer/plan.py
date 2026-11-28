@@ -3,6 +3,8 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -97,21 +99,50 @@ def exit_code_details() -> dict:
 
 
 def _symbolizer_candidates(clang: str | None, clang_version: str | None) -> list[str]:
+    name = "llvm-symbolizer.exe" if sys.platform == "win32" else "llvm-symbolizer"
     candidates: list[str] = []
     if clang:
-        candidates.append(os.path.join(os.path.dirname(os.path.realpath(clang)), "llvm-symbolizer"))
+        candidates.append(os.path.join(os.path.dirname(os.path.realpath(clang)), name))
     major = _CLANG_MAJOR_VERSION_RE.search(clang_version or "")
+    if sys.platform == "win32":
+        if found := shutil.which("llvm-symbolizer"):
+            candidates.append(found)
+        candidates += [
+            r"C:\Program Files\LLVM\bin\llvm-symbolizer.exe",
+            r"C:\Program Files (x86)\LLVM\bin\llvm-symbolizer.exe",
+            r"C:\msys64\clang64\bin\llvm-symbolizer.exe",
+            r"C:\msys64\mingw64\bin\llvm-symbolizer.exe",
+        ]
+        return candidates
+    if sys.platform == "darwin":
+        if found := shutil.which("llvm-symbolizer"):
+            candidates.append(found)
+        candidates += [
+            "/opt/homebrew/opt/llvm/bin/llvm-symbolizer",
+            "/usr/local/opt/llvm/bin/llvm-symbolizer",
+            "/Library/Developer/CommandLineTools/usr/bin/llvm-symbolizer",
+            "/usr/bin/llvm-symbolizer",
+        ]
+        return candidates
     if major:
         candidates += [f"/usr/lib/llvm-{major.group(1)}/bin/llvm-symbolizer", f"/usr/bin/llvm-symbolizer-{major.group(1)}"]
     candidates.append("/usr/bin/llvm-symbolizer")
     candidates += sorted(glob.glob("/usr/lib/llvm-*/bin/llvm-symbolizer"), reverse=True)
+    if found := shutil.which("llvm-symbolizer"):
+        candidates.append(found)
     return candidates
 
 
-def find_llvm_symbolizer(clang: str | None = None, clang_version: str | None = None) -> str | None:
+def find_llvm_symbolizer(
+    clang: str | None = None,
+    clang_version: str | None = None,
+    *,
+    sandbox_active: bool = True,
+) -> str | None:
+    require_sandbox_prefix = sandbox_active and sys.platform.startswith("linux")
     for candidate in _symbolizer_candidates(clang, clang_version):
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             real = os.path.realpath(candidate)
-            if real.startswith(SANDBOX_VISIBLE_PREFIX):
+            if not require_sandbox_prefix or real.startswith(SANDBOX_VISIBLE_PREFIX):
                 return real
     return None

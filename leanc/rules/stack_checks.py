@@ -81,10 +81,11 @@ STACK_FRAME_CHECK_FLAGS: tuple[str, ...] = (
 )
 
 _STACK_DIAG_RE = re.compile(
-    r"^(?P<file>[^:\n]+):(?P<line>\d+):\d+:(?:(?:\{[^}\n]*\})+:)? (?:error|warning): (?P<msg>.*?)"
+    r"^(?P<file>(?:[A-Za-z]:)?[^:\n]+):(?P<line>\d+):\d+:(?:(?:\{[^}\n]*\})+:)? (?:error|warning): (?P<msg>.*?)"
     r"\[-W(?:error,)?-?W?(?:vla|alloca)[^\]]*\]",
     re.MULTILINE,
 )
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:/")
 _ERROR_LINE_RE = re.compile(r"(?:^|: )(?:fatal )?error: ")
 _STACK_USAGE_ROW_RE = re.compile(
     r"^(?P<file>.+?)(?::(?P<line>\d+))?:(?P<function>[^\t:]+)\t(?P<size>\d+)\t(?P<qualifier>\S+)$"
@@ -115,17 +116,34 @@ def stack_usage_path(assembly: Path) -> Path:
     return assembly.with_suffix(STACK_USAGE_SUFFIX)
 
 
+def _posix_slashes(path: str) -> str:
+    return posixpath.normpath(path.replace("\\", "/"))
+
+
+def _is_absolute_posix_or_drive(path: str) -> bool:
+    return posixpath.isabs(path) or bool(_WINDOWS_DRIVE_RE.match(path))
+
+
 def _line_in(rel: str, file: str, line: str | None) -> int | None:
-    same_file = posixpath.normpath(file) == posixpath.normpath(rel)
+    same_file = _posix_slashes(file) == _posix_slashes(rel)
     return int(line) if line is not None and same_file else None
 
 
 def project_relative(file: str, project_root: str) -> str | None:
-    normalized = posixpath.normpath(file)
-    if not posixpath.isabs(normalized):
+    normalized = _posix_slashes(file)
+    if not _is_absolute_posix_or_drive(normalized):
         return normalized
-    if posixpath.commonpath([normalized, project_root]) == project_root:
-        return posixpath.relpath(normalized, project_root)
+    root = _posix_slashes(project_root)
+    if _WINDOWS_DRIVE_RE.match(normalized) and _WINDOWS_DRIVE_RE.match(root):
+        if normalized[:2].lower() != root[:2].lower():
+            return None
+        prefix = root.rstrip("/") + "/"
+        if normalized.lower().startswith(prefix.lower()):
+            return normalized[len(prefix) :]
+        return "." if normalized.lower() == root.lower() else None
+    if posixpath.isabs(normalized) and posixpath.isabs(root):
+        if posixpath.commonpath([normalized, root]) == root:
+            return posixpath.relpath(normalized, root)
     return None
 
 

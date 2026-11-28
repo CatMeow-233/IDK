@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import os
-import resource
 import shutil
 import signal
 import subprocess
+import sys
 import textwrap
 import threading
 import time
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 import pytest
 
@@ -381,6 +386,7 @@ def _bwrap_stand_in_recording_its_environment(directory: Path) -> tuple[Sandbox,
     return Sandbox(kind="bwrap", executable=str(stand_in)), recorded_environ
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/environ and bwrap are Linux-only")
 def test_network_probe_launches_bwrap_with_only_the_probe_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", PARENT_ONLY_SECRET)
     sandbox, recorded_environ = _bwrap_stand_in_recording_its_environment(tmp_path)

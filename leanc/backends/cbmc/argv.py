@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Literal
 
 from leanc.backends.cbmc.compile_flags import (
@@ -29,9 +30,17 @@ CHECK_FLAGS: dict[str, str] = {
 VACUITY_DEFINE = "-DLEANC_VACUITY_CHECK"
 COVERAGE_CRITERION = ("--cover", "location")
 MALLOC_MAY_FAIL_FLAGS = ("--malloc-may-fail", "--malloc-fail-null")
+NO_MALLOC_MAY_FAIL_FLAG = "--no-malloc-may-fail"
+CBMC_DEFAULT_MALLOC_MAY_FAIL_MAJOR = 6
+_CBMC_MAJOR_RE = re.compile(r"^\s*(\d+)\.")
 
 Mode = Literal["verify", "vacuity", "coverage"]
 MODES: tuple[str, ...] = ("verify", "vacuity", "coverage")
+
+
+def cbmc_major(version: str | None) -> int | None:
+    match = _CBMC_MAJOR_RE.match(version or "")
+    return int(match.group(1)) if match else None
 
 
 def compile_translation(spec: Spec) -> CompileFlagTranslation:
@@ -68,10 +77,12 @@ def _unwind_args(verification: VerificationConfig) -> list[str]:
     return args
 
 
-def _memory_model_args(verification: VerificationConfig) -> list[str]:
+def _memory_model_args(verification: VerificationConfig, cbmc_version: str | None = None) -> list[str]:
     args: list[str] = []
     if verification.malloc_may_fail:
         args += MALLOC_MAY_FAIL_FLAGS
+    elif (cbmc_major(cbmc_version) or 0) >= CBMC_DEFAULT_MALLOC_MAY_FAIL_MAJOR:
+        args.append(NO_MALLOC_MAY_FAIL_FLAG)
     if verification.object_bits:
         args += ["--object-bits", str(verification.object_bits)]
     return args
@@ -100,6 +111,6 @@ def build_cbmc_argv(ctx: BackendContext, *, mode: Mode = "verify") -> list[str]:
     ]
     if _cbmc_accepts_unwinding_assertions(mode):
         argv.append("--unwinding-assertions")
-    argv += _memory_model_args(verification)
+    argv += _memory_model_args(verification, ctx.tools.cbmc_version)
     argv.append("--json-ui")
     return argv

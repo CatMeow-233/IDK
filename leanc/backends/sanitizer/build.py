@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import tempfile
 from pathlib import Path
 
 from leanc.backends.clang import DIAGNOSTIC_FLAGS, define_args
@@ -23,17 +24,17 @@ TEMPORARY_DIR = "/tmp/"
 _LEVELS = r"fatal error|error|warning|note"
 _ERROR_LEVELS = ("error", "fatal error")
 _COMPILER_DIAGNOSTIC_RE = re.compile(
-    rf"^(?P<file>[^\s:][^:]*?):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?P<sev>{_LEVELS}):\s*(?P<msg>.*?)\s*$"
+    rf"^(?P<file>(?:[A-Za-z]:)?[^\s:][^:]*?):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?P<sev>{_LEVELS}):\s*(?P<msg>.*?)\s*$"
 )
 _WARNING_OPTION_RE = re.compile(r"^(?P<msg>.*?)\s*\[(?P<opt>-W[^\[\]]*)\]$")
-_LINKER_PROGRAM = r"(?:\S*/)?(?:ld|ld\.[A-Za-z0-9_]+|lld|collect2)"
+_LINKER_PROGRAM = r"(?:(?:[A-Za-z]:[^\r\n:]*[/\\]|\S*[/\\]))?(?:ld|ld\.[A-Za-z0-9_]+|ld64\.[A-Za-z0-9_]+|lld|lld-link|collect2)(?:\.exe)?"
 _LINKER_FUNCTION_RE = re.compile(rf"^(?:{_LINKER_PROGRAM}:\s+)?(?P<obj>.+?): in function [`'‘](?P<func>[^'`’]+)['’]:\s*$")
 _LINKER_REFERENCE_RE = re.compile(
     rf"^(?:{_LINKER_PROGRAM}:\s+)?(?P<where>.*?):\s*(?P<msg>(?:undefined reference to|multiple definition of)\s.*?)\s*$"
 )
-_LINKER_SECTION_RE = re.compile(r"^(?P<file>[^:(]+?)(?::(?P<line>\d+))?:\(")
+_LINKER_SECTION_RE = re.compile(r"^(?P<file>(?:[A-Za-z]:)?[^:(]+?)(?::(?P<line>\d+))?:\(")
 _DRIVER_MESSAGE_RE = re.compile(
-    rf"^(?P<prog>(?:\S*/)?clang(?:\+\+)?(?:-\d+)?|{_LINKER_PROGRAM}):\s*(?:(?P<sev>fatal error|error|warning):\s*)?"
+    rf"^(?P<prog>(?:[A-Za-z]:[^\r\n:]*[/\\]|\S*[/\\])?clang(?:\+\+)?(?:-\d+)?(?:\.exe)?|{_LINKER_PROGRAM}):\s*(?:(?P<sev>fatal error|error|warning):\s*)?"
     r"(?P<msg>.+?)\s*$"
 )
 _COMPILER_CRASH_RE = re.compile(
@@ -82,12 +83,16 @@ def compiler_crash_reported(stderr: str) -> bool:
 
 
 def _is_clang_temporary_object(path: str) -> bool:
-    return path.endswith(".o") and (path.startswith(TEMPORARY_DIR) or "/" not in path)
+    normalised = path.replace("\\", "/")
+    temp_dir = tempfile.gettempdir().replace("\\", "/").rstrip("/") + "/"
+    return normalised.endswith((".o", ".obj")) and (
+        normalised.startswith(TEMPORARY_DIR) or normalised.startswith(temp_dir) or "/" not in normalised
+    )
 
 
 def _build_path(path: str, base_dir: str | None) -> str | None:
-    stripped = path.strip()
-    prefix = base_dir.rstrip("/") + "/" if base_dir else None
+    stripped = path.strip().replace("\\", "/")
+    prefix = base_dir.replace("\\", "/").rstrip("/") + "/" if base_dir else None
     if prefix and stripped.startswith(prefix):
         return posixpath.normpath(stripped[len(prefix) :])
     if _is_clang_temporary_object(stripped):
@@ -100,7 +105,7 @@ def _error_or_level(level: str) -> str:
 
 
 def _is_linker_program(program: str) -> bool:
-    return "ld" in program.rsplit("/", 1)[-1]
+    return "ld" in program.replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
 def _linker_reference(match: re.Match, line: str, function: str | None, base_dir: str | None) -> Diagnostic:

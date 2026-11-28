@@ -69,7 +69,10 @@ def _dropped_warning_spellings() -> list[str]:
 
 def _semantic_cc1_changes(source: Path, flags: list[str]) -> tuple[list[str], list[str]]:
     added, removed = cc1_changes(source, flags)
-    return [arg for arg in added if not arg.startswith(DIAGNOSTIC_CC1_PREFIXES)], list(removed)
+    return (
+        [arg for arg in added if not arg.startswith(DIAGNOSTIC_CC1_PREFIXES)],
+        [arg for arg in removed if not arg.startswith(DIAGNOSTIC_CC1_PREFIXES)],
+    )
 
 
 @pytest.mark.parametrize("suffix", [C_SUFFIX, CXX_SUFFIX])

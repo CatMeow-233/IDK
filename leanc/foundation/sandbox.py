@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
@@ -26,6 +27,10 @@ PROC_NET_DEV_HEADER_LINES = 2
 BWRAP_MISSING_NOTE = (
     "bubblewrap (bwrap) not found; install it (e.g. `apt-get install bubblewrap`) "
     "to enable isolated execution of untrusted programs"
+)
+NON_LINUX_SANDBOX_NOTE = (
+    "bubblewrap (bwrap) is Linux-only and unavailable on {platform}; untrusted execution gates "
+    "(sanitizer, lean) are skipped unless --allow-unsandboxed is passed or run inside a Linux container"
 )
 
 
@@ -168,6 +173,8 @@ def _broken_bwrap(failed_probe: subprocess.CompletedProcess[bytes]) -> Sandbox:
 def detect_sandbox(preference: str = "auto") -> Sandbox:
     if preference == "none":
         return Sandbox(kind="none", note="sandbox disabled by configuration")
+    if not sys.platform.startswith("linux"):
+        return Sandbox(kind="none", note=NON_LINUX_SANDBOX_NOTE.format(platform=sys.platform))
     executable = shutil.which("bwrap")
     if not executable:
         return Sandbox(kind="none", note=BWRAP_MISSING_NOTE)
