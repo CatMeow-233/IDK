@@ -105,7 +105,7 @@ class BackendContext:
         sandboxed: bool = True,
         mounts: SandboxMounts | None = None,
     ) -> ProcResult:
-        env = minimal_env(env_extra, home="/tmp")
+        env = minimal_env(env_extra, home=None if os.name == "nt" else "/tmp")
         return run_command(
             argv,
             cwd=cwd or self.snapshot_dir,
@@ -128,7 +128,7 @@ class BackendContext:
         )
 
     def relrun(self, p: Path) -> str:
-        return os.path.relpath(p, self.run_dir)
+        return os.path.relpath(p, self.run_dir).replace("\\", "/")
 
 
 def make_context(

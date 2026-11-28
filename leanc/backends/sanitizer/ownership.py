@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,6 +87,8 @@ def leak_failures_by_case(failures: list[FailureReport]) -> dict[str, list[Failu
 
 
 def _unsupported(inputs: OwnershipInputs, symbolizer: str | None) -> str | None:
+    if not sys.platform.startswith("linux"):
+        return "ownership tracing uses Linux ELF linker wrapping (-Wl,--wrap) and is supported on Linux only"
     if inputs.ctx.spec.language.is_cpp:
         return "C++ allocations (operator new/delete) bypass the traced malloc family"
     if not inputs.plan.detect_leaks:
@@ -245,7 +248,9 @@ def attach_ownership_traces(
     per_case: dict[str, list[str]] = {}
     report: dict[str, object] = {"status": "", "cases": per_case}
     details[DETAILS_KEY] = report
-    symbolizer = find_llvm_symbolizer(compiler(inputs.ctx), compiler_version(inputs.ctx))
+    symbolizer = find_llvm_symbolizer(
+        compiler(inputs.ctx), compiler_version(inputs.ctx), sandbox_active=inputs.ctx.sandbox.active
+    )
     unsupported = _unsupported(inputs, symbolizer)
     if unsupported or symbolizer is None:
         report["status"] = f"not traced: {unsupported}"

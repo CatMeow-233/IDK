@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import shlex
-import shutil
 import subprocess
 from collections import Counter
 from pathlib import Path
+
+from leanc.toolchain.tools import find_clang
 
 CC1_MARKER = '"-cc1"'
 DRIVER_ONLY_FLAG = "-###"
@@ -15,7 +16,7 @@ MINIMAL_PROGRAM = "int main(void) { return 0; }\n"
 
 
 def clang() -> str:
-    found = shutil.which("clang")
+    found = find_clang()
     assert found is not None
     return found
 

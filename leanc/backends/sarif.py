@@ -20,6 +20,8 @@ TRUNCATION_MARKER = "...[truncated]"
 _SEVERITY_BY_LEVEL: dict[str, Severity] = {"error": "error", "warning": "warning", "note": "note", "none": "info"}
 _FUNCTION_LOCATION_KINDS = (None, "function", "member")
 _MESSAGE_PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
+_WINDOWS_URI_PATH_RE = re.compile(r"^/[A-Za-z]:/")
+_WINDOWS_DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[/\\]")
 
 
 def _as_dict(value: Any) -> dict:
@@ -45,14 +47,15 @@ def _non_empty_str(value: Any) -> str | None:
 
 
 def _local_path_of_file_uri(uri: str) -> str:
-    return unquote(urlparse(uri).path)
+    decoded = unquote(urlparse(uri).path)
+    return decoded[1:] if _WINDOWS_URI_PATH_RE.match(decoded) else decoded
 
 
 def _uri_to_path(uri: str, uri_base_id: str | None, base_ids: dict) -> str:
     if uri.startswith("file:"):
         return _local_path_of_file_uri(uri)
     path = unquote(uri)
-    if not uri_base_id or os.path.isabs(path):
+    if not uri_base_id or os.path.isabs(path) or _WINDOWS_DRIVE_ABS_RE.match(path):
         return path
     base = _as_dict(base_ids.get(uri_base_id))
     base_uri = _non_empty_str(base.get("uri"))

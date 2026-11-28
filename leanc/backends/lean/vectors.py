@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 import re
-import signal as _signal
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -27,7 +27,10 @@ from leanc.backends.sanitizer import (
     scan_sanitizer_control,
 )
 from leanc.backends.sanitizer.build import instrumented_program_argv
-from leanc.backends.termination import untrusted_program_terminating_signal
+from leanc.backends.termination import (
+    is_cpu_limit_signal,
+    untrusted_program_terminating_signal,
+)
 from leanc.foundation.models import CounterexampleInput, Diagnostic, FailureReport
 from leanc.foundation.redact import redact
 from leanc.foundation.runner import Limits, ProcResult
@@ -104,7 +107,7 @@ class VectorCheck:
         self.cc_version: str | None = None
         self.plan: SanitizerPlan
         self.bin_dir = self.vector_dir / "bin"
-        self.binary = self.bin_dir / "vector_driver"
+        self.binary = self.bin_dir / ("vector_driver.exe" if sys.platform == "win32" else "vector_driver")
         self.run_budget = 0.0
         self.raw_ref = ""
         self.driver_run: ProcResult
@@ -257,7 +260,7 @@ class VectorCheck:
         self.run_budget = left
         run_dir = self.vector_dir / "run"
         run_dir.mkdir(exist_ok=True)
-        symbolizer = find_llvm_symbolizer(self.cc, self.cc_version)
+        symbolizer = find_llvm_symbolizer(self.cc, self.cc_version, sandbox_active=ctx.sandbox.active)
         env = sanitizer_env(self.plan, spec.tests.memory_mb, symbolizer)
         limits = Limits(
             timeout_s=left,
@@ -361,7 +364,7 @@ class VectorCheck:
             return self._done("fail", self._disagreement_summary(findings, mismatches))
         if proc.output_truncated:
             return self._output_limit_exceeded()
-        if proc.timed_out or sig == _signal.SIGXCPU:
+        if proc.timed_out or is_cpu_limit_signal(sig):
             return self._done("timeout", f"the vector driver did not finish within {self.run_budget:.0f}s")
         if proc.exit_code != 0:
             return self._driver_failed(proc, sig)

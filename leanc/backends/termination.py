@@ -9,6 +9,14 @@ UNSANDBOXED = "none"
 HIGHEST_SIGNAL_NUMBER = 64
 
 _SIGNAL_NAMES = {member.value: member.name for member in signal.Signals}
+OUT_OF_MEMORY_SIGNALS = frozenset(
+    sig for name in ("SIGKILL", "SIGABRT", "SIGSEGV") if (sig := getattr(signal, name, None)) is not None
+)
+_SIGXCPU_NUMBER = getattr(signal, "SIGXCPU", None)
+
+
+def is_cpu_limit_signal(number: int | None) -> bool:
+    return number is not None and _SIGXCPU_NUMBER is not None and number == _SIGXCPU_NUMBER
 
 
 def signal_from_exit_status(exit_code: int | None) -> int | None:

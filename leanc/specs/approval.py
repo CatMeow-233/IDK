@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hmac
 import json
 import os
@@ -10,6 +9,16 @@ from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, NamedTuple
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 from leanc import __version__
 from leanc.foundation.errors import JSON_LOAD_ERRORS, ApprovalError, WorkspaceError
@@ -96,7 +105,8 @@ def _create_key(p: Path) -> bytes:
             fh.write(secrets.token_bytes(KEY_BYTES).hex() + "\n")
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(tmp, PRIVATE_FILE_MODE)
+        if os.name != "nt":
+            os.chmod(tmp, PRIVATE_FILE_MODE)
         _link_complete_key_unless_another_creator_won(tmp, p)
     finally:
         _remove_if_present(tmp)
@@ -104,7 +114,10 @@ def _create_key(p: Path) -> bytes:
 
 
 def _restrict_to_owner_if_owned(directory: Path) -> None:
-    if directory.stat().st_uid == os.geteuid():
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or os.name == "nt":
+        return
+    if directory.stat().st_uid == geteuid():
         os.chmod(directory, PRIVATE_DIR_MODE)
 
 
@@ -155,17 +168,38 @@ def _load_ledger(key: bytes) -> _LedgerRead:
     return _LedgerRead(entries, None)
 
 
+def _lock_fd(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    elif msvcrt is not None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\x00")
+            os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+
+
+def _unlock_fd(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    elif msvcrt is not None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
 @contextmanager
 def _cross_process_ledger_lock():
     home = leanc_home()
     home.mkdir(parents=True, exist_ok=True)
     fd = os.open(home / LEDGER_LOCK_FILE, os.O_RDWR | os.O_CREAT, PRIVATE_FILE_MODE)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _lock_fd(fd)
         yield
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        try:
+            _unlock_fd(fd)
+        finally:
+            os.close(fd)
 
 
 def _ledger_floor(key: bytes, root: Path, spec_id: str) -> _LedgerFloor:
@@ -195,10 +229,14 @@ def _write_ledger(entries: dict[str, Any], key: bytes) -> None:
     body = {"entries": entries, "signature": _ledger_signature(entries, key)}
     p = leanc_home() / LEDGER_FILE
     fd, tmp = tempfile.mkstemp(prefix=LEDGER_TEMP_PREFIX, dir=p.parent)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(body, fh, indent=2)
-    os.chmod(tmp, PRIVATE_FILE_MODE)
-    os.replace(tmp, p)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(body, fh, indent=2)
+        if os.name != "nt":
+            os.chmod(tmp, PRIVATE_FILE_MODE)
+        os.replace(tmp, p)
+    finally:
+        _remove_if_present(tmp)
 
 
 def approvals_dir(root: Path) -> Path:

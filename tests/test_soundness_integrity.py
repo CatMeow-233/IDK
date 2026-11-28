@@ -18,7 +18,9 @@ from integrity_support import (
 
 from leanc.backends import integrity
 from leanc.backends.cbmc.compile_flags import (
+    cbmc_host_profile,
     cbmc_preprocessor_macro_args,
+    normalize_host_architecture,
     translate_compile_options,
 )
 from leanc.backends.wp import builtin_macros
@@ -41,6 +43,7 @@ from leanc.rules.predefined_macros import (
 from leanc.specs.loader import load_spec
 from leanc.specs.model import CompileConfig
 from leanc.toolchain.framac import find_framac
+from leanc.toolchain.tools import find_cbmc, find_clang, find_tool
 
 VERIFIER = "CBMC"
 FINITE_MATH_READ = "    *out = arr[idx] + __FINITE_MATH_ONLY__;"
@@ -121,7 +124,8 @@ def test_same_macro_use_without_divergent_flags_passes(example_copy, needs_clang
 
 
 def test_divergent_flags_alone_do_not_reject_code_that_ignores_them(example_copy, needs_clang, tmp_path):
-    result = integrity_gate(example_copy, tmp_path, spec_edits=with_flags("-Wall", "-ffast-math", "-mavx2"))
+    flags = ("-Wall", "-ffast-math", "-mavx2") if normalize_host_architecture() == "x86_64" else ("-Wall", "-ffast-math", "-O2")
+    result = integrity_gate(example_copy, tmp_path, spec_edits=with_flags(*flags))
     assert result.outcome is Outcome.PASS, result.summary
 
 
@@ -156,14 +160,33 @@ def test_cbmc_preprocessing_standard_differs_from_the_compile_gate(example_copy,
 
 def test_cbmc_macro_environment_mirrors_cbmc_preprocessor_command():
     compile_config = CompileConfig(flags=["-funsigned-char", "-DA=1", "-UA", "-DB", "-O2"], defines=["NDEBUG", "C"])
-    assert cbmc_preprocessor_macro_args(compile_config, "c99") == [
+    assert cbmc_preprocessor_macro_args(compile_config, "c99", system="linux", architecture="x86_64") == [
         "-D__CPROVER__", "-m64", "-funsigned-char", "-std=gnu99", "-DB", "-DC",
         "-D__LP64__", "-D__x86_64", "-D__x86_64__", "-D_LP64", "-D__amd64__", "-D__amd64",
     ]
-    assert cbmc_preprocessor_macro_args(CompileConfig(), "c2x")[:3] == ["-D__CPROVER__", "-m64", "-std=gnu11"]
+    assert cbmc_preprocessor_macro_args(CompileConfig(), "c2x", system="linux", architecture="x86_64")[:3] == [
+        "-D__CPROVER__", "-m64", "-std=gnu11",
+    ]
+    assert cbmc_preprocessor_macro_args(compile_config, "c99", system="linux", architecture="aarch64") == [
+        "-D__CPROVER__", "-funsigned-char", "-std=gnu99", "-DB", "-DC", "-D__aarch64__",
+    ]
+    assert cbmc_preprocessor_macro_args(CompileConfig(), "c17", system="linux", architecture="aarch64") == [
+        "-D__CPROVER__", "-funsigned-char", "-std=gnu11", "-D__aarch64__",
+    ]
+    assert cbmc_preprocessor_macro_args(CompileConfig(), "c17", system="darwin", architecture="arm64") == [
+        "-D__CPROVER__", "-std=gnu11", "-D__aarch64__",
+    ]
+    assert cbmc_preprocessor_macro_args(CompileConfig(), "c17", system="windows", architecture="AMD64") == [
+        "-D__CPROVER__", "-m64", "-fshort-wchar", "-std=gnu11", "-D_M_X64", "-D_M_AMD64",
+    ]
+    with pytest.raises(ValueError, match="unsupported CBMC host"):
+        cbmc_preprocessor_macro_args(CompileConfig(), "c17", system="linux", architecture="sparc64")
 
 
 def test_missing_gcc_is_an_integrity_error_not_a_silent_pass(example_copy, needs_clang, tmp_path, monkeypatch):
+    profile = cbmc_host_profile()
+    if profile is not None and profile.preprocessor != "gcc":
+        pytest.skip("CBMC does not preprocess with gcc on this platform")
     monkeypatch.setattr(integrity, "GCC_CANDIDATES", MISSING_GCC)
     result = integrity_gate(example_copy, tmp_path)
     assert result.outcome is Outcome.ERROR and result.status is Status.TOOL_ERROR
@@ -181,20 +204,49 @@ def _code_lines(preprocessed: str) -> list[str]:
     return [line for line in preprocessed.splitlines() if line.strip() and not line.startswith("#")]
 
 
+def _host_mirror_probe_and_flags() -> tuple[str, list[str]]:
+    profile = cbmc_host_profile()
+    assert profile is not None
+    arch_names = [flag.removeprefix("-D").split("=", 1)[0] for flag in profile.arch_defines]
+    arch_decls = " ".join(f"int m_{index} = {name};" for index, name in enumerate(arch_names))
+    os_line = "int a = linux;\n" if profile.system == "linux" else ""
+    probe = (
+        f"long v = __STDC_VERSION__; {os_line}"
+        "int c = __CPROVER__; int f = FOO; int u = __CHAR_UNSIGNED__;\n"
+        f"{arch_decls}\n"
+        "#ifdef BAR\nint bar_defined;\n#endif\n"
+        "#ifdef __STRICT_ANSI__\nint strict;\n#endif\n"
+    )
+    flags = [
+        "-funsigned-char",
+        "-DFOO=3",
+        "-DBAR",
+        "-UBAR",
+        "-O2",
+        *(f"-D{name}=7" for name in arch_names),
+    ]
+    return probe, flags
+
+
 @pytest.mark.parametrize("standard", ["c99", "c11", "c17"])
 def test_cbmc_mirror_expands_macros_exactly_like_cbmc(tmp_path, needs_cbmc, standard):
-    gcc = shutil.which("gcc")
-    assert gcc, "gcc is required wherever CBMC runs"
+    profile = cbmc_host_profile()
+    assert profile is not None
+    preproc = find_clang() if profile.preprocessor == "clang" else find_tool("gcc")
+    assert preproc, f"{profile.preprocessor} is required wherever CBMC runs"
+    cbmc_bin = find_cbmc()
+    assert cbmc_bin
+    probe_text, mirror_flags = _host_mirror_probe_and_flags()
     probe = tmp_path / "probe.c"
-    probe.write_text(MIRROR_PROBE)
-    compile_config = CompileConfig(flags=MIRROR_FLAGS)
+    probe.write_text(probe_text)
+    compile_config = CompileConfig(flags=mirror_flags)
     translation = translate_compile_options(compile_config, standard)
     cbmc_args = [*translation.include_args, *translation.macro_args, *translation.semantic_args]
     cbmc = subprocess.run(
-        ["cbmc", *cbmc_args, "--preprocess", str(probe)], capture_output=True, text=True, check=True, cwd=tmp_path
+        [cbmc_bin, *cbmc_args, "--preprocess", str(probe)], capture_output=True, text=True, check=True, cwd=tmp_path
     )
     mirror = subprocess.run(
-        [gcc, *cbmc_preprocessor_macro_args(compile_config, standard), "-E", str(probe)],
+        [preproc, *cbmc_preprocessor_macro_args(compile_config, standard), "-E", str(probe)],
         capture_output=True,
         text=True,
         check=True,

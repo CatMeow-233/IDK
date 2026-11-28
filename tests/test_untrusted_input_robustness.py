@@ -280,7 +280,10 @@ def test_spec_under_non_utf8_directory_name_is_usage_error_on_approve(example_co
     project = example_copy("safe_array_get")
     (project / "leanc.yaml").write_text("provider: mock\n")
     nested = project / "d\udcff"
-    nested.mkdir()
+    try:
+        nested.mkdir()
+    except OSError:
+        pytest.skip("filesystem rejects non-UTF-8 directory names")
     (project / "spec.yaml").rename(nested / "spec.yaml")
     rc = main(["spec", "approve", str(nested / "spec.yaml"), "--project-root", str(project), "--by", "alice", "--yes"])
     assert rc == 2

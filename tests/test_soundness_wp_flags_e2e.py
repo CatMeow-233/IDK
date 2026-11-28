@@ -20,6 +20,7 @@ from leanc.specs.compile_options import CharSignedness
 from leanc.specs.loader import load_spec
 from leanc.toolchain.context import BackendContext, make_context
 from leanc.toolchain.framac import find_framac
+from leanc.toolchain.tools import find_clang
 
 DEFAULT_FLAGS = ["-Wall", "-Wextra", "-Wpedantic"]
 UNSIGNED_CHAR_BUILD = ["-Wall", "-funsigned-char"]
@@ -92,7 +93,9 @@ def _built_char_value(tmp_path: Path, root: Path, flags: list[str]) -> int:
     driver = tmp_path / "driver.c"
     driver.write_text(CHAR_DRIVER)
     program = tmp_path / "char_value"
-    compile_argv = ["clang", *flags, "-Iinclude", "src/char_value.c", str(driver), "-o", str(program)]
+    clang = find_clang()
+    assert clang
+    compile_argv = [clang, *flags, "-Iinclude", "src/char_value.c", str(driver), "-o", str(program)]
     subprocess.run(compile_argv, cwd=root, check=True, timeout=120)
     return int(subprocess.run([str(program)], capture_output=True, text=True, check=True, timeout=60).stdout)
 

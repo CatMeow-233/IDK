@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import os
-import signal as _signal
 import time
 from pathlib import Path
 from typing import Any
 
-from leanc.backends.termination import signal_name, trusted_tool_terminating_signal
+from leanc.backends.termination import (
+    OUT_OF_MEMORY_SIGNALS,
+    signal_name,
+    trusted_tool_terminating_signal,
+)
 from leanc.backends.wp.argv import (
     MACHDEP,
     RTE_CLASSES,
@@ -83,7 +86,6 @@ MEMORY_MODEL = "Typed (WP default)"
 MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 MAX_FILE_MB = 1024
 WHY3_DETECT_TIMEOUT_S = 60.0
-OUT_OF_MEMORY_SIGNALS = frozenset({_signal.SIGKILL, _signal.SIGABRT, _signal.SIGSEGV})
 MAX_RECORDED_WARNINGS = 100
 MAX_NOTED_ACSL_VIOLATIONS = 10
 MAX_MERGE_RECORD_CHARS = 300

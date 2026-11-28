@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess
 from pathlib import Path
 
 from leanc.backends import analyzer
@@ -12,6 +13,7 @@ from leanc.specs.loader import load_spec
 from leanc.specs.model import Spec
 from leanc.toolchain.context import BackendContext, make_context
 from leanc.toolchain.environment import Toolchain
+from leanc.toolchain.tools import find_clang
 
 TIMEOUT_SCALE_HITTING_ONE_SECOND_FLOOR = 0.0001
 
@@ -366,16 +368,26 @@ def test_text_fallback_when_sarif_unusable(needs_clang, tmp_path, monkeypatch):
     assert "not valid JSON" in f["fallback_reason"] and "-analyzer-output=text" in f["text_argv"]
 
 
+def _array_bound_checker() -> str:
+    clang_bin = find_clang()
+    assert clang_bin is not None
+    listed = subprocess.run([clang_bin, "-cc1", "-analyzer-checker-help"], capture_output=True, text=True, check=False)
+    if "security.ArrayBound" in listed.stdout:
+        return "security.ArrayBound"
+    return "alpha.security.ArrayBoundV2"
+
+
 def test_extra_checker_enabled(needs_clang, tmp_path):
+    checker = _array_bound_checker()
     src = '#include "a.h"\nint f(int x)\n{\n    int a[4] = {1, 2, 3, 4};\n    (void)x;\n    return a[5];\n}\n'
     ctx = make_project(
-        tmp_path, {"src/a.c": src, "include/a.h": HEADER}, static_analysis={"extra_checkers": ["alpha.security.ArrayBoundV2"]}
+        tmp_path, {"src/a.c": src, "include/a.h": HEADER}, static_analysis={"extra_checkers": [checker]}
     )
     res = run_static_analysis(ctx)
     assert res.outcome is Outcome.FAIL
-    assert "alpha.security.ArrayBoundV2" in {d.rule_id for d in res.diagnostics}
-    assert res.details["checkers"]["extra"] == ["alpha.security.ArrayBoundV2"]
-    assert "-analyzer-checker=alpha.security.ArrayBoundV2" in res.details["files"][0]["argv"]
+    assert checker in {d.rule_id for d in res.diagnostics}
+    assert res.details["checkers"]["extra"] == [checker]
+    assert f"-analyzer-checker={checker}" in res.details["files"][0]["argv"]
 
 
 def test_unknown_checker_is_tool_error(needs_clang, tmp_path):

@@ -23,6 +23,8 @@ UNDECLARED_CONSEQUENCE = (
 _NO_BODY_RE = re.compile(r"no body for (?:function|callee) '?([A-Za-z_][\w$]*)'?")
 _UNDECLARED_RE = re.compile(r"function '([A-Za-z_][\w$]*)' is not declared")
 _RETURN_TEMPORARY_RE = re.compile(r"^(?:return_value_|goto_symex\$\$return_value\$\$)(?P<function>[A-Za-z_]\w*)")
+_RETURN_VALUE_IN_TEXT_RE = re.compile(r"\breturn_value_(?P<function>[A-Za-z_]\w*)")
+NO_BODY_PROPERTY_MARKER = ".no-body."
 
 
 def is_modelled_bodiless(function: str) -> bool:
@@ -32,6 +34,25 @@ def is_modelled_bodiless(function: str) -> bool:
 def bodiless_function(warning_text: str) -> str | None:
     match = _NO_BODY_RE.search(warning_text)
     return match.group(1) if match else None
+
+
+def no_body_property_function(result: dict) -> str | None:
+    prop = str(result.get("property") or "")
+    if NO_BODY_PROPERTY_MARKER not in prop:
+        return None
+    return bodiless_function(str(result.get("description") or ""))
+
+
+def undecided_explained_by_unmodelled(result: dict, unmodelled: frozenset[str], no_body_callers: set[str]) -> bool:
+    if not unmodelled:
+        return False
+    description = str(result.get("description") or "")
+    if any(match.group("function") in unmodelled for match in _RETURN_VALUE_IN_TEXT_RE.finditer(description)):
+        return True
+    location = result.get("sourceLocation")
+    if isinstance(location, dict) and location.get("function") in no_body_callers:
+        return True
+    return False
 
 
 def undeclared_function(warning_text: str) -> str | None:
@@ -74,6 +95,10 @@ class ViolationSplit:
 def split_violations(violated: list[dict], unmodelled: frozenset[str]) -> ViolationSplit:
     split = ViolationSplit()
     for result in violated:
+        callee = no_body_property_function(result)
+        if callee is not None and callee in unmodelled:
+            split.dependent.append(DependentViolation(result, (callee,)))
+            continue
         functions = unmodelled_return_values_in_trace(result, unmodelled)
         if functions:
             split.dependent.append(DependentViolation(result, tuple(functions)))

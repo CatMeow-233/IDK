@@ -172,7 +172,8 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     replaced = False
     try:
         _write_synced(fd, utf8_safe(text))
-        os.chmod(tmp, REPORT_FILE_MODE)
+        if os.name != "nt":
+            os.chmod(tmp, REPORT_FILE_MODE)
         os.replace(tmp, path)
         replaced = True
     finally:

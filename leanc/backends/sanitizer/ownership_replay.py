@@ -86,8 +86,18 @@ def _read_regular_file(fd: int) -> _LogRead:
 
 
 def read_trace_log(path: Path) -> _LogRead:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow and path.is_symlink():
+        return _LogRead(problem=f"{LOG_FILE} is a symbolic link")
+    flags = (
+        os.O_RDONLY
+        | nofollow
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        fd = os.open(path, flags)
     except OSError as exc:
         return _LogRead(problem=f"cannot open {LOG_FILE} ({exc.strerror})")
     try:

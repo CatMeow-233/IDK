@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import posixpath
 import re
 from typing import NamedTuple
@@ -281,10 +282,15 @@ def linemarker(line: str) -> Linemarker | None:
     return Linemarker(int(marker.group(1)), _unescaped_linemarker_file(marker.group(2)))
 
 
+def _norm_linemarker(path: str) -> str:
+    return posixpath.normpath(path.replace("\\", "/") if os.name == "nt" else path)
+
+
 def has_linemarker_for(rel: str, pp_output: str) -> bool:
+    expected = posixpath.normpath(rel)
     for line in pp_output.split("\n"):
         marker = linemarker(line)
-        if marker is not None and posixpath.normpath(marker.file) == posixpath.normpath(rel):
+        if marker is not None and _norm_linemarker(marker.file) == expected:
             return True
     return False
 
@@ -294,12 +300,13 @@ def expanded_view(rel: str, pp_output: str) -> tuple[str, list[int]]:
     origin: list[int] = []
     current_file: str | None = None
     current_line = 0
+    expected = posixpath.normpath(rel)
     for line in pp_output.split("\n"):
         marker = linemarker(line)
         if marker is not None:
             current_line, current_file = marker
             continue
-        if current_file is not None and posixpath.normpath(current_file) == posixpath.normpath(rel):
+        if current_file is not None and _norm_linemarker(current_file) == expected:
             lines.append(line)
             origin.append(current_line)
         current_line += 1

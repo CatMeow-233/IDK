@@ -9,27 +9,18 @@ from typing import Any, ClassVar
 
 from leanc.backends.clang import define_args, sandbox_visible_path
 from leanc.backends.flag_arity import probe_flag_arity
+from leanc.backends.object_tools import (
+    DEMANGLER_CANDIDATES, NM_CANDIDATES, find_section_tools, first_tool,
+    missing_section_tool_message, object_format,
+)
 from leanc.backends.stack_check import StackCheck
 from leanc.backends.verifier_macros import (
-    CLANG_DUMP_LABEL,
-    NO_GCC_PREPROCESSED_GATE,
-    collect_divergences,
-    compile_gate_macro_dump,
-    gcc_preprocessed_verifiers,
-    needs_frama_c_builtin_macros,
-    verifier_macro_dumps,
+    CLANG_DUMP_LABEL, NO_GCC_PREPROCESSED_GATE, collect_divergences, compile_gate_macro_dump,
+    gcc_preprocessed_verifiers, needs_frama_c_builtin_macros, plan_verifier_macro_dumps,
 )
-from leanc.backends.wp.builtin_macros import (
-    builtin_macros_path,
-    materialize_builtin_macros,
-)
+from leanc.backends.wp.builtin_macros import builtin_macros_path, materialize_builtin_macros
 from leanc.foundation.models import (
-    Diagnostic,
-    FailureReport,
-    Location,
-    PolicyViolation,
-    StageResult,
-    ToolInvocation,
+    Diagnostic, FailureReport, Location, PolicyViolation, StageResult, ToolInvocation,
 )
 from leanc.foundation.redact import redact, redacted_excerpt
 from leanc.foundation.runner import Limits
@@ -39,39 +30,19 @@ from leanc.lang.c_lexer import CSource
 from leanc.lang.cpp_lexer import CppSource
 from leanc.rules.c_names import ALLOWED_IMPORTS
 from leanc.rules.c_rules import (
-    RULES,
-    SECTION_RE,
-    c_header_facts,
-    check_object_symbols,
-    parse_nm,
-    preprocessed_violations,
-    section_violations,
+    RULES, c_header_facts, check_object_symbols, parse_macho_nm, parse_nm,
+    parse_section_names, preprocessed_violations, section_name_violations, strip_leading_underscore,
 )
 from leanc.rules.cpp_rules import (
-    CPP_ALLOWED_RUNTIME_IMPORTS,
-    CPP_RULES,
-    CPP_RUNTIME_IMPORT_FAMILIES,
-    check_cpp_object_symbols,
-    cpp_preprocessed_violations,
-    cpp_source_violations,
-    defines_target,
-    header_facts,
+    CPP_ALLOWED_RUNTIME_IMPORTS, CPP_RULES, CPP_RUNTIME_IMPORT_FAMILIES,
+    check_cpp_object_symbols, cpp_preprocessed_violations, cpp_source_violations,
+    defines_target, header_facts,
 )
 from leanc.rules.findings import dedupe_key, unique_id, violation
-from leanc.rules.predefined_macros import (
-    GCC_MISSING,
-    MacroDefinition,
-    divergent_macro_use_violations,
-    parse_predefined_macros,
-)
+from leanc.rules.predefined_macros import MacroDefinition, divergent_macro_use_violations, parse_predefined_macros
 from leanc.rules.preprocessor import has_linemarker_for
 from leanc.rules.source import source_violations
-from leanc.rules.symbol_types import (
-    STRONG_TEXT_TYPE,
-    UNDEFINED_TYPES,
-    defined_elsewhere,
-    is_defined_global,
-)
+from leanc.rules.symbol_types import STRONG_TEXT_TYPE, UNDEFINED_TYPES, defined_elsewhere, is_defined_global
 from leanc.toolchain.context import BackendContext
 from leanc.toolchain.cxx import compiler
 from leanc.toolchain.tools import find_tool
@@ -87,9 +58,6 @@ STDERR_SEPARATOR = "\n--- stderr ---\n"
 NO_LINEMARKER = "the output has no GNU linemarker for the file, so the after-expansion rules would see none of its code"
 NULL_SECTION = "NULL"
 
-NM_CANDIDATES = ("llvm-nm-18", "llvm-nm", "nm")
-READELF_CANDIDATES = ("llvm-readelf-18", "llvm-readelf", "readelf")
-DEMANGLER_CANDIDATES = ("llvm-cxxfilt-18", "llvm-cxxfilt", "c++filt")
 GCC_CANDIDATES = ("gcc",)
 PREDEFINED_MACROS_STEP = "predefined-macros"
 C_SYMBOL_EVIDENCE_RULES = frozenset({"SYMBOL_OVERRIDE", "DANGEROUS_IMPORT"})
@@ -97,11 +65,7 @@ CPP_SYMBOL_EVIDENCE_RULES = frozenset({"SYMBOL_OVERRIDE", "DANGEROUS_IMPORT", "E
 
 
 def _find(names: tuple[str, ...]) -> str | None:
-    for name in names:
-        path = find_tool(name)
-        if path:
-            return path
-    return None
+    return first_tool(names, find_tool)
 
 
 def _object_path(object_root: Path, rel: str) -> Path:
@@ -133,7 +97,8 @@ class _IntegrityGate(ABC):
         self.raw_root = ctx.raw_dir / STAGE
         self.raw_root.mkdir(parents=True, exist_ok=True)
         self.nm = _find(NM_CANDIDATES)
-        self.readelf = _find(READELF_CANDIDATES)
+        self.section_tools = find_section_tools(find_tool)
+        self.readelf = self.section_tools.readelf
         self.limits = Limits(timeout_s=ctx.timeout(TOOL_TIMEOUT_S), max_output_bytes=MAX_TOOL_OUTPUT_BYTES)
         self.details: dict[str, Any] = {}
         self.invocations: list[ToolInvocation] = []
@@ -276,18 +241,18 @@ class _IntegrityGate(ABC):
             self.details["predefined_macros"] = {"checked": False, "reason": NO_GCC_PREPROCESSED_GATE}
             return
         gcc = _find(GCC_CANDIDATES)
-        if gcc is None:
-            self.problems.append(GCC_MISSING)
+        frama_c_macros = sandbox_visible_path(builtin_macros_path(self.ctx.build_dir))
+        plan = plan_verifier_macro_dumps(self.spec, frama_c_macros, gcc=gcc, clang=self.compiler_path)
+        if plan.problems:
+            self.problems.extend(plan.problems)
             return
         if not self.compiler_path or not self.frama_c_builtin_macros_ready():
             return
-        frama_c_macros = sandbox_visible_path(builtin_macros_path(self.ctx.build_dir))
-        dumps = verifier_macro_dumps(gcc, self.spec, frama_c_macros)
         clang_argv = compile_gate_macro_dump(self.compiler_path, self.spec, self.ctx.include_args())
         self.details["predefined_macros"] = {"checked": False, "argv": {CLANG_DUMP_LABEL: clang_argv}}
-        self.details["predefined_macros"]["argv"].update({dump.label: dump.argv for dump in dumps})
+        self.details["predefined_macros"]["argv"].update({dump.label: dump.argv for dump in plan.dumps})
         clang_macros = self.predefined_macros(self.compiler_name, CLANG_DUMP_LABEL, clang_argv)
-        divergent = None if clang_macros is None else collect_divergences(clang_macros, dumps, self.predefined_macros)
+        divergent = None if clang_macros is None else collect_divergences(clang_macros, plan.dumps, self.predefined_macros)
         if divergent is None:
             return
         self.details["predefined_macros"].update({"checked": True, "divergent": len(divergent)})
@@ -313,17 +278,36 @@ class _IntegrityGate(ABC):
             return None
         return parsed.definitions
 
+    def list_object_symbols(self, rel: str, real_object: str, checked: _CheckedFile) -> tuple[list[tuple[str, str]] | None, bool]:
+        fmt = object_format(real_object)
+        if fmt == "bitcode":
+            self.problems.append(f"object file for {rel} is LLVM bitcode, not a machine-code object file")
+            return None, False
+        is_macho = fmt == "macho"
+        argv = [self.nm, "-m" if is_macho else "-P", real_object]
+        checked.entry["argv"]["nm"] = argv
+        listing = self.run_tool("nm", argv, rel, "nm")
+        if listing is None:
+            return None, is_macho
+        symbols = strip_leading_underscore(parse_macho_nm(listing)) if is_macho else parse_nm(listing)
+        return symbols, is_macho
+
     def check_sections(self, rel: str, real_object: str, checked: _CheckedFile) -> None:
-        if not self.readelf:
-            self.problems.append("readelf / llvm-readelf not found: cannot check object sections")
+        fmt = object_format(real_object)
+        if fmt == "bitcode":
+            self.problems.append(f"sections of {rel} could not be checked: object file is LLVM bitcode")
             return
-        argv = [self.readelf, "-S", "-W", real_object]
-        checked.entry["argv"]["readelf"] = argv
-        sections = self.run_tool("readelf", argv, rel, "sections")
+        tool = self.section_tools.select(fmt)
+        if tool is None:
+            self.problems.append(missing_section_tool_message(fmt))
+            return
+        argv = tool.argv(real_object)
+        checked.entry["argv"][tool.name] = argv
+        sections = self.run_tool(tool.name, argv, rel, "sections")
         if sections is not None:
-            names = dict.fromkeys(SECTION_RE.findall(sections))
+            names = parse_section_names(sections, tool.fmt)
             checked.entry["sections"] = [name for name in names if name != NULL_SECTION]
-            self.violations += section_violations(rel, sections, checked.source)
+            self.violations += section_name_violations(rel, names, checked.source)
             checked.entry["checks"].append("sections")
 
     def check_symbols_across_files(self) -> None:
@@ -448,12 +432,9 @@ class _CIntegrityGate(_IntegrityGate):
         if not self.nm:
             self.problems.append("nm / llvm-nm not found: cannot check object symbols")
             return
-        argv = [self.nm, "-P", real_object]
-        checked.entry["argv"]["nm"] = argv
-        listing = self.run_tool("nm", argv, rel, "nm")
-        if listing is None:
+        symbols, _ = self.list_object_symbols(rel, real_object, checked)
+        if symbols is None:
             return
-        symbols = parse_nm(listing)
         checked.symbols = symbols
         checked.entry["defined"] = sorted(name for name, kind in symbols if is_defined_global(kind))
         checked.entry["undefined"] = sorted(name for name, kind in symbols if kind in UNDEFINED_TYPES)
@@ -519,12 +500,15 @@ class _CppIntegrityGate(_IntegrityGate):
     def preprocessed_violations(self, rel: str, preprocessed: str) -> list[PolicyViolation]:
         return cpp_preprocessed_violations(rel, preprocessed, self.facts)
 
-    def demangled_symbols(self, rel: str, symbols: list[tuple[str, str]]) -> list[tuple[str, str, str]] | None:
+    def demangled_symbols(
+        self, rel: str, symbols: list[tuple[str, str]], *, no_strip_underscore: bool = False
+    ) -> list[tuple[str, str, str]] | None:
         names = [name for name, _ in symbols]
         if not names:
             return []
         stdin = ("\n".join(names) + "\n").encode()
-        listing = self.run_tool("c++filt", [self.demangler], rel, "demangle", stdin)
+        argv = [self.demangler, "-n"] if no_strip_underscore else [self.demangler]
+        listing = self.run_tool("c++filt", argv, rel, "demangle", stdin)
         if listing is None:
             return None
         demangled = listing.split("\n")[: len(names)]
@@ -539,12 +523,10 @@ class _CppIntegrityGate(_IntegrityGate):
                 "nm / llvm-nm or a C++ demangler (llvm-cxxfilt / c++filt) not found: cannot check object symbols"
             )
             return
-        argv = [self.nm, "-P", real_object]
-        checked.entry["argv"]["nm"] = argv
-        listing = self.run_tool("nm", argv, rel, "nm")
-        if listing is None:
+        raw_symbols, is_macho = self.list_object_symbols(rel, real_object, checked)
+        if raw_symbols is None:
             return
-        triples = self.demangled_symbols(rel, parse_nm(listing))
+        triples = self.demangled_symbols(rel, raw_symbols, no_strip_underscore=is_macho)
         if triples is None:
             return
         checked.symbols = triples

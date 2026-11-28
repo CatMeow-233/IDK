@@ -4,6 +4,7 @@ import glob
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 
 from leanc.foundation.runner import DEFAULT_PATH
@@ -42,16 +43,22 @@ def framac_version_key(version_line: str | None) -> tuple[int, int]:
     return (int(m.group(1)), int(m.group(2))) if m else UNKNOWN_VERSION_KEY
 
 
+def _exe_names(base: str) -> list[str]:
+    return [f"{base}.exe", base] if sys.platform == "win32" else [base]
+
+
 def _why3_of_same_installation(bin_dir: str) -> str | None:
-    return _first_existing([os.path.join(bin_dir, "why3")])
+    return _first_existing([os.path.join(bin_dir, name) for name in _exe_names("why3")])
 
 
 def _candidates() -> list[str]:
     out: list[str] = []
     for d in (os.environ.get("PATH", "") + os.pathsep + DEFAULT_PATH).split(os.pathsep):
         if d:
-            out.append(os.path.join(d, "frama-c"))
-    out += sorted(glob.glob("/opt/opam/*/bin/frama-c"))
+            for name in _exe_names("frama-c"):
+                out.append(os.path.join(d, name))
+    if sys.platform != "win32":
+        out += sorted(glob.glob("/opt/opam/*/bin/frama-c"))
     seen: set[str] = set()
     uniq: list[str] = []
     for c in out:
@@ -67,7 +74,7 @@ def find_framac() -> FramaC | None:
     env = os.environ.get("LEANC_FRAMAC")
     exe: str | None
     if env:
-        exe = env if os.path.isabs(env) and os.access(env, os.X_OK) else shutil.which(env)
+        exe = env if os.path.isabs(env) and os.path.isfile(env) and os.access(env, os.X_OK) else shutil.which(env)
         if not exe:
             return None
     else:

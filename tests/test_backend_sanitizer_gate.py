@@ -75,7 +75,7 @@ HBO_SRC = textwrap.dedent(
 )
 
 
-def test_heap_buffer_overflow_located_by_asan(tmp_path, needs_clang, needs_bwrap):
+def test_heap_buffer_overflow_located_by_asan(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     ctx, res = run_gate(tmp_path, HBO_SRC, [{"name": "oob", "args": ["4"]}])
     assert res.outcome is Outcome.FAIL
     assert res.status is Status.RUNTIME_TEST_FAILED
@@ -116,7 +116,7 @@ UAF_SRC = textwrap.dedent(
 )
 
 
-def test_heap_use_after_free(tmp_path, needs_clang, needs_bwrap):
+def test_heap_use_after_free(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     _, res = run_gate(tmp_path, UAF_SRC, [{"name": "uaf", "args": ["10"]}])
     assert res.outcome is Outcome.FAIL
     d = next(d for d in res.diagnostics if d.tool == "asan")
@@ -145,7 +145,7 @@ LEAK_SRC = textwrap.dedent(
 )
 
 
-def test_memory_leak_reported_by_lsan(tmp_path, needs_clang, needs_bwrap):
+def test_memory_leak_reported_by_lsan(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     _, res = run_gate(
         tmp_path, LEAK_SRC, [{"name": "leaky", "args": ["1"], "expect_stdout": "r=42\n"}]
     )
@@ -182,7 +182,7 @@ OVF_SRC = textwrap.dedent(
 )
 
 
-def test_signed_overflow_reported_by_ubsan(tmp_path, needs_clang, needs_bwrap):
+def test_signed_overflow_reported_by_ubsan(tmp_path, needs_clang, needs_bwrap, needs_symbolizer):
     _, res = run_gate(tmp_path, OVF_SRC, [{"name": "ovf", "args": ["100"]}])
     assert res.outcome is Outcome.FAIL
     d = next(d for d in res.diagnostics if d.tool == "ubsan")
@@ -293,7 +293,7 @@ def test_no_sandbox_and_not_allowed_is_skipped(tmp_path, needs_clang):
     assert [i.tool for i in res.invocations] == ["clang"]
 
 
-def test_allowed_unsandboxed_runs_with_warning(tmp_path, needs_clang):
+def test_allowed_unsandboxed_runs_with_warning(tmp_path, needs_clang, needs_symbolizer):
     _, res = run_gate(
         tmp_path,
         HBO_SRC,

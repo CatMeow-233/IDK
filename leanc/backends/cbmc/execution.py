@@ -10,7 +10,7 @@ from typing import Literal, NamedTuple
 from leanc.backends.cbmc.argv import Mode, build_cbmc_argv
 from leanc.backends.cbmc.output import CbmcOutput, interpret_output
 from leanc.backends.counterexample.locations import location_from_cbmc
-from leanc.backends.termination import trusted_tool_terminating_signal
+from leanc.backends.termination import OUT_OF_MEMORY_SIGNALS, trusted_tool_terminating_signal
 from leanc.foundation.models import Diagnostic, ToolInvocation
 from leanc.foundation.runner import Limits, ProcResult
 from leanc.foundation.status import Outcome
@@ -22,7 +22,7 @@ TOOL = "cbmc"
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_LISTED_ITEMS = 3
 OUT_OF_MEMORY_MARKERS = ("out of memory", "bad_alloc", "cannot allocate memory", "memory exhausted")
-SIGNALS_HINTING_OUT_OF_MEMORY = (signal.SIGKILL, signal.SIGABRT, signal.SIGSEGV)
+SIGNALS_HINTING_OUT_OF_MEMORY = tuple(OUT_OF_MEMORY_SIGNALS)
 INVARIANT_REPORT_BEGIN = "--- begin invariant violation report ---"
 INVARIANT_REPORT_END = "--- end invariant violation report ---"
 INVARIANT_FAILED_MARKER = "Invariant check failed"

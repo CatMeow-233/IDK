@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 
 from cbmc_replay_support import DIVERGENCE_PREPROCESS_RUNS, SYMBOL_TABLE_RUNS, checking_runs
 from cbmc_support import _fake_tools, make_cbmc_project
@@ -38,7 +39,7 @@ def test_correct_code_passes_with_vacuity_ok(tmp_path, needs_cbmc):
     assert d["harness_assertions"] == {"in_source": 4, "cbmc_properties": 4}
     assert d["properties_total"] > 0 and d["properties_passed"] == d["properties_total"]
     assert d["properties_failed"] == 0 and d["unwind_failures"] == []
-    assert d["cbmc_version"] and "5." in d["cbmc_version"]
+    assert d["cbmc_version"] and re.search(r"\b\d+\.\d+", d["cbmc_version"])
     assert set(d["argv"]) == {"verify", "vacuity"}
     assert d["checks"] == ctx.spec.verification.effective_checks()
     assert d["unwind"] == 5 and d["coverage"] is None

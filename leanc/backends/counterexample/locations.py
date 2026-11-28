@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 from typing import Any
 
 from leanc.backends.counterexample.json_fields import as_dict, as_int
@@ -9,6 +10,7 @@ from leanc.foundation.models import Location
 
 CPROVER_PSEUDO_FILE_PREFIX = "<"
 CURRENT_DIR_PREFIX = "./"
+_WINDOWS_DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:/")
 
 
 def is_cprover_pseudo_file(file: str) -> bool:
@@ -17,8 +19,10 @@ def is_cprover_pseudo_file(file: str) -> bool:
 
 def _relative_to_working_dir(absolute_file: str, working_dir: str | None) -> str:
     if working_dir:
-        prefix = posixpath.normpath(str(working_dir)).rstrip("/") + "/"
+        prefix = posixpath.normpath(str(working_dir).replace("\\", "/")).rstrip("/") + "/"
         if absolute_file.startswith(prefix):
+            return absolute_file[len(prefix) :]
+        if _WINDOWS_DRIVE_ABS_RE.match(absolute_file) and absolute_file.lower().startswith(prefix.lower()):
             return absolute_file[len(prefix) :]
     return absolute_file
 
@@ -27,11 +31,12 @@ def relative_file(file: str | None, working_dir: str | None = None) -> str | Non
     if not file:
         return None
     name = str(file)
-    if os.path.isabs(name):
-        return _relative_to_working_dir(posixpath.normpath(name), working_dir)
+    normalised = posixpath.normpath(name.replace("\\", "/"))
+    if os.path.isabs(name) or _WINDOWS_DRIVE_ABS_RE.match(normalised):
+        return _relative_to_working_dir(normalised, working_dir)
     if is_cprover_pseudo_file(name):
         return name
-    return posixpath.normpath(name).removeprefix(CURRENT_DIR_PREFIX)
+    return normalised.removeprefix(CURRENT_DIR_PREFIX)
 
 
 def location_from_cbmc(source_location: Any) -> Location | None:
@@ -50,8 +55,8 @@ def location_from_cbmc(source_location: Any) -> Location | None:
 def same_file(first: str | None, second: str | None) -> bool:
     if not first or not second:
         return False
-    first_name = posixpath.normpath(str(first)).removeprefix(CURRENT_DIR_PREFIX)
-    second_name = posixpath.normpath(str(second)).removeprefix(CURRENT_DIR_PREFIX)
+    first_name = posixpath.normpath(str(first).replace("\\", "/")).removeprefix(CURRENT_DIR_PREFIX)
+    second_name = posixpath.normpath(str(second).replace("\\", "/")).removeprefix(CURRENT_DIR_PREFIX)
     return (
         first_name == second_name
         or first_name.endswith("/" + second_name)

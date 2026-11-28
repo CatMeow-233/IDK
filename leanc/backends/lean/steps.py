@@ -35,7 +35,7 @@ class GateAbort(Exception):
 
 
 def run_relative(ctx: BackendContext, path: Path) -> str:
-    return os.path.relpath(os.path.realpath(path), os.path.realpath(ctx.run_dir))
+    return os.path.relpath(os.path.realpath(path), os.path.realpath(ctx.run_dir)).replace("\\", "/")
 
 
 def excerpt(text: str, limit: int = MAX_EXCERPT_CHARS) -> str:
@@ -85,8 +85,8 @@ class StepRunner:
 
     def _environment(self, lean_path: list[Path]) -> dict[str, str]:
         return {
-            "LEAN_PATH": ":".join([self.tc.lib_dir, *(str(path) for path in lean_path)]),
-            "PATH": f"{os.path.join(self.tc.prefix, 'bin')}:{DEFAULT_PATH}",
+            "LEAN_PATH": os.pathsep.join([self.tc.lib_dir, *(str(path) for path in lean_path)]),
+            "PATH": f"{os.path.join(self.tc.prefix, 'bin')}{os.pathsep}{DEFAULT_PATH}",
         }
 
     def _record(self, what: str, argv: list[str], cwd: Path, proc: ProcResult) -> Path:
