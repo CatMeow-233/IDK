@@ -124,7 +124,7 @@ Common options:
 | 70 | — | internal error (traceback on stderr) |
 | 130 | — | interrupted (Ctrl-C) |
 
-"No counterexample found" is not success. A timeout, a tool error, an unparsable result or a skipped gate never counts as success. A required `inductive` gate that does not pass makes the result at best `UNKNOWN`, and a required `wp` gate that passes still gives `PROVED`. The aggregation rules are in [docs/status-semantics.md](docs/status-semantics.md).
+"No counterexample found" is not success. A timeout, a tool error, an unparsable result or a skipped gate never counts as success. A required `inductive` gate that does not pass makes the result at best `UNKNOWN`; when every required gate passes, a required `wp` gate gives `PROVED` rather than `VERIFIED_INDUCTIVE`. The aggregation rules are in [docs/status-semantics.md](docs/status-semantics.md).
 
 ## Gate rules
 

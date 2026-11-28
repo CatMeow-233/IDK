@@ -83,8 +83,8 @@ VERIFIED_BOUNDED_REASON = "all required gates passed; CBMC found no violation wi
 VERIFIED_INDUCTIVE_REASON = (
     "all required gates passed; CBMC found no violation within the approved bounds, and the inductive gate showed "
     f"that {COVERED_EXECUTIONS} and the mandatory check classes only ({', '.join(MANDATORY_CHECKS)}), with every "
-    "contracted loop proved by induction (invariant, assigns, decreases), static objects starting arbitrary and "
-    f"allocations assumed to succeed; {HARNESS_NARROWING}; not proved: functions that are not claimed, "
+    "contracted loop proved by induction (invariant, assigns, decreases), non-const static objects starting "
+    f"arbitrary and allocations assumed to succeed; {HARNESS_NARROWING}; not proved: functions that are not claimed, "
     f"{UNREACHED_STATES} and the extra verification.checks classes, for which only the bounded CBMC result holds; "
     f"known gaps: {SUBOBJECT_GAP}, and calls of CBMC library models such as strlen, strcpy, strncpy and strncat "
     "make the gate fail closed (incomplete, never a pass); this is not PROVED"
@@ -92,8 +92,8 @@ VERIFIED_INDUCTIVE_REASON = (
 INDUCTIVE_LIMITATION = (
     "The inductive gate (VERIFIED_INDUCTIVE, never PROVED) holds only in this sense: "
     f"{COVERED_EXECUTIONS} and the mandatory check classes only ({', '.join(MANDATORY_CHECKS)}), with every "
-    "contracted loop proved by induction; static objects start arbitrary and allocations are assumed to succeed. "
-    f"Note: {HARNESS_NARROWING}. Not covered: functions that are not claimed, {UNREACHED_STATES} and the extra "
+    "contracted loop proved by induction; non-const static objects start arbitrary and allocations are assumed to "
+    f"succeed. Note: {HARNESS_NARROWING}. Not covered: functions that are not claimed, {UNREACHED_STATES} and the extra "
     f"verification.checks classes, for which only the bounded CBMC result holds. Known gaps: {SUBOBJECT_GAP}; "
     "calls of CBMC library models such as strlen make the gate fail closed."
 )

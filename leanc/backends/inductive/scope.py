@@ -116,7 +116,7 @@ def scope_statements(ctx: BackendContext, build: InductiveBuild, inputs: ScopeIn
         _checks_statement(ctx),
         (
             "memory model: " + ", ".join(MEMORY_MODELS) + " are replaced by models that check the source and "
-            "destination ranges and make the destination contents arbitrary; static objects start arbitrary; "
+            "destination ranges and make the destination contents arbitrary; non-const static objects start arbitrary; "
             "allocations never fail"
         ),
         (

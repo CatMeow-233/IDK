@@ -47,7 +47,7 @@ non-vacuous). It is never reported as PROVED.
 VERIFIED_INDUCTIVE adds only: every execution of main() of the protected inductive harness
 as written, with at most one call of a claimed function per path, satisfies the harness
 assertions that execute on it and the mandatory check classes only, with every contracted
-loop proved by induction; static objects start arbitrary and allocations are assumed to
+loop proved by induction; non-const static objects start arbitrary and allocations are assumed to
 succeed. A return before the end of main(), goto in main(), exit/abort-like calls,
 writes between the last LEANC_ASSUME and the first claimed call, an assumption
 (LEANC_ASSUME or __VERIFIER_assume) after a claimed call, any function of the editable

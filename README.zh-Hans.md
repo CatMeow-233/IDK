@@ -124,7 +124,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 70 | — | 内部错误（traceback 写到 stderr） |
 | 130 | — | 被中断（Ctrl-C） |
 
-“没找到反例”不等于成功。超时、工具错误、无法解析的结果、被跳过的关卡，都不算成功。必需的 `inductive` 关卡未通过时，结果最好也只是 `UNKNOWN`；必需的 `wp` 关卡通过时仍然得到 `PROVED`。汇总规则见 [docs/status-semantics.md](docs/status-semantics.md)。
+“没找到反例”不等于成功。超时、工具错误、无法解析的结果、被跳过的关卡，都不算成功。必需的 `inductive` 关卡未通过时，结果最好也只是 `UNKNOWN`；所有必需关卡都通过时，必需的 `wp` 关卡给出 `PROVED` 而不是 `VERIFIED_INDUCTIVE`。汇总规则见 [docs/status-semantics.md](docs/status-semantics.md)。
 
 ## 关卡规则
 

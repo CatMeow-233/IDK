@@ -293,7 +293,7 @@ def test_the_pass_scope_names_everything_that_was_and_was_not_proved(tmp_path, r
         "a copy into a string literal",
         "strlen, strcpy, strncpy, strncat",
         "is not PROVED",
-        "static objects start arbitrary",
+        "non-const static objects start arbitrary",
         "allocations never fail",
         "harness/inductive.c (sha256 ",
         ") as written, with at most one call of a claimed function per path, satisfies the harness assertions",

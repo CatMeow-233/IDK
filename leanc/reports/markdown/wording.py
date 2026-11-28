@@ -21,7 +21,7 @@ STATUS_MEANING: dict[Status, str] = {
         "and the mandatory check classes only (bounds, pointer, div-by-zero, signed-overflow, pointer-overflow, "
         "undefined-shift), with every contracted loop of the contracts file proved by induction: its invariant holds "
         "at entry and is preserved, its writes stay within its assigns clause and its decreases clause shows "
-        "termination. Static objects start arbitrary and allocations are assumed to succeed. Note: "
+        "termination. Non-const static objects start arbitrary and allocations are assumed to succeed. Note: "
         f"{HARNESS_NARROWING}. Not proved: functions that are not claimed, {UNREACHED_STATES} and the extra "
         f"verification.checks classes; for those only the bounded CBMC result holds. Known gaps: {SUBOBJECT_GAP}; "
         "calls of CBMC library models such as strlen, strcpy, strncpy and strncat make "

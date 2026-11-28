@@ -132,7 +132,7 @@ SCOPE_PATTERNS = tuple(
         r"states the harness as written does not reach",
         r"extra verification\.checks classes",
         r"only the bounded cbmc result",
-        r"static objects start(?:ing)? arbitrary",
+        r"non-const static objects start(?:ing)? arbitrary",
         r"allocations (?:are )?assumed to succeed",
         r"overflows a member array into a neighbouring field or the padding of the same object",
         r"pointer arithmetic",

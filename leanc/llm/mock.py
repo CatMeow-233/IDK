@@ -39,7 +39,7 @@ EXPLANATION_FIXTURE = "explain.md"
 MAX_SUMMARY_INPUTS = 10
 INDUCTIVE_SUMMARY_SCOPE = (
     f"VERIFIED_INDUCTIVE holds only in this sense: {COVERED_EXECUTIONS} and the mandatory check classes only "
-    f"({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by induction; static objects start "
+    f"({', '.join(MANDATORY_CHECKS)}), with every contracted loop proved by induction; non-const static objects start "
     f"arbitrary and allocations are assumed to succeed; {HARNESS_NARROWING}; functions that are not claimed, "
     f"{UNREACHED_STATES} and the extra verification.checks classes have only the bounded CBMC result; known gaps: "
     f"{SUBOBJECT_GAP}, and library models such as strlen make the gate fail closed; it is not PROVED."
