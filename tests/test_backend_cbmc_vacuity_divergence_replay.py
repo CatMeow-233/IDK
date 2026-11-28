@@ -3,12 +3,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cbmc_replay_support import FRONTEND_PASSTHROUGH, VACUITY_FLAG, VACUITY_RUN_TEST, fixture_messages, write_executable
+from cbmc_replay_support import (
+    FRONTEND_PASSTHROUGH,
+    MARKED_SOURCE,
+    VACUITY_FLAG,
+    VACUITY_RUN_TEST,
+    fixture_messages,
+    write_executable,
+)
 from cbmc_support import _fake_tools, make_cbmc_project
 
 from leanc.backends.cbmc import execution as cbmc_execution
 from leanc.backends.cbmc import run_cbmc
-from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX, PREPROCESS_FLAG
+from leanc.backends.cbmc.preprocess import (
+    CBMC_BANNER_PREFIX,
+    NOT_UTF8_OUTPUT,
+    PREPROCESS_FLAG,
+    PREPROCESSING_ERROR_MARKER,
+    SILENT_PREPROCESSING_FAILURE,
+)
 from leanc.backends.cbmc.vacuity_divergence import DIVERGENCE_RULE
 from leanc.foundation.models import StageResult
 from leanc.foundation.runner import ProcResult
@@ -22,6 +35,10 @@ SMALL_OUTPUT_LIMIT = 50_000
 OVERSIZED_OUTPUT_BYTES = 60_000
 START_ERROR = "No such file or directory: cbmc"
 EDITABLE_PREPROCESS = "cbmc --preprocess of src/impl.c"
+PASSTHROUGH = f'echo "{BANNER}"; {MARKED_SOURCE}; exit 0'
+GCC_FAILURE = "src/impl.c:9:10: fatal error: gone.h: No such file or directory"
+SILENT_FAILURE_STDERR = f'printf "%s\\n" "{GCC_FAILURE}" "GCC preprocessing failed" "{PREPROCESSING_ERROR_MARKER}" >&2'
+LATIN1_LITERAL = "printf 'static const char tag[] = \"\\351\";\\n'"
 
 
 def _fake_cbmc(tmp_path: Path, preprocess_action: str) -> str:
@@ -50,7 +67,7 @@ def _without_vacuity_run(result: StageResult) -> bool:
 
 
 def test_the_passthrough_control_passes(tmp_path):
-    result = run_cbmc(_context(tmp_path, f'echo "{BANNER}"; cat "$last"; exit 0'))
+    result = run_cbmc(_context(tmp_path, PASSTHROUGH))
     assert result.outcome is Outcome.PASS, result.summary
 
 
@@ -84,7 +101,7 @@ def test_a_truncated_preprocess_output_is_an_error(tmp_path, monkeypatch):
 
 
 def test_a_preprocess_that_cannot_start_is_an_error(tmp_path, monkeypatch):
-    ctx = _context(tmp_path, f'echo "{BANNER}"; cat "$last"; exit 0')
+    ctx = _context(tmp_path, PASSTHROUGH)
     run = BackendContext.run
 
     def unstartable_preprocessor(self, argv, **kwargs):
@@ -101,10 +118,31 @@ def test_a_preprocess_that_cannot_start_is_an_error(tmp_path, monkeypatch):
 
 def test_an_extra_line_in_the_preprocessed_text_with_the_define_is_an_error(tmp_path):
     action = (
-        f'for b in "$@"; do [ "$b" = "{VACUITY_FLAG}" ] && {{ echo "{BANNER}"; echo "int extra;"; cat "$last"; exit 0; }}; '
-        f'done; echo "{BANNER}"; cat "$last"; exit 0'
+        f'for b in "$@"; do [ "$b" = "{VACUITY_FLAG}" ] && {{ echo "{BANNER}"; echo "int extra;"; {MARKED_SOURCE}; exit 0; }}; '
+        f"done; {PASSTHROUGH}"
     )
     result = run_cbmc(_context(tmp_path, action))
     assert result.outcome is Outcome.ERROR, result.summary
     assert f"the editable source src/impl.c {DIVERGENCE_RULE}: preprocessed line 1:" in result.summary
+    assert _without_vacuity_run(result)
+
+
+def test_a_preprocess_that_reports_failure_with_exit_code_zero_is_an_error(tmp_path):
+    result = run_cbmc(_context(tmp_path, f'echo "{BANNER}"; echo "# 1 \\"$last\\""; {SILENT_FAILURE_STDERR}; exit 0'))
+    assert result.outcome is Outcome.ERROR and result.status is Status.TOOL_ERROR, result.summary
+    assert f"{EDITABLE_PREPROCESS} {SILENT_PREPROCESSING_FAILURE}: {GCC_FAILURE}" in result.summary
+    assert _without_vacuity_run(result)
+
+
+def test_a_preprocess_output_that_is_not_utf8_is_an_error(tmp_path):
+    result = run_cbmc(_context(tmp_path, f'echo "{BANNER}"; {MARKED_SOURCE}; {LATIN1_LITERAL}; exit 0'))
+    assert result.outcome is Outcome.ERROR and result.status is Status.TOOL_ERROR, result.summary
+    assert f"{EDITABLE_PREPROCESS} {NOT_UTF8_OUTPUT}" in result.summary
+    assert _without_vacuity_run(result)
+
+
+def test_a_preprocess_output_without_a_linemarker_for_the_source_is_an_error(tmp_path):
+    result = run_cbmc(_context(tmp_path, f'echo "{BANNER}"; exit 0'))
+    assert result.outcome is Outcome.ERROR and result.status is Status.TOOL_ERROR, result.summary
+    assert f"{EDITABLE_PREPROCESS} printed no linemarker for src/impl.c itself" in result.summary
     assert _without_vacuity_run(result)

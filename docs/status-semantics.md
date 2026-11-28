@@ -42,6 +42,8 @@ FAIL 依關卡而定；`STATUS_OF_FAILED_STAGE` 中 `inductive` 為 `UNKNOWN`，
   每個可編輯原始檔與 harness 在有無 `-DLEANC_VACUITY_CHECK` 時的前處理結果，除探針展開外必須相同，
   否則為 `TOOL_ERROR`（vacuity 執行看到的會是另一個程式）。前處理在任何 CBMC 執行之前各做一次
   （`SOURCE_DATE_EPOCH=0`），verify、coverage 與 vacuity 執行只讀這些寫入 `build/cbmc/` 的 `.i` 文字。
+  `cbmc --preprocess` 在前處理器失敗時仍以 0 結束：stderr 有 `PREPROCESSING ERROR` 行、輸出不是有效 UTF-8
+  或沒有該原始檔本身的 linemarker 時為 `TOOL_ERROR`（inductive 關卡也一樣）。
   vacuity 文字中的每個探針位置都要在同一檔案、行與標籤上被 CBMC 回報，否則為 vacuous（`UNKNOWN`）；
   宣告 `__CPROVER_` 名稱（例如名為 `__CPROVER_assert` 的參數）的程式為 `TOOL_ERROR`。
 * **沒有探針 / 停用 vacuity 檢查**：無法排除 vacuity，因此只能是 `UNKNOWN`。

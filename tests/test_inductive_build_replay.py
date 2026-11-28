@@ -20,7 +20,7 @@ from inductive_build_support import (
 from inductive_replay_support import GOTO_CC, NO_OUTPUT_FILE, OUTPUT_FLAG, START_ERROR, load_recording, mutated, replay_build
 
 from leanc.backends.cbmc.compile_flags import cbmc_preprocessor_macro_args
-from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX
+from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX, NOT_UTF8_OUTPUT, PREPROCESSING_ERROR_MARKER, SILENT_PREPROCESSING_FAILURE
 from leanc.backends.cbmc.vacuity_divergence import DIVERGENCE_RULE
 from leanc.backends.inductive import BuildMode, build_inductive
 from leanc.backends.inductive.harness_calls import return_probe_label
@@ -58,6 +58,11 @@ def set_fields(**fields: Any):
         entry.update(fields)
 
     return change
+
+
+SILENT_FAILURE = set_fields(
+    stderr=f"src/tally.c:40:10: fatal error: gone.h: No such file or directory\nGCC preprocessing failed\n{PREPROCESSING_ERROR_MARKER}\n"
+)
 
 
 def edit_stdout(transform):
@@ -272,6 +277,10 @@ def test_macro_named_clause_is_rejected(tmp_path):
         (EDITABLE_PREPROCESS, set_fields(exit_code=139), Outcome.ERROR, "SIGSEGV"),
         (EDITABLE_PREPROCESS, set_fields(output_truncated=True), Outcome.ERROR, "truncated"),
         (EDITABLE_PREPROCESS, edit_stdout(lambda text: text.partition("\n")[2]), Outcome.ERROR, CBMC_BANNER_PREFIX),
+        (EDITABLE_PREPROCESS, SILENT_FAILURE, Outcome.ERROR, SILENT_PREPROCESSING_FAILURE),
+        (HARNESS_PREPROCESS, SILENT_FAILURE, Outcome.ERROR, SILENT_PREPROCESSING_FAILURE),
+        ("preprocess models inductive_models.c", SILENT_FAILURE, Outcome.ERROR, SILENT_PREPROCESSING_FAILURE),
+        (EDITABLE_PREPROCESS, edit_stdout(lambda text: text + 'static const char tag[] = "\ufffd";\n'), Outcome.ERROR, NOT_UTF8_OUTPUT),
         (EDITABLE_PREPROCESS, edit_stdout(lambda text: text.replace('"src/tally.c"', '"src/other.c"')), Outcome.ERROR, "no linemarker"),
         ("preprocess models inductive_models.c", set_fields(exit_code=2), Outcome.ERROR, "exit code 2"),
         ("verify compile trusted_1_harness", set_fields(exit_code=1, stderr="error: x"), Outcome.ERROR, "trusted unit"),

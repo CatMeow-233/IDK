@@ -15,10 +15,11 @@ EDITABLE_SOURCE = "src/impl.c"
 EXECUTABLE_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
 DIVERGENCE_PREPROCESS_RUNS = 4
 SYMBOL_TABLE_RUNS = 1
+MARKED_SOURCE = 'echo "# 1 \\"$last\\""; cat "$last"'
 FRONTEND_PASSTHROUGH = (
     'for a in "$@"; do last="$a"; done\n'
     'for a in "$@"; do [ "$a" = "--preprocess" ] && { echo "CBMC version 5.95.1 (cbmc-5.95.1) 64-bit"; '
-    'cat "$last"; exit 0; }; done\n'
+    f"{MARKED_SOURCE}; exit 0; }}; done\n"
     'for a in "$@"; do [ "$a" = "--show-symbol-table" ] && { echo \'[{"symbolTable": {}}]\'; exit 0; }; done\n'
 )
 FRONTEND_FLAGS = frozenset({"--preprocess", "--show-symbol-table"})

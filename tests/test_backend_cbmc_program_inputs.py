@@ -6,6 +6,7 @@ import pytest
 from cbmc_support import make_cbmc_project
 
 from leanc.backends.cbmc import run_cbmc
+from leanc.backends.cbmc.preprocess import NOT_UTF8_OUTPUT, SILENT_PREPROCESSING_FAILURE
 from leanc.backends.cbmc.program_inputs import BUILD_SUBDIR
 from leanc.backends.cbmc.symbol_table import CPROVER_DECLARATION_RULE
 from leanc.backends.cbmc.vacuity_sites import SITE_ID_INFIX
@@ -20,6 +21,17 @@ PINNED_DATE_TIME = '"Jan  1 1970" " " "00:00:00"'
 PREPROCESSED_HARNESS = "harness/h.i"
 SHADOW_FORMS = ["param", "local", "function_param", "file_scope", "file_object"]
 MODE_DIRS = {"verify": "verify", "vacuity": "vacuity", "coverage": "verify"}
+EDITABLE = "src/impl.c"
+HARNESS = "harness/h.c"
+ABSENT_HEADER = "leanc_absent_project_header.h"
+MISSING_TAIL_INCLUDE = f'#include "{ABSENT_HEADER}"\n'.encode()
+ERROR_DIRECTIVE = b"#error leanc stops here\n"
+LATIN1_LITERAL = b'static const char leanc_tag[] = "\xe9";\n'
+SHADOWING_STRING_H = "#include_next <string.h>\n#define __CPROVER_precondition(c, m) ((void)0)\n"
+OVERLAPPING_COPY = (
+    '#include <string.h>\n#include "cbmc_fx.h"\n\n'
+    "int add(int a, int b)\n{\n    char buf[8] = {0};\n    memcpy(buf + 1, buf, 4);\n    return (a & 1) + (b & 1) + buf[0];\n}\n"
+)
 
 
 def _context(tmp_path: Path, harness: str, **verification) -> BackendContext:
@@ -90,3 +102,40 @@ def test_the_control_harness_reports_every_site(tmp_path):
     result = run_cbmc(_context(tmp_path, "count_zeros_harness"))
     assert result.outcome is Outcome.PASS, result.summary
     assert result.details["vacuity"]["sites"] == 1 and result.details["vacuity"]["unreported_sites"] == []
+
+
+def _appended(tmp_path: Path, rel: str, tail: bytes) -> BackendContext:
+    ctx = _context(tmp_path, "count_zeros_harness")
+    path = ctx.snapshot_dir / rel
+    path.write_bytes(path.read_bytes() + tail)
+    return ctx
+
+
+@pytest.mark.parametrize(
+    "rel, tail, rule",
+    [
+        (EDITABLE, MISSING_TAIL_INCLUDE, SILENT_PREPROCESSING_FAILURE),
+        (HARNESS, MISSING_TAIL_INCLUDE, SILENT_PREPROCESSING_FAILURE),
+        (EDITABLE, ERROR_DIRECTIVE, SILENT_PREPROCESSING_FAILURE),
+        (EDITABLE, LATIN1_LITERAL, NOT_UTF8_OUTPUT),
+    ],
+)
+def test_a_source_that_cbmc_preprocesses_with_exit_code_zero_but_not_faithfully_is_an_error(tmp_path, rel, tail, rule):
+    result = run_cbmc(_appended(tmp_path, rel, tail))
+    assert result.outcome is Outcome.ERROR and result.status is Status.TOOL_ERROR, result.summary
+    assert f"cbmc --preprocess of {rel} {rule}" in result.summary
+    assert "verify" not in result.details["argv"]
+
+
+def test_the_silent_failure_names_the_preprocessor_error(tmp_path):
+    result = run_cbmc(_appended(tmp_path, EDITABLE, MISSING_TAIL_INCLUDE))
+    assert f"fatal error: {ABSENT_HEADER}" in result.summary
+
+
+def test_a_project_header_cannot_reach_the_library_models_of_the_preprocessed_runs(tmp_path):
+    ctx = make_cbmc_project(tmp_path, src="add", harness="add_harness", function="add")
+    (ctx.snapshot_dir / "include" / "string.h").write_text(SHADOWING_STRING_H)
+    (ctx.snapshot_dir / EDITABLE).write_text(OVERLAPPING_COPY)
+    result = run_cbmc(ctx)
+    assert result.outcome is Outcome.FAIL, result.summary
+    assert any("precondition" in failure.id for failure in result.failures), [failure.id for failure in result.failures]

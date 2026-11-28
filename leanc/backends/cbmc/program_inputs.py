@@ -7,12 +7,13 @@ from pathlib import Path
 
 from leanc.backends.cbmc.argv import Mode, compile_translation
 from leanc.backends.cbmc.execution import STAGE, TOOL, ToolProblem, auxiliary_run_problem, snapshot_cwd
-from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX, PINNED_BUILD_TIME, preprocess_argv, without_banner
+from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX, PINNED_BUILD_TIME, output_problem, preprocess_argv, without_banner
 from leanc.backends.cbmc.symbol_table import CPROVER_DECLARATION_RULE, SHOW_SYMBOL_TABLE, cprover_declarations, parse_symbol_table
 from leanc.backends.cbmc.vacuity_divergence import DIVERGENCE_RULE, DIVERGENCE_RULE_ID, Divergence, ReachSite, reach_sites, vacuity_divergence
 from leanc.foundation.models import Diagnostic, Location, ToolInvocation
 from leanc.foundation.runner import Limits
 from leanc.foundation.status import Outcome
+from leanc.rules.preprocessor import has_linemarker_for
 from leanc.toolchain.context import BackendContext
 
 __all__ = ["BUILD_SUBDIR", "PREPROCESSED_SUFFIX", "ProgramInputs", "cprover_declaration_problem", "prepare_inputs"]
@@ -73,9 +74,14 @@ def _preprocessed(
     problem = auxiliary_run_problem(what, proc, limits)
     if problem is not None:
         return problem
+    rejected = output_problem(proc.stdout, proc.stderr)
+    if rejected is not None:
+        return ToolProblem(Outcome.ERROR, f"{what} {rejected}")
     text = without_banner(proc.stdout)
     if text is None:
         return ToolProblem(Outcome.ERROR, f"{what} did not start its output with a '{CBMC_BANNER_PREFIX}' line")
+    if not has_linemarker_for(source, text):
+        return ToolProblem(Outcome.ERROR, f"{what} printed no linemarker for {source} itself")
     return text
 
 

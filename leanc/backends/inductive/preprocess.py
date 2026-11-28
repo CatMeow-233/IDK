@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 
-from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX, PINNED_BUILD_TIME, preprocess_argv, without_banner
+from leanc.backends.cbmc.preprocess import CBMC_BANNER_PREFIX, PINNED_BUILD_TIME, output_problem, preprocess_argv, without_banner
 from leanc.backends.inductive.problems import BuildProblem, tool_error
 from leanc.backends.inductive.steps import ToolSteps
 from leanc.lang.c_lexer import CSource
@@ -46,6 +46,9 @@ def preprocess_unit(
     problem = steps.exit_problem(run)
     if problem is not None:
         return problem
+    rejected = output_problem(run.proc.stdout, run.proc.stderr)
+    if rejected is not None:
+        return tool_error(f"cbmc --preprocess of {source} {rejected}")
     text = without_banner(run.proc.stdout)
     if text is None:
         return tool_error(f"cbmc --preprocess of {source} did not start its output with a '{CBMC_BANNER_PREFIX}' line")
