@@ -35,7 +35,7 @@ leanc run spec.yaml --provider mock --regenerate    # => VERIFIED_INDUCTIVE（0 
 ## `VERIFIED_INDUCTIVE` 在本例的確切意義
 
 `VERIFIED_INDUCTIVE` 是成功狀態（exit 0），比 `VERIFIED_BOUNDED` 強，但**不是 `PROVED`**（`PROVED` 只來自必要且
-通過的 `wp` 關卡）。報告中的範圍敘述（`verification.json` 的 `assumptions`，逐字）：
+通過的 `wp` 關卡）。報告中的範圍敘述（`verification.json` 的 `assumptions`，逐字節錄；完整清單還有有界 `cbmc` 關卡的敘述，以及 inductive 關卡的 CBMC 版本與 harness 雜湊、記憶體模型、展開界限、D8 與 D20 缺口、「不是 `PROVED`」與 CBMC 的 C 語意）：
 
 - `claimed functions: sponge_absorb(); functions that are not claimed have only the bounded CBMC result`
 - `contracted loops proved by induction (invariant at entry and after one step, assigns, decreases): src/sponge.c:9 in sponge_mix(), src/sponge.c:35 in sponge_absorb()`

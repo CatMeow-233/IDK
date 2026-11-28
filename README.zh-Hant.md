@@ -4,12 +4,12 @@
 
 規格優先、由獨立驗證器裁決的 AI C17 程式碼生成（V2 另支援 C++20、Frama-C/WP、Lean 4）。研究原型。
 
-程式碼由 AI 撰寫，但正確與否由獨立工具判斷：Clang、Clang Static Analyzer、ASan/UBSan/LSan、CBMC，以及可選的 Frama-C/WP 與 Lean 4。它們依據的是經人工批准並雜湊鎖定的規格。
+程式碼由 AI 撰寫，但正確與否由獨立工具判斷：Clang、Clang Static Analyzer、ASan/UBSan/LSan、CBMC，以及可選的 CBMC 迴圈契約（opt-in 的 inductive profile）、Frama-C/WP 與 Lean 4。它們依據的是經人工批准並雜湊鎖定的規格。
 
 ```
 需求 -> 規格草案（不受信任）-> 人工批准（雜湊鎖定、HMAC 簽章）
   -> 程式碼生成 -> 編譯 -> 完整性關卡 -> 靜態分析 -> sanitizer 測試
-  -> CBMC ->（V2）Frama-C/WP ->（V2，可選）Lean 4
+  -> CBMC ->（opt-in）inductive CBMC 迴圈契約 ->（V2）Frama-C/WP ->（V2，可選）Lean 4
   -> 反例 -> AI 修復（政策檢查，最多 N 回合）-> 重新驗證 -> JSON / Markdown 報告
 ```
 
@@ -24,10 +24,12 @@
 ```bash
 sudo apt-get install -y clang-18 libclang-rt-18-dev llvm-18 cbmc gcc bubblewrap
 pip install -e ".[dev]"          # 執行相依：pydantic、PyYAML；開發：pytest
-leanc doctor                     # 實測 clang、分析器、sanitizers、gcc、CBMC、bwrap 沙箱與網路隔離、LLM 設定
+leanc doctor                     # 實測 clang、分析器、sanitizers、gcc、CBMC、goto-cc、goto-instrument、bwrap 沙箱與網路隔離、LLM 設定
 ```
 
 `leanc doctor` 會實際執行每個工具，並為每項失敗的檢查給出修復方式；有必要的檢查失敗時以 exit 30 結束。加上 `--json` 可取得機器可讀輸出（`{"ok": bool, "checks": [{name, ok, required, detail, fix}]}`）。若 bubblewrap 沙箱不可用，sanitizer 測試會被略過，整體狀態最多只能是 `UNKNOWN`（見 [安全性](docs/security.md)）。
+
+Ubuntu 24.04 的 `cbmc` 套件是 CBMC 5.95.1，並同時安裝 `goto-cc` 與 `goto-instrument`；只有 opt-in 的 `inductive` 關卡用到它們。doctor 中的 `goto-cc (inductive gate)`、`goto-instrument (inductive gate)` 與 `cbmc release pin (inductive gate)` 三列不是必要檢查，因此永遠不會造成 exit 30：它們回報這兩個工具是否找得到，以及 `cbmc`、`goto-cc`、`goto-instrument` 是否都輸出經過測試的版本標記 `(cbmc-5.95.1)`。否則 `inductive` 關卡為 `ERROR`。
 
 ## 快速開始
 
@@ -62,11 +64,11 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 |---|---|
 | 專案根目錄 | 最近一個含 `leanc.yaml` 的上層目錄，否則為規格檔所在目錄；可用 `--project-root` 覆寫。`spec draft` 沒有規格檔，未指定 `--project-root` 時使用目前目錄 |
 | 規格（`spec.yaml`） | 可信契約：目標簽名、契約、來源檔、編譯/分析/測試/CBMC 設定、必要 `gates`。格式見 [docs/spec-format.md](docs/spec-format.md) |
-| 受保護檔 | 規格、`sources.headers`、`verification.harness`、`tests.driver`，以及 V2 的 ACSL 標頭、Lean spec/vectors。生成與修復永遠不會寫入這些檔案 |
-| 可編輯檔 | `sources.editable`：生成與修復唯一能寫入的檔案 |
+| 受保護檔 | 規格、`sources.headers`、`verification.harness`、`tests.driver`、`inductive.harness`，以及 V2 的 ACSL 標頭、Lean spec/vectors。生成與修復永遠不會寫入這些檔案 |
+| 可編輯檔 | `sources.editable`，規格有相應區段時另有 `lean.proofs` 與 `inductive.contracts`：修復唯一能寫入的檔案（`generate` 只寫 `sources.editable`）。它們不計入批准的雜湊 |
 | 批准 | `leanc spec approve` 把規格的語意雜湊與每個受保護檔的 SHA-256 綁進一筆紀錄，並用 `LEANC_HOME`（預設 `$XDG_CONFIG_HOME/leanc`，未設定 `XDG_CONFIG_HOME` 時為 `~/.config/leanc`）中的金鑰簽章。任何變更都會導致 `SPEC_UNAPPROVED`，直到重新批准為止，而且 `version` 必須遞增。回滾帳本會拒絕已被取代的批准 |
 | 規格草案 | `leanc spec draft` 寫入 `drafts/<id>/`，並標記為 `provenance: ai-draft`。在人工審查並批准之前，它永遠不受信任 |
-| 關卡（gate） | 一個驗證階段：`compile`、`integrity`（強制；在編譯關卡通過後執行）、`static_analysis`、`sanitizer`、`cbmc`，V2 另有 `wp`、`lean`。必須每個必要關卡都執行且通過，才算成功 |
+| 關卡（gate） | 一個驗證階段：`compile`、`integrity`（強制；在編譯關卡通過後執行）、`static_analysis`、`sanitizer`、`cbmc`、opt-in 的 `inductive`，V2 另有 `wp`、`lean`。必須每個必要關卡都執行且通過，才算成功 |
 | 執行（run） | 每次 `generate` / `verify` / `repair` / `run` 都會建立 `.leanc/runs/<run_id>/`。`spec draft` 會建立 `.leanc/runs/draft-<UTC 時間戳>-<hex>/`，用來存放它的 `leanc.log` 以及真實 provider 的 `llm/` transcript；除非指令中止（見 exit 2），其中不會寫入 `run.json`，所以 `report latest` 會略過它 |
 
 給所有 agent 的規則：不得修改受保護檔，也不得代替人執行 `spec approve`。批准就是信任邊界。
@@ -107,21 +109,22 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | exit | 狀態 | 意義 |
 |---|---|---|
 | 0 | `PROVED` | 必要的 `wp` 關卡證明了已批准的 ACSL 契約與所有 RTE 守衛（smoke test 無異常），且 WP 套用了每一項有語意影響的 `compile.flags` 以及建置的 `char` 有號性。這是 `PROVED` 唯一的來源 |
+| 0 | `VERIFIED_INDUCTIVE` | opt-in：滿足 `VERIFIED_BOUNDED` 的全部條件，並且必要的 `inductive` 關卡通過。CBMC 以 DFCC 迴圈契約證明：受保護的 inductive harness 中照原樣撰寫的 `main()` 的每一次執行（每條路徑最多呼叫一次 claimed 函式，即 `inductive.functions` 中的函式），都滿足在該路徑上執行到的 harness 斷言，且只檢查強制檢查類別；每個帶契約的迴圈都以歸納法證明（進入時與一步之後的 invariant、assigns、decreases）；非 const 的 static 物件從任意值開始，記憶體配置總是成功。harness 的 `LEANC_ASSUME` 只是涵蓋狀態的上界（harness 的其他程式碼也會縮小它們，且不回報）；沒有被 claim 的函式與額外的 `verification.checks` 類別只有有界結果；已知缺口見[限制](#限制)。**永遠不會升級為 `PROVED`** |
 | 0 | `VERIFIED_BOUNDED` | 在已批准的 harness、輸入界限與 unwind 界限內沒有違反；所有迴圈都已完全展開；harness 不是 vacuous。**永遠不會升級為 `PROVED`** |
 | 10 | `COMPILE_ERROR` | 編譯錯誤（或在 `warnings_policy: block` 下出現警告） |
 | 11 | `STATIC_ANALYSIS_WARNING` | 在 `policy: block` 下有分析器發現，或違反完整性關卡 |
 | 12 | `RUNTIME_TEST_FAILED` | sanitizer 回報、exit code 或輸出錯誤，或 Lean 測試向量不符 |
-| 13 | `COUNTEREXAMPLE_FOUND` | CBMC 找到具體反例（真實的執行路徑，即使 unwind 不足也成立），或 Frama-C/WP 的證明器判定某個證明目標不成立（該失敗帶有目標的位置，但沒有輸入或路徑） |
-| 20 | `UNKNOWN` | 無法下結論：unwind 不足、harness vacuous、關卡被略過、只跑關卡子集、沒有形式化關卡（C++）、目標未證明、WP 證明所依據的 `compile.flags` 或建置目標的 `char` 有號性未被 Frama-C 套用 |
+| 13 | `COUNTEREXAMPLE_FOUND` | CBMC 找到具體反例（真實的執行路徑，即使 unwind 不足也成立），或 Frama-C/WP 的證明器判定某個證明目標不成立（該失敗帶有目標的位置，但沒有輸入或路徑）。`inductive` 關卡永遠不會回報反例 |
+| 20 | `UNKNOWN` | 無法下結論：unwind 不足、harness vacuous、關卡被略過、只跑關卡子集、沒有形式化關卡（C++）、目標未證明、WP 證明所依據的 `compile.flags` 或建置目標的 `char` 有號性未被 Frama-C 套用、`inductive` 關卡為 `INCONCLUSIVE`（迴圈沒有契約、迴圈契約被拒絕或未證明、性質未證明、探針不可達、函式未宣告） |
 | 21 | `TIMEOUT` | 必要工具逾時 |
-| 30 | `TOOL_ERROR` | 工具崩潰或輸出無法解析；另外，已建立的 provider 在生成過程中出錯或生成的程式碼被拒絕時（`generate`、`run`），`run` 無法為生成建立 provider 時，以及需要修復但無法建立 provider 時（`repair`、`run`；驗證的判定保留在 `initial_status` / `verification.status`，原因在 `messages`），也是這個狀態 |
+| 30 | `TOOL_ERROR` | 工具崩潰或輸出無法解析，或 `inductive` 關卡為 `ERROR`（CBMC 工具不是經過測試的版本、違反 harness 規則或可信符號規則）；另外，已建立的 provider 在生成過程中出錯或生成的程式碼被拒絕時（`generate`、`run`），`run` 無法為生成建立 provider 時，以及需要修復但無法建立 provider 時（`repair`、`run`；驗證的判定保留在 `initial_status` / `verification.status`，原因在 `messages`），也是這個狀態 |
 | 40 | `SPEC_UNAPPROVED` | 目前的規格與受保護檔沒有有效批准 |
 | 50 | `REPAIR_EXHAUSTED` | 修復迴圈結束但沒有成功；修復迴圈不改動工作區 |
 | 2 | — | 使用方式或輸入錯誤。若指令此前已建立執行目錄，該次執行會以狀態 `TOOL_ERROR` 記錄，`report` 對它回傳 30 |
 | 70 | — | 內部錯誤（traceback 寫到 stderr） |
 | 130 | — | 被中斷（Ctrl-C） |
 
-「沒找到反例」不等於成功。逾時、工具錯誤、無法解析的結果、被略過的關卡，都不算成功。彙總規則見 [docs/status-semantics.md](docs/status-semantics.md)。
+「沒找到反例」不等於成功。逾時、工具錯誤、無法解析的結果、被略過的關卡，都不算成功。必要的 `inductive` 關卡未通過時，結果最好也只是 `UNKNOWN`；必要的 `wp` 關卡通過時仍然得到 `PROVED`。彙總規則見 [docs/status-semantics.md](docs/status-semantics.md)。
 
 ## 關卡規則
 
@@ -129,7 +132,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 
 | 規則 | 行為 |
 |---|---|
-| 完整性未通過 | `sanitizer`、`cbmc`、`wp`、`lean` 只在完整性關卡通過後執行，否則為 `SKIPPED`（報告原文：「never executed, model-checked or proved」）；`gates` 不含 `compile` 時同樣如此，因為完整性關卡在編譯關卡通過後才執行。`static_analysis` 照常執行。狀態取自完整性關卡：`FAIL` 得 `STATIC_ANALYSIS_WARNING`，`ERROR` 得 `TOOL_ERROR`，`TIMEOUT` 得 `TIMEOUT`；完整性關卡沒有執行時，狀態為 `UNKNOWN`。修復迴圈中，讓完整性通過的候選算作進展，即使隨後解鎖的關卡找到反例，前提是先前已執行的關卡（`compile`、`static_analysis`）沒有失去通過、也沒有新增失敗 |
+| 完整性未通過 | `sanitizer`、`cbmc`、`inductive`、`wp`、`lean` 只在完整性關卡通過後執行，否則為 `SKIPPED`（報告原文：「never executed, model-checked or proved」）；`gates` 不含 `compile` 時同樣如此，因為完整性關卡在編譯關卡通過後才執行。`static_analysis` 照常執行。狀態取自完整性關卡：`FAIL` 得 `STATIC_ANALYSIS_WARNING`，`ERROR` 得 `TOOL_ERROR`，`TIMEOUT` 得 `TIMEOUT`；完整性關卡沒有執行時，狀態為 `UNKNOWN`。修復迴圈中，讓完整性通過的候選算作進展，即使隨後解鎖的關卡找到反例，前提是先前已執行的關卡（`compile`、`static_analysis`）沒有失去通過、也沒有新增失敗 |
 | 堆疊框大小 | 完整性關卡以 `-fstack-usage` 編譯每個可編輯檔案（先以 `-include` 加入一個錨點函式，再加去掉警告控制後的 `compile.flags`，最後是 `-O0 -fno-lto -fembed-bitcode=off`），讀取 clang 寫出的堆疊框大小：超過 1 MiB 的堆疊框為 `STACK_FRAME_TOO_LARGE`，clang 標為 `dynamic` 的堆疊框（執行期才配置的堆疊：VLA、`alloca`、`_alloca`）為 `UNBOUNDED_STACK`。錨點讓 clang 為每個產生程式碼的檔案寫出堆疊用量檔；沒有寫出時（例如 `-emit-llvm`）或編譯的結束碼不是 0，完整性關卡為 `ERROR`。VLA / `alloca` 檢查（`UNBOUNDED_STACK`）對每個檔案編譯三次。第一次帶上 `compile.flags`，失敗即關閉：只有每一行錯誤都是解析得出的 VLA / `alloca` 診斷時才算通過。第二次把 `compile.flags` 中的系統 include 選項（`-isystem`、`-idirafter`、`-iwithsysroot` 等）改成放在規格 include 目錄之後的 `-I`，保持它們在 `compile.flags` 中的順序，並去掉 `--system-header-prefix=`；`-idirafter` 的目錄因此會先於工具鏈自己的標頭被搜尋，所以這次執行可能在正式建置能編譯的情況下編譯不過。第三次不帶 `compile.flags`，與舊版相同，同樣失敗即關閉，所以只靠某個 `compile.flags` 項才能編譯的檔案會得到 `ERROR`：include 目錄請放在 `sources.include_dirs`，巨集請放在 `compile.defines`。只有第二次執行只增加違規而不會失敗：它編譯不過時，它輸出的 VLA / `alloca` 診斷仍算作違規，其他錯誤行被忽略；但它逾時或編譯器無法執行時仍然算數。因此系統 include 選項、module map 與強制引入標頭中的 pragma，都無法隱藏不帶它們時會被回報的 VLA，而編譯器自己的系統標頭（libstdc++）仍是系統標頭 |
 | 三字元序列 | 可編輯的 C 程式碼中任何位置（包括註解與字串常值）出現三字元序列（`??/`、`??=` 等）即為 `TRIGRAPH`：clang 在 ISO C 模式（`-std=c17`）下以及 Frama-C（它的 gcc 以 `-std=c11` 執行）會替換三字元序列，CBMC 以 gcc 的 gnu 模式前處理則不會，所以註解結尾的 `??/` 只會對其中一方隱藏下一行。原始字串前綴（`R"`、`u8R"`、`LR"` 等）為 `TOOL_DIVERGENCE`：gcc 的 gnu 模式把它讀成原始字串常值，clang 在 C 中讀成識別字加字串。`__FILE__` 也是 `TOOL_DIVERGENCE`，因為 `-fmacro-prefix-map=` 只改變 clang 的值 |
 | 型別選擇與隱藏呼叫 | 完整性關卡在可編輯程式碼中以及巨集展開之後（因此受保護標頭檔的巨集在可編輯程式碼使用處也會被抓到）拒絕：`_Generic`、`__builtin_types_compatible_p`、`__builtin_classify_type` 為 `TOOL_DIVERGENCE`（CBMC 5.95.1 與 clang 可能選擇不同的關聯：`long x` 時 `_Generic(x, long: 1, long long: 2)` 在 clang 下為 1、在 CBMC 下為 2）；`mode` 屬性為 `TOOL_DIVERGENCE`（CBMC 忽略它：`mode(QI)` 型別在原生建置中為 1 位元組，在 CBMC 中為 4 位元組）；`cleanup` 屬性為 `CONSTRUCTOR`（CBMC 與 Frama-C 都不會呼叫清理函式，所以其中的存取從未被檢查） |
@@ -144,6 +147,10 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
 | 契約安全檢查 | `contract.safety` 中的檢查會加入 CBMC 的性質檢查；規格雜湊不變 |
 | sanitizer 建置 | 測試、所有權追蹤和 Lean 向量的建置都在 `compile.flags` 之後加上 `-fno-builtin -fno-optimize-sibling-calls`，這樣 clang `-O1` 無法刪除未使用的配置（`malloc`、`strdup`、`aligned_alloc`、C++ `new`），也無法刪除包裝函式的堆疊框 |
 | 記憶體檢查的侷限 | `limitations` 列出洩漏檢查看不到的部分；只有關卡得出判定（`PASS` 或 `FAIL`）的檢查才算數。LeakSanitizer 只回報不可達的區塊。沒有 CBMC `memory-leak` 判定時，只在測試路徑上檢查洩漏。CBMC 不檢查對齊、嚴格別名、`restrict`，也不檢查同一配置內子物件之間的溢位 |
+| `inductive` 關卡（opt-in） | 在 `cbmc` 之後執行，前提是規格的 `gates` 列出 `inductive`；此時規格驗證器要求有 `inductive` 區段、`cbmc` 關卡以及 `verification.malloc_may_fail: false`。與 `cbmc`、`wp`、`lean` 一樣，它只在完整性關卡通過、並且受保護檔再次與批准比對之後執行。它需要 `cbmc`、`goto-cc` 與 `goto-instrument`（`LEANC_CBMC`、`LEANC_GOTO_CC`、`LEANC_GOTO_INSTRUMENT`），三者的版本行都恰好有一個 `(cbmc-X.Y.Z)` 標記，且都是同一個經過測試的版本（只有 5.95.1），`goto-cc` 必須以 gcc 身分執行（`gcc (goto-cc ...`）；否則為 `ERROR`。該關卡的每次工具執行（前處理、goto-cc、goto-instrument、兩次 CBMC 執行）都受 `verification.timeout_s` × `--timeout-scale` 與 `verification.memory_mb` 限制；逾時就是 `TIMEOUT`，永遠不是部分通過。目標函式必須被 claim，這可能使關卡變慢（`examples/inductive_sponge` 約 70 秒） |
+| inductive harness | `inductive.harness` 受保護。它的 `main()`（只定義一次，且在該檔案中）以 `LEANC_ASSUME` 在任意狀態上假設狀態不變量，直接呼叫 claimed 函式，在呼叫之後斷言，並至少含有一個 `LEANC_REACH`。Lean C 對自己的副本插樁，以下每一項都是 `ERROR`：某條路徑在 harness 的一次 claimed 呼叫之後又到達第二次 claimed 呼叫（由插入的斷言逐路徑檢查，因此沒有 claimed 函式會從另一個函式的結束狀態開始）；在 claimed 呼叫之後出現 `LEANC_ASSUME` 或 `__VERIFIER_assume`（同一函式內靜態檢查，並逐路徑檢查），或在假設中呼叫 claimed 函式；claimed 函式以直接呼叫以外的方式使用，或從未被呼叫；在函式本體中參考 `main`；在進入 claimed 函式之前執行了可編輯原始碼中的任何函式（假設中的可編輯 predicate、setup 呼叫、claimed 呼叫的引數：每個可編輯函式都會被插入入口檢查）；`main()` 中除了唯一一個位於最後的頂層 `return` 以外的 `return`，或 `main()` 中的 `goto`；`main()` 中從最後一個 `LEANC_ASSUME`（沒有就從開頭）到第一次 claimed 呼叫結束之間的 `=`、複合指定、`++` 或 `--`，一般宣告 `T x = ...;` 的 `=` 除外；harness 翻譯單元或其標頭中使用 `exit`、`abort`、`_Exit`、`quick_exit`、`longjmp`、`raise`、`err`、`errx`、`verr`、`verrx` 或其他會結束或跳出路徑的名稱，即使只是作為函式指標值；`leanc_` 名稱；讀取 inductive 執行會保留其初始值的可編輯物件（const，或含 const 成分）；`#include` 可編輯原始檔；有無 `-DLEANC_VACUITY_CHECK` 的兩次前處理結果除 `LEANC_REACH` 展開外還有差異。不偵測：harness 的其他程式碼也會縮小涵蓋的狀態（宣告的初始值、最後一個 `LEANC_ASSUME` 之前的寫入、第一次 claimed 呼叫之後的寫入、包住斷言的分支、helper 函式），因此批准者必須審查整個 harness |
+| inductive 建置 | 該關卡只處理每個可編輯單元、harness（有無 `-DLEANC_VACUITY_CHECK` 各一次）及其複製模型的 `cbmc --preprocess` 輸出（`SOURCE_DATE_EPOCH=0`）。`inductive.contracts` 中的子句必須通過嚴格的文法（不允許呼叫、指定、`++` / `--`、`?:`、逗號、取址、`sizeof`、量詞，也不允許 `sources.editable` 中定義的巨集名或 `NULL`、`INT_MAX` 等標準巨集名；見 [docs/spec-format.md](docs/spec-format.md)），只有其完全加括號的呈現結果會被插入，位置是契約所在行上寫出的那一個帶 `{` 迴圈本體的 `for` / `while` 迴圈。其他位置，或無法編譯的子句（例如受保護標頭中的巨集名，在那裡不會被展開），都是 `contract_rejected`（`INCONCLUSIVE`）。`goto-cc --verbosity 2` 先編譯可信單元（複製模型，然後是 harness），再編譯可編輯單元。在連結後的符號表中，每個可信符號都必須仍綁定到它自己的定義，不得存在 `<可信名稱>$link<N>` 重新命名（兩個 static 之間也一樣：請為可編輯的那個改名），可編輯檔中的符號不得命名為 `leanc_...`，原始檔中也不得宣告 `__CPROVER_` 名稱；否則為 `ERROR`。goto-cc 的 `function 'f' is not declared` 警告是 `undeclared_function`（`INCONCLUSIVE`）。之後執行 `goto-instrument --dfcc main --apply-loop-contracts`（從不使用 `--loop-contracts-file`，也從不省略 `--dfcc`）；harness 與 CBMC 函式庫之外仍沒有契約的迴圈是 `loop_without_contract`（`INCONCLUSIVE`），且不執行 CBMC。`memcpy`、`memmove` 與 `memset` 被替換為模型：檢查來源與目的範圍（`memcpy` 還檢查不重疊），然後讓目的內容變成任意值；非 const 的 static 物件從任意值開始；記憶體配置永不失敗 |
+| inductive 判定 | verify 執行是 `cbmc dfcc.goto --no-library <checks> --unwind U --unwinding-assertions --no-self-loops-to-assumptions [--object-bits N] --json-ui`，其中 U = max(`verification.unwind`, 最長的 assigns 清單 + 2)，且只有強制檢查類別（`bounds`、`pointer`、`div-by-zero`、`signed-overflow`、`pointer-overflow`、`undefined-shift`）：從任意狀態出發，合法的模運算與洩漏沒有意義，因此 `verification.checks` 與 `contract.safety` 的類別只保留有界結果。每個契約都必須對應恰好一個 CBMC 迴圈，且該迴圈具備全部五個類別 `loop_invariant_base`、`loop_invariant_step`、`loop_decreases`、`loop_assigns`、`loop_step_unwinding`（否則為 `ERROR`）；完全沒有這些性質的契約（其迴圈無法從 harness 到達）是 `contract_rejected`。vacuity 執行必須到達每個 `LEANC_REACH` 位置、每個 claimed 函式入口的 `leanc_function:<f>` 探針、每個帶契約迴圈本體開頭的 `leanc_loop:<file>:<line>` 探針，以及每次 claimed 呼叫之後的 `leanc_return:<f>` 探針；不可達的探針是 `vacuous_harness`。不成立的性質給出 `INCONCLUSIVE` 與原因代碼：`inductive_step_failed`、`suspected_non_termination`（decreases 子句，位於該迴圈）、`unwind_insufficient`、`unmodelled_callee` 或 `property_unproved`。這些失敗的 kind 是 `unproved`，永遠不是反例，因為每次 claimed 呼叫與每個迴圈都從任意狀態開始，而真實執行可能永遠到不了那個狀態。無法判定的性質、違反 harness 規則，或 CBMC 的性質清單中缺少 harness 斷言，都是 `ERROR`。該關卡的結果是 `PASS`、`INCONCLUSIVE`、`TIMEOUT` 或 `ERROR`，永遠不是 `FAIL`。必要的 `PASS` 加上 `cbmc` `PASS` 得到 `VERIFIED_INDUCTIVE`，它陳述的範圍列在 `assumptions` 中 |
 
 ## 機器介面（AI agent / CI）
 
@@ -160,6 +167,7 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
     "stages": [{"stage": "cbmc", "outcome": "FAIL", "status": "...", "required": true, "invoked": ["cbmc"],
                 "duration_s": 1.2, "summary": "...", "tools": ["cbmc"], "failures": 3}],
     "detected_by": ["asan", "cbmc"], "reasons": ["..."], "assumptions": ["..."], "limitations": ["..."],
+    "reason_codes": [{"code": "gate_failed", "stage": "cbmc", "location": null, "detail": "..."}],
     "failures": [{
       "id": "sanitizer:index_equals_count:asan:heap-buffer-overflow", "tool": "asan", "stage": "sanitizer",
       "kind": "...", "property_id": "...", "location": {"file": "src/array_lookup.c", "line": 9, "column": 16, "function": "array_lookup"},
@@ -169,6 +177,8 @@ leanc run /tmp/dz/spec.yaml --provider mock --regenerate
   }
 }
 ```
+
+`reason_codes`（也在 `verification.json` 中，並列在 `verification.md` 與 `report.md` 的「Reason codes」下）在成功狀態下為空。否則它以未通過的必要階段解釋狀態（`SPEC_UNAPPROVED` 時以規格檢查解釋）；每一項有 `code`、`stage`、`location`（或 `null`）與 `detail`。有具體代碼的 `INCONCLUSIVE` 階段只列出具體代碼；其他結果先給出通用代碼（`gate_failed`、`gate_skipped`、`gate_timeout`、`tool_error`、`gate_inconclusive`）。具體代碼有 `unwind_insufficient`、`vacuous_harness`、`vacuity_unchecked`、`unmodelled_callee`、`undeclared_function`、`property_unproved` 與 `frama_c_model_only_proof`，`inductive` 關卡另有 `inductive_step_failed`、`suspected_non_termination`、`contract_rejected` 與 `loop_without_contract`；`no_formal_gate` 標記既沒有 `cbmc` 關卡也沒有必要 `wp` 關卡的 `UNKNOWN` 規格。請依 `status` 與 `exit_code` 分支；代碼說明原因。
 
 執行目錄結構：
 
@@ -194,14 +204,14 @@ C 專案出現 LeakSanitizer 失敗時，`ownership_trace` 保存對該洩漏測
   - `not-localised`：程式結束前沒有任何檢查發現它不可達。仍會回報 `released_at`。
 - `returned_to`：`function` 返回到的呼叫點；被 inline 的函式不提供。
 
-修復 prompt 會以明確標籤顯示同樣的證據。它不會指出執行的是哪一行 `return`。
+修復 prompt 會以明確標籤顯示同樣的證據。它不會指出執行的是哪一行 `return`。受測程式碼執行在被追蹤的行程中，因此它能偽造或隱藏這些證據（例如透過繼承的檔案描述符向追蹤日誌附加行，或在 stderr 輸出探針標記或形似 LeakSanitizer 的行）：證據可能因此錯誤或缺漏，但判定不受影響。
 
 agent 修正程式碼有兩種方式：
 
-1. **外部 agent 迴圈。** 執行 `leanc verify SPEC --json`，讀取 `verification.failures`（位置、輸入、性質）與 `raw_ref`。只修改 `sources.editable` 列出的檔案，然後再驗證。遇到 exit 0，或 40（需要人處理）、20/21/30（不是程式碼缺陷，請看 `reasons`）時停止。
-2. **內建迴圈。** 執行 `leanc run SPEC --provider openai --json`（或 `repair`）。Lean C 會呼叫模型、對每個補丁做政策檢查，並且只把所有必要關卡都通過的候選寫回：驗證通過的候選（`VERIFIED_BOUNDED` / `PROVED`），或者在既沒有 `cbmc` 也沒有 `wp` 關卡的規格中狀態仍為 `UNKNOWN` 的候選（`--no-write` 不把修復後的候選寫回；在 `run` 中，生成缺少的來源檔或以 `--regenerate` 重新生成時仍會寫入 `sources.editable`）。
+1. **外部 agent 迴圈。** 執行 `leanc verify SPEC --json`，讀取 `verification.failures`（位置、輸入、性質）與 `raw_ref`。只修改 `sources.editable` 列出的檔案（規格有時還包括 `inductive.contracts` 或 `lean.proofs`），然後再驗證。遇到 exit 0，或 40（需要人處理）、20/21/30（不是程式碼缺陷，請看 `reasons` 與 `reason_codes`；`loop_without_contract`、`contract_rejected` 與 `inductive_step_failed` 需要修改 `inductive.contracts`）時停止。
+2. **內建迴圈。** 執行 `leanc run SPEC --provider openai --json`（或 `repair`）。Lean C 會呼叫模型、對每個補丁做政策檢查，並且只把所有必要關卡都通過的候選寫回：驗證通過的候選（`VERIFIED_BOUNDED` / `VERIFIED_INDUCTIVE` / `PROVED`），或者在既沒有 `cbmc` 也沒有 `wp` 關卡的規格中狀態仍為 `UNKNOWN` 的候選（`--no-write` 不把修復後的候選寫回；在 `run` 中，生成缺少的來源檔或以 `--regenerate` 重新生成時仍會寫入 `sources.editable`）。
 
-修復政策會拒絕以下補丁：寫入 `sources.editable` 以外的檔案、加入 `__CPROVER_*` / `LEANC_*` / `__builtin_assume`、刪除 `assert`、抑制警告或 sanitizer、`#include` 逃逸、`system`/`exec`/`fork`/`socket`、inline asm、把目標函式掏空，以及過大的補丁。重複的補丁會被判定為循環。結果變成 `UNKNOWN`/`TIMEOUT` 不算改善。
+修復政策會拒絕以下補丁：寫入可編輯檔以外的檔案、加入 `__CPROVER_*` / `LEANC_*` / `__builtin_assume`、刪除 `assert`、抑制警告或 sanitizer、`#include` 逃逸、`system`/`exec`/`fork`/`socket`、inline asm、把目標函式掏空，以及過大的補丁。重複的補丁會被判定為循環。結果變成 `UNKNOWN`/`TIMEOUT` 不算改善。使用 `inductive` 關卡時，契約檔必須通過子句文法（`LOOP_CONTRACT`）；在只剩證明關卡未通過、且其中包含 `inductive` 的回合，修改其他任何檔案都會在驗證前被拒絕（`CONTRACTS_ONLY_ROUND`）；而當 `inductive` 關卡在修復階段開始時沒有通過時，C 程式碼與開始時不同、且通過 `inductive` 關卡的候選會在驗證後被拒絕（`INDUCTIVE_CODE_EDIT`）：它永遠不會被接受或寫回，其原始檔留在 `repair/round-<n>/blocked-candidate/` 供人審查。修復衡量進展時，`inductive` 階段的原因代碼與失敗一起計算。
 
 ## LLM provider
 
@@ -254,6 +264,7 @@ sandbox: auto         # auto | none
 |---|---|
 | `LEANC_HOME` | 批准金鑰與帳本目錄（預設 `$XDG_CONFIG_HOME/leanc`，未設定 `XDG_CONFIG_HOME` 時為 `~/.config/leanc`）；請放在工作區之外 |
 | `LEANC_CLANG`、`LEANC_CLANGXX`、`LEANC_CBMC` | 工具路徑 |
+| `LEANC_GOTO_CC`、`LEANC_GOTO_INSTRUMENT` | `inductive` 關卡使用的 `goto-cc` 與 `goto-instrument`；未設定時搜尋 `PATH`。它們與 `cbmc` 必須回報同一個經過測試的版本（5.95.1） |
 | `LEANC_FRAMAC` | `frama-c`（>= 27，含 WP）；未設定時搜尋 `PATH` 與 `/opt/opam/*/bin` |
 | `LEANC_LEAN` | `lean`（含 `leanchecker` 的 toolchain）；未設定時搜尋 `PATH` 與 `/opt/lean/*/bin` |
 
@@ -264,12 +275,13 @@ sandbox: auto         # auto | none
 | Frama-C/WP + ACSL | `sudo apt-get install -y opam z3 cvc5 && opam init -y && opam install -y frama-c alt-ergo`（Ubuntu 的 `frama-c-base` 不含 WP） | ACSL 契約寫在受保護標頭中，關卡 `wp` | `PROVED` 唯一的途徑；證明修復讓 AI 補上 loop invariant |
 | Lean 4 | release toolchain 解壓到 `/opt/lean/<版本>`，或使用 elan | 受保護的模型與定理敘述；證明由 AI 撰寫；kernel + `leanchecker`；只接受標準公理；差分測試向量 | 模型層級：未證明 → `UNKNOWN`，向量不符 → `RUNTIME_TEST_FAILED`；永遠不會產生 `PROVED` |
 | C++20 | `clang++`（clang-18 內含） | `language: {name: cpp, standard: c++20}` | 沒有可用的 C++ model checker，因此最佳結果是 `UNKNOWN` |
+| Inductive profile（opt-in，C） | 除 `cbmc` 外不需要別的：Ubuntu 24.04 的套件就是 CBMC 5.95.1（唯一經過測試的版本），並附帶 `goto-cc` 與 `goto-instrument` | 受保護的 `inductive.harness`、可編輯的 `inductive.contracts`、`inductive.functions`（含 `target.function`），關卡 `inductive` 與 `cbmc` 並列 | `cbmc` 也通過時為 `VERIFIED_INDUCTIVE`（exit 0）；永遠不會產生 `PROVED`；證明無法下結論時為 `UNKNOWN`，此時修復只能改契約檔 |
 
-`leanc doctor` 會回報上述每個工具。缺少某個工具時，相關測試會被略過，而不是失敗。
+`leanc doctor` 會回報上述每個工具。缺少某個工具時，相關測試會被略過，而不是失敗（缺少 `goto-cc` 或 `goto-instrument`，或者 CBMC 版本不是 5.95.1，會讓使用真實工具的 inductive 測試失敗，而不是略過）。
 
 ## 範例
 
-每個 `examples/<name>/` 都包含 `spec.yaml`、受保護的 `include/`、附帶的（通常有缺陷的）`src/`、`mock/` fixture 以及 `expected.yaml`；有 `cbmc` 關卡的範例還有受保護的 `harness/`（兩個 C++ 範例沒有），有 `sanitizer` 關卡的範例還有受保護的 `tests/`（`vacuous_harness` 沒有）。
+每個 `examples/<name>/` 都包含 `spec.yaml`、受保護的 `include/`、附帶的（通常有缺陷的）`src/`、`mock/` fixture 以及 `expected.yaml`；有 `cbmc` 關卡的範例還有受保護的 `harness/`（兩個 C++ 範例沒有），有 `sanitizer` 關卡的範例還有受保護的 `tests/`（`vacuous_harness` 沒有）。`inductive_sponge` 另有受保護的 inductive harness `harness/sponge_inductive.c` 與可編輯的契約檔 `inductive/loops.json`。
 
 | 範例 | 附帶的程式碼 | `verify` | `run --provider mock` |
 |---|---|---|---|
@@ -291,6 +303,7 @@ sandbox: auto         # auto | none
 | `lean_clamp` | Lean 定理留為 `sorry` | `UNKNOWN` | 2 回合 → `VERIFIED_BOUNDED` |
 | `cpp_ring_buffer` | C++20 class template | `UNKNOWN` | `UNKNOWN` |
 | `cpp_bounds_bug` | C++ off-by-one | `RUNTIME_TEST_FAILED`（asan） | 1 回合 → `UNKNOWN` |
+| `inductive_sponge` | 正確；opt-in 的 `inductive` 關卡對所有不超過 2^48 的長度 claim `sponge_absorb` | `VERIFIED_INDUCTIVE` | `VERIFIED_INDUCTIVE`（沒有修復回合） |
 
 全部重現：
 
@@ -316,16 +329,16 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 
 | 套件 | 職責 |
 |---|---|
-| `foundation` | 狀態、資料模型、錯誤、雜湊、憑證遮蔽、工作區（路徑/符號連結安全）、沙箱、`run_command`（只接受 argv、資源限制） |
+| `foundation` | 狀態、資料模型、原因代碼、inductive 範圍文字、錯誤、雜湊、憑證遮蔽、工作區（路徑/符號連結安全）、沙箱、`run_command`（只接受 argv、資源限制） |
 | `specs` | 規格 schema、載入、雜湊、批准與帳本 |
-| `lang` | C / C++ / Lean lexer |
-| `rules` | 關卡與修復政策共用的純函式信任規則（C、C++、ACSL、Lean、前處理器） |
-| `toolchain` | 工具探測、`BackendContext` |
+| `lang` | C / C++ / Lean lexer、迴圈子句文法 |
+| `rules` | 關卡與修復政策共用的純函式信任規則（C、C++、ACSL、Lean、前處理器、迴圈契約與迴圈位置） |
+| `toolchain` | 工具探測、CPROVER 版本鎖定、`BackendContext` |
 | `reports` | JSON / Markdown 輸出 |
 | `llm` | provider 介面、mock、OpenAI 相容、prompts、回應解析 |
-| `backends` | 各關卡：clang、analyzer、integrity、sanitizer、cbmc、counterexample、wp、lean |
+| `backends` | 各關卡：clang、analyzer、integrity、sanitizer、cbmc、inductive、counterexample、wp、lean |
 | `repair` | 套用補丁（fuzz 0）、生成與修復政策 |
-| `pipeline` | 驗證控制器、生成、修復迴圈、doctor、設定、指令實作 |
+| `pipeline` | 驗證控制器、原因代碼、生成、修復迴圈及其 inductive 防護、doctor、設定、指令實作 |
 | `cli.py` | 只有 argparse 與 `main` |
 
 檢查：
@@ -350,11 +363,14 @@ python -m scripts.merge_gate                        # 建立或合併 PR 之前�
 
 成功時輸出 `MERGE GATE PASS head=<sha> base=<sha>`。合併之前要先取得遠端，確認遠端基準分支仍等於輸出中的 base sha（否則重新執行閘門），然後只合併輸出中的 head sha（使用 `expectedHeadSha` 和 merge commit）。之後有任何新 commit，都必須重新執行閘門。
 
-完整測試需要 clang-18、gcc、CBMC、bwrap、位於 /usr/ 的 llvm-symbolizer（llvm-18 套件），以及支援 AVX2 的 x86-64 CPU（SIMD 測試會執行 AVX2 程式碼）。WP 測試以及 `wp` 規格的完整性測試需要支援 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 測試）；Lean 測試需要 Lean 4。缺少某個工具時相關測試會被略過，因此合併閘門需要全部工具。
+完整測試需要 clang-18、gcc、CBMC 5.95.1 及其 `goto-cc` 與 `goto-instrument`（使用真實工具的 inductive 測試會執行它們；缺少 goto 工具或使用其他版本會讓這些測試失敗，絕不略過）、bwrap、位於 /usr/ 的 llvm-symbolizer（llvm-18 套件），以及支援 AVX2 的 x86-64 CPU（SIMD 測試會執行 AVX2 程式碼）。WP 測試以及 `wp` 規格的完整性測試需要支援 `-print-machdep-builtin-macros` 的 Frama-C >= 27（已用 33 測試）；Lean 測試需要 Lean 4。缺少某個工具時相關測試會被略過，因此合併閘門需要全部工具。
 
 ## 限制
 
 - `VERIFIED_BOUNDED` 受限於已批准的 harness；harness 是否忠實表達需求，仍需由人判斷。
+- `VERIFIED_INDUCTIVE` 相對於照原樣撰寫的受保護 inductive harness：它涵蓋其 `main()` 每條路徑最多一次 claimed 呼叫的執行，且只針對強制檢查類別與 harness 斷言。harness 的 `LEANC_ASSUME` 是涵蓋狀態的上界；宣告的初始值、最後一個 `LEANC_ASSUME` 之前或第一次 claimed 呼叫之後的寫入、包住斷言的分支以及 helper 函式會進一步縮小它們，且不回報。斷言弱，結論就弱：`examples/inductive_sponge` 只斷言 `rc == SPONGE_OK` 與 `s->fill < SPONGE_RATE`，所以默默只吸收長輸入一部分的程式碼在那裡不會被發現。
+- `inductive` 關卡的已知缺口：經由指標、從成員陣列溢出到同一物件相鄰欄位或填充位元組的存取（`p->a[i]`、指標運算、`q = p->a; q[i]`、複製模型），以及複製到字串常值，都不會被回報（有界的 `cbmc` 關卡有同樣的缺口；具名物件上的 `s.a[i]` 會被檢查）。呼叫含迴圈的 CBMC 函式庫模型（`strlen`、`strcpy`、`strncpy`、`strncat`）會使迴圈契約的寫入集檢查失敗，因此這樣的程式碼永遠無法通過該關卡（不完備，但永遠不是錯誤的通過）。
+- `inductive` 關卡的修復規則（`CONTRACTS_ONLY_ROUND`、`INDUCTIVE_CODE_EDIT`）只限制修復代理：人寫的、在大尺寸下放棄正確性的程式碼，在弱 harness 下仍可能得到 `VERIFIED_INDUCTIVE`；而使該關卡通過的正確程式碼修正必須由人來套用。
 - sanitizer 只涵蓋可信測試實際執行到的路徑。
 - CBMC 不對無函式本體的函式（如 SIMD intrinsic）建模，也無法套用部分參數（如 `-ffast-math`、`-O2`、`-m*`）：前者使結果不確定，後者作為假設揭露。WP 在 Frama-C 的模型下證明程式碼：Frama-C 未套用的有語意影響的 `compile.flags` 項（如 `-funsigned-char`、`-O2`、`-fwrapv`、`-D`）會使結果無法成為 `PROVED`，因此這樣的規格最多是 `UNKNOWN`。預設 `char` 未知是否有號的建置目標（如 aarch64，也包括 `char` 實為有號的 arm64 Apple 目標）需要明確的 `-fsigned-char` 才能得到 `PROVED`。與建置目標比較的只有 `char` 有號性：與 Frama-C `x86_64` machdep 的其他機器模型差異（型別大小、`long double`、對齊）不檢查。`language.standard` 只揭露、不檢查：Frama-C 以 C11 解析，那裡的其他標準不阻止 `PROVED`。
 - 巨集比較只看按名稱使用的預先定義巨集。用記號拼接（`##`）拼出的預先定義巨集名，以及兩邊工具中由系統標頭定義且取值不同的巨集（例如 `M_PI`：glibc 在 `-std=gnu11` 下定義它，在 `-std=c17` 下不定義），都不會被比較：依據它們分支的程式碼可能讓編譯關卡與驗證器看到不同的程式碼。

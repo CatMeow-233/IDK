@@ -21,7 +21,8 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 ## 這些實驗量測什麼
 
 * **缺陷偵測**：每個缺陷由哪個獨立工具發現（CBMC、Clang Static Analyzer、ASan、UBSan、LSan、測試 oracle）。
-* **狀態誠實性**：unwind 不足、vacuous harness、超時都不會被報告為成功。
+* **狀態誠實性**：unwind 不足、vacuous harness、超時都不會被報告為成功；`VERIFIED_INDUCTIVE` 只在必要的 `inductive` 關卡通過時出現，
+  從不被提升為 `PROVED`。
 * **信任邊界**：修改 harness/規格、注入 `__CPROVER_assume`、刪除 assert、抑制警告、把函式掏空等作弊補丁被拒絕。
 * **修復迴圈控制**：多回合修復、改善判定、循環偵測、達到上限時 `REPAIR_EXHAUSTED`。
 
@@ -44,5 +45,6 @@ python scripts/run_experiments.py --only array_oob div_by_zero
 | 修復作弊 | `cheating_repair` | 前 4 回合被政策拒絕，第 5 回合真正修復 |
 | 修復耗盡 | `repair_exhausted` | `REPAIR_EXHAUSTED`，工作區不變 |
 | 求解器超時 | `cbmc_timeout` | `TIMEOUT` |
+| inductive 驗證（opt-in） | `inductive_sponge` | verify 與 run 都是 `VERIFIED_INDUCTIVE`（有界 harness 只涵蓋 6 位元組，`inductive` 關卡涵蓋到 2^48）；有缺陷的版本有界關卡通過、`inductive` 關卡 `UNKNOWN`，逾時是 `TIMEOUT`（`tests/test_inductive_acceptance.py`） |
 | 規格竄改 | `tests/test_cli.py`、`tests/test_spec_and_approval.py` | 改 harness / 規格 / 批准紀錄 → `SPEC_UNAPPROVED` |
 | 無沙箱 | `tests/test_cli.py::test_no_sandbox_blocks_dynamic_execution` | sanitizer `SKIPPED` → `UNKNOWN` |
